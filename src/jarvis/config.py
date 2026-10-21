@@ -8,13 +8,15 @@ of knobs visible in one file. Field names mirror ``.env.example``.
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from jarvis.integrations.documents import default_document_roots
 from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.utils.errors import ConfigError
 
@@ -108,10 +110,23 @@ class Settings(BaseSettings):
             )
 
     # Web and documents
+    document_roots: Annotated[list[Path], NoDecode] = Field(default_factory=default_document_roots)
     web_user_agent: str = DEFAULT_USER_AGENT
     brave_search_api_key: SecretStr | None = Field(
         default=None, validation_alias="BRAVE_SEARCH_API_KEY"
     )
+
+    @field_validator("document_roots", mode="before")
+    @classmethod
+    def _split_document_roots(cls, value: object) -> object:
+        """Accept ``os.pathsep``-separated paths, the natural form for a .env line.
+
+        An empty line (as in ``.env.example``) keeps the default roots.
+        """
+        if isinstance(value, str):
+            roots = [Path(item.strip()) for item in value.split(os.pathsep) if item.strip()]
+            return roots or default_document_roots()
+        return value
 
     @field_validator("web_user_agent", mode="before")
     @classmethod
