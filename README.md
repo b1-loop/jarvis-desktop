@@ -31,7 +31,7 @@ is Python 3.12.
 | 7 | Voice pipeline with barge-in | planned |
 | 8 | Phase 1 + 2 tools | planned |
 | 9 | Memory | planned |
-| 10 | Proactive and routines | planned |
+| 10 | Proactive and routines | done |
 | 11 | Vision | planned |
 | 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | planned |
 | 13 | Overlay and dashboard | planned |
