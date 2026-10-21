@@ -18,6 +18,11 @@ add_executable(jarvis_tests
     audio/engine_test.cpp
     audio/silero_vad_test.cpp
     audio/open_wake_word_test.cpp)
+if(JARVIS_BUILD_INFERENCE)
+    target_sources(jarvis_tests PRIVATE
+        inference/whisper_transcriber_test.cpp)
+    target_link_libraries(jarvis_tests PRIVATE jarvis::inference)
+endif()
 
 target_include_directories(jarvis_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(jarvis_tests PRIVATE

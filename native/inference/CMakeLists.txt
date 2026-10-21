@@ -66,7 +66,8 @@ set(CMAKE_CXX_STANDARD 20)
 
 # --- The wrappers ----------------------------------------------------------
 add_library(jarvis_inference_lib STATIC
-    src/backend.cpp)
+    src/backend.cpp
+    src/whisper_transcriber.cpp)
 add_library(jarvis::inference ALIAS jarvis_inference_lib)
 
 target_include_directories(jarvis_inference_lib PUBLIC
