@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_FROZEN: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  # Cheap, fast checks on Linux. They need no compiler because the Python
+  # package never imports the native modules at import time
+  # (see docs/adr/0002-decoupled-native-build.md).
+  python-quality:
+    name: Python lint, format, types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --all-extras --group dev
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --all-extras --group dev
+      - run: uv run pytest -m "not native and not hardware"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  # The native build runs on Windows because the OS integration layer is Win32.
+  # scripts/build_native.py is the single entry point so CI and a developer
+  # machine run exactly the same configure, build, test and lint commands.
+  native:
+    name: C++ build, tests, clang-format, clang-tidy
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v4
+      - run: uv python install 3.12
+      - run: uv sync --group dev
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: lukka/get-cmake@latest
+      - name: clang-format check
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Recurse native -Include *.cpp,*.hpp |
+            Where-Object { $_.FullName -notmatch 'third_party|build' }
+          clang-format --dry-run --Werror $files.FullName
+      - name: Configure, build, test, clang-tidy
+        run: uv run python scripts/build_native.py --preset ci-windows --tidy
+      - name: Python can import the native modules
+        run: uv run python -c "import jarvis._native as n; print(n.available_modules())"
+      - name: Native-marked Python tests
+        run: uv run pytest -m native --no-cov
+
+  secrets-scan:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
