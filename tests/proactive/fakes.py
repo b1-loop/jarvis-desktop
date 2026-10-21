@@ -8,10 +8,12 @@ milliseconds and no test ever waits for real.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
+from jarvis.proactive.routines import UnknownToolError
 from jarvis.proactive.triggers import (
     BatteryStatus,
     CalendarEvent,
@@ -146,3 +148,35 @@ class StubCommandWatcher:
     async def pop_finished(self) -> Sequence[CommandResult]:
         finished, self.finished = self.finished, []
         return finished
+
+
+@dataclass
+class FakeInvoker:
+    """Tool invoker with per-tool scripted behaviour.
+
+    ``outputs`` maps a tool name to its text result; a value that is an
+    exception is raised; ``slow`` tools await until cancelled.
+    """
+
+    outputs: dict[str, str | Exception] = field(default_factory=dict)
+    slow: set[str] = field(default_factory=set)
+    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+
+    async def invoke(self, name: str, args: Mapping[str, Any]) -> str:
+        self.calls.append((name, dict(args)))
+        if name in self.slow:
+            await asyncio.Event().wait()
+        if name not in self.outputs:
+            raise UnknownToolError(name)
+        result = self.outputs[name]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+@dataclass
+class FakeSpeaker:
+    said: list[str] = field(default_factory=list)
+
+    async def say(self, text: str) -> None:
+        self.said.append(text)
