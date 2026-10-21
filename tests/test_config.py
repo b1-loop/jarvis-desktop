@@ -109,8 +109,8 @@ def test_web_and_document_defaults(make_settings: Callable[..., Settings]) -> No
 def test_document_roots_split_on_pathsep_and_empty_keeps_default(
     monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
 ) -> None:
-    monkeypatch.setenv("JARVIS_DOCUMENT_ROOTS", os.pathsep.join(["C:/one", " D:/two ", ""]))
-    assert make_settings().document_roots == [Path("C:/one"), Path("D:/two")]
+    monkeypatch.setenv("JARVIS_DOCUMENT_ROOTS", os.pathsep.join(["/one", " /two ", ""]))
+    assert make_settings().document_roots == [Path("/one"), Path("/two")]
 
     monkeypatch.setenv("JARVIS_DOCUMENT_ROOTS", "")
     monkeypatch.setenv("JARVIS_WEB_USER_AGENT", "")
