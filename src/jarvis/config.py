@@ -110,6 +110,10 @@ class Settings(BaseSettings):
                 "Set it in .env or start with --mode local."
             )
 
+    # Memory
+    memory_recent_turns: int = 10
+    memory_semantic_hits: int = 5
+
     # Integrations (extra), added with the providers in ADR-0008
     spotify_redirect_uri: str = Field(
         default="http://127.0.0.1:8888/callback", validation_alias="SPOTIFY_REDIRECT_URI"

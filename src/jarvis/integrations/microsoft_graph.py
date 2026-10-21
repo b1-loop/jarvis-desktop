@@ -206,4 +206,4 @@ def parse_graph_datetime(value: str, *, assume_utc: bool = True) -> datetime:
 # - The whole msal cache is persisted as one opaque string. Picking fields out
 #   of it would couple Jarvis to msal's cache schema for no benefit.
 # - Scopes are the union across Outlook and Teams so the user consents once;
-#   see ADR-0008 for why that is still least privilege for this app.
+#   see ADR-0011 for why that is still least privilege for this app.
