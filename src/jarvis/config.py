@@ -110,6 +110,10 @@ class Settings(BaseSettings):
                 "Set it in .env or start with --mode local."
             )
 
+    # Memory
+    memory_recent_turns: int = 10
+    memory_semantic_hits: int = 5
+
 
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can
