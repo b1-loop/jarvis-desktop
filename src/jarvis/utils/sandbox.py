@@ -21,7 +21,7 @@ from asyncio.subprocess import DEVNULL, PIPE, Process
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Final
 
 from jarvis.utils.errors import JarvisError
@@ -227,7 +227,9 @@ class CommandResult:
 
 def normalize_binary(name: str) -> str:
     """Reduce ``C:/Python312/python.EXE`` to ``python`` for allowlist lookup."""
-    base = Path(name.strip().strip('"')).name.lower()
+    # PureWindowsPath understands both separators and drive letters on every
+    # host, so Linux CI judges Windows command lines the same way Windows does.
+    base = PureWindowsPath(name.strip().strip('"')).name.lower()
     for suffix in _EXECUTABLE_SUFFIXES:
         if base.endswith(suffix):
             return base.removesuffix(suffix)
