@@ -101,6 +101,30 @@ Detection parameters (thresholds, hysteresis, cooldown, pre-roll) live in
 `PipelineConfig` and are exposed to Python unchanged. ADR-0003 records why
 this layer is C++.
 
+### OS integration
+
+Tools talk to the operating system only through
+`jarvis.os_integration.Platform` (an ABC with async methods and plain
+dataclasses). `WindowsPlatform` implements it over the `jarvis_os` module
+and runs every native call in `asyncio.to_thread`; `StubPlatform` records
+calls for text-only mode and tests. On the C++ side each capability is one
+header/source pair behind a small interface (`WindowManager`,
+`ProcessControl`, `SystemControls`, `Screenshotter`, `TextInjector`,
+`Notifier`, `Clipboard`) with no Win32 types in public headers.
+
+Two more native threads join the table above, both created lazily and
+released by `Platform.close()`:
+
+| Thread | Owner | Work | Shares |
+| --- | --- | --- | --- |
+| Hotkey loop | `HotkeyManager` (C++) | `RegisterHotKey` is thread-affine; this thread registers and pumps `WM_HOTKEY` into a queue Python polls | event queue mutex |
+| Notifier loop | `BalloonNotifier` (C++) | owns the hidden window and tray icon that `Shell_NotifyIcon` requires to outlive any Python executor thread | task queue mutex |
+
+Everything else (windows, processes, volume, brightness, screenshot,
+clipboard) runs on the calling executor thread with per-call COM
+initialisation. ADR-0008 records the interface split and the notification
+and brightness choices.
+
 ## 6. Agent and tools *(step 6)*
 
 Tool discovery, pydantic validation, confirmation policy and the LLM tool-call

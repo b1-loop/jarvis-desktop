@@ -44,7 +44,7 @@ Everything else runs on the calling thread with per-call COM initialisation.
   there are no buttons, and an icon sits in the notification area while the
   notifier lives. WinRT `ToastNotification` would lift those limits but
   needs an AppUserModelID registration and a packaged or shortcut-backed
-  identity; see ADR-0004.
+  identity; see ADR-0008.
 - **Brightness** goes through WMI, which only exists for panels with
   software brightness (laptops, tablets). External monitors need DDC/CI
   (`SetVCPFeature`) and are reported as `UnsupportedError`.

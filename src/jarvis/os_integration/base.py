@@ -93,7 +93,7 @@ class Platform(ABC):
         """Every hotkey press, in order, for as long as the caller iterates.
 
         Polling rather than a callback keeps the native thread free of the
-        GIL (see ADR-0004); 50 ms is below what a user perceives as lag.
+        GIL (see ADR-0008); 50 ms is below what a user perceives as lag.
         """
         while True:
             for event in self.poll_hotkeys():

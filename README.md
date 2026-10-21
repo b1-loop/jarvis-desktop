@@ -25,7 +25,7 @@ is Python 3.12.
 | 1 | Plan | done |
 | 2 | Scaffold, tooling, CI | done |
 | 3 | C++ audio engine | done |
-| 4 | C++ Windows integration | **next** |
+| 4 | C++ Windows integration | done |
 | 5 | STT / TTS / LLM cloud providers | planned |
 | 6 | Agent core, text-only loop | planned |
 | 7 | Voice pipeline with barge-in | planned |
