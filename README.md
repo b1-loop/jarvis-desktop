@@ -27,7 +27,7 @@ is Python 3.12.
 | 3 | C++ audio engine | done |
 | 4 | C++ Windows integration | **next** |
 | 5 | STT / TTS / LLM cloud providers | planned |
-| 6 | Agent core, text-only loop | planned |
+| 6 | Agent core, text-only loop | framework done, agent loop pending |
 | 7 | Voice pipeline with barge-in | planned |
 | 8 | Phase 1 + 2 tools | planned |
 | 9 | Memory | planned |
