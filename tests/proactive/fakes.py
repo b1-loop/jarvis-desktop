@@ -8,7 +8,17 @@ milliseconds and no test ever waits for real.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+
+from jarvis.proactive.triggers import (
+    BatteryStatus,
+    CalendarEvent,
+    CommandResult,
+    Notification,
+    Reminder,
+)
 
 SETTLE_ROUNDS = 25
 
@@ -71,3 +81,68 @@ class FakeClock:
             await self.settle()
         self._now = target
         await self.settle()
+
+
+@dataclass
+class FakeSink:
+    """Collects published notifications."""
+
+    received: list[Notification] = field(default_factory=list)
+
+    async def notify(self, notification: Notification) -> None:
+        self.received.append(notification)
+
+
+@dataclass
+class ScriptedTrigger:
+    """Returns the scripted notifications in order, then ``None``; can raise."""
+
+    name: str
+    script: list[Notification | Exception | None] = field(default_factory=list)
+    checks: int = 0
+
+    async def check(self) -> Notification | None:
+        self.checks += 1
+        if not self.script:
+            return None
+        item = self.script.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+@dataclass
+class StubCalendarSource:
+    events: list[CalendarEvent] = field(default_factory=list)
+    requested_windows: list[timedelta] = field(default_factory=list)
+
+    async def upcoming_events(self, within: timedelta) -> Sequence[CalendarEvent]:
+        self.requested_windows.append(within)
+        return list(self.events)
+
+
+@dataclass
+class StubBatterySource:
+    reading: BatteryStatus | None = None
+
+    async def status(self) -> BatteryStatus | None:
+        return self.reading
+
+
+@dataclass
+class StubReminderSource:
+    reminders: list[Reminder] = field(default_factory=list)
+
+    async def pop_due(self, now: datetime) -> Sequence[Reminder]:
+        due = [r for r in self.reminders if r.due <= now]
+        self.reminders = [r for r in self.reminders if r.due > now]
+        return due
+
+
+@dataclass
+class StubCommandWatcher:
+    finished: list[CommandResult] = field(default_factory=list)
+
+    async def pop_finished(self) -> Sequence[CommandResult]:
+        finished, self.finished = self.finished, []
+        return finished
