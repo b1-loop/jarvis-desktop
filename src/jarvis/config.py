@@ -114,6 +114,10 @@ class Settings(BaseSettings):
                 "Set it in .env or start with --mode local."
             )
 
+    # Memory
+    memory_recent_turns: int = 10
+    memory_semantic_hits: int = 5
+
     # Web and documents
     document_roots: Annotated[list[Path], NoDecode] = Field(default_factory=default_document_roots)
     web_user_agent: str = DEFAULT_USER_AGENT

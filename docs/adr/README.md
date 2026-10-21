@@ -13,5 +13,6 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | 0005 | Central confirmation policy for side-effecting tools *(planned, step 6)* | Proposed |
 | 0006 | Plugin architecture for tools *(planned, step 6)* | Proposed |
 | [0007](0007-proactive-module.md) | Proactive module: one scheduler, polled triggers, YAML routines | Accepted |
+| [0008](0008-memory-storage.md) | SQLite for structured memory, ChromaDB for semantic memory | Accepted |
 | [0012](0012-web-and-document-access.md) | Web search, article reading and local document access | Accepted |
 | TBD | CLOUD vs LOCAL runtime modes *(planned, step 12)* | Proposed |
