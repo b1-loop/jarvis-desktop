@@ -23,6 +23,7 @@ native/build-*/
 src/jarvis/_native/*.pyd
 src/jarvis/_native/*.so
 src/jarvis/_native/*.dylib
+src/jarvis/_native/*.dll
 compile_commands.json
 CMakeUserPresets.json
 

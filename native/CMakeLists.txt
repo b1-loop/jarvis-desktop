@@ -21,13 +21,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(JARVIS_BUILD_TESTS "Build the Catch2 unit tests" ON)
-option(JARVIS_BUILD_AUDIO "Build the audio engine (lands in step 3)" OFF)
 option(JARVIS_BUILD_OS "Build the OS integration layer (lands in step 4)" OFF)
 option(JARVIS_BUILD_INFERENCE "Build the whisper.cpp / llama.cpp wrappers (lands in step 12)" OFF)
 option(JARVIS_BUILD_OVERLAY "Build the Dear ImGui overlay (lands in step 13)" OFF)
 
 set(JARVIS_PYTHON_NATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../src/jarvis/_native"
     CACHE PATH "Directory that receives the built Python extension modules")
+set(JARVIS_MODELS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../models"
+    CACHE PATH "Directory holding the ONNX models downloaded by scripts/download_models.py")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
@@ -36,10 +37,8 @@ find_package(Python 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
 find_package(pybind11 CONFIG REQUIRED)
 
 add_subdirectory(common)
+add_subdirectory(audio_engine)
 
-if(JARVIS_BUILD_AUDIO)
-    add_subdirectory(audio_engine)
-endif()
 if(JARVIS_BUILD_OS)
     add_subdirectory(os_integration)
 endif()

@@ -14,7 +14,10 @@ function(jarvis_set_warnings target)
             /EHsc
             /Zc:__cplusplus
             /external:anglebrackets
-            /external:W0)
+            /external:W0
+            # C4324 reports padding caused by alignas; padding is the whole
+            # point of aligning atomics to separate cache lines.
+            /wd4324)
     else()
         target_compile_options(${target} PRIVATE
             -Wall
