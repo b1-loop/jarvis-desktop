@@ -31,6 +31,14 @@ target_compile_definitions(jarvis_tests PRIVATE
 jarvis_set_warnings(jarvis_tests)
 jarvis_copy_onnxruntime_dll(jarvis_tests)
 
+if(JARVIS_BUILD_OVERLAY)
+    target_sources(jarvis_tests PRIVATE
+        overlay/layout_test.cpp
+        overlay/model_test.cpp
+        overlay/window_test.cpp)
+    target_link_libraries(jarvis_tests PRIVATE jarvis::overlay)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
 include(Catch)
 catch_discover_tests(jarvis_tests)
