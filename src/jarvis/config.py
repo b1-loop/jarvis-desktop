@@ -27,7 +27,7 @@ class RuntimeMode(StrEnum):
     """Which set of providers the pipeline is assembled from.
 
     CLOUD trades privacy and cost for quality and simplicity; LOCAL runs
-    entirely offline. The trade-offs are documented in ADR-0008.
+    entirely offline. The trade-offs are documented in ADR-0009.
     """
 
     CLOUD = "cloud"
