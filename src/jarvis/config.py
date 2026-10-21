@@ -15,6 +15,7 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.utils.errors import ConfigError
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -24,7 +25,7 @@ class RuntimeMode(StrEnum):
     """Which set of providers the pipeline is assembled from.
 
     CLOUD trades privacy and cost for quality and simplicity; LOCAL runs
-    entirely offline. The trade-offs are documented in ADR-0007.
+    entirely offline. The trade-offs are documented in ADR-0013.
     """
 
     CLOUD = "cloud"
@@ -105,6 +106,18 @@ class Settings(BaseSettings):
                 "ANTHROPIC_API_KEY is required in cloud mode. "
                 "Set it in .env or start with --mode local."
             )
+
+    # Web and documents
+    web_user_agent: str = DEFAULT_USER_AGENT
+    brave_search_api_key: SecretStr | None = Field(
+        default=None, validation_alias="BRAVE_SEARCH_API_KEY"
+    )
+
+    @field_validator("web_user_agent", mode="before")
+    @classmethod
+    def _default_empty_user_agent(cls, value: object) -> object:
+        """An empty ``JARVIS_WEB_USER_AGENT=`` line keeps the default."""
+        return DEFAULT_USER_AGENT if value == "" else value
 
 
 # Design notes:

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Why the audio callback must never block - The Jarvis Blog</title>
+  <meta property="og:title" content="Why the audio callback must never block">
+  <meta name="author" content="Bozhidar Ivanov">
+  <meta property="article:published_time" content="2026-10-20T09:30:00+02:00">
+  <style>.hidden { display: none } body { font: 16px sans-serif }</style>
+  <script>window.dataLayer = window.dataLayer || []; function gtag(){dataLayer.push(arguments);}</script>
+</head>
+<body>
+  <header class="site-header">
+    <a href="/">Home</a> <a href="/blog">Blog</a> <a href="/about">About</a> <a href="/contact">Contact</a>
+  </header>
+  <nav class="main-nav">
+    <ul>
+      <li><a href="/audio">Audio engine series</a></li>
+      <li><a href="/os">Windows integration series</a></li>
+      <li><a href="/inference">Local inference series</a></li>
+    </ul>
+  </nav>
+  <div class="cookie-banner">We use cookies to improve your experience. By continuing you accept our policy.</div>
+  <main>
+    <article>
+      <header>
+        <h1>Why the audio callback must never block</h1>
+        <p class="byline">By Bozhidar Ivanov</p>
+        <time datetime="2026-10-20T09:30:00+02:00">20 October 2026</time>
+      </header>
+      <p>Every audio API hands you a callback that runs on a real-time thread. The device fills a buffer every ten milliseconds or so, and if your code is not finished when the next buffer arrives you hear a glitch. That is the whole contract: do your work in less time than the buffer represents, every single time.</p>
+      <p>The tempting shortcut is to do a little work in the callback: resample, run the voice activity detector, maybe append to a Python list under the GIL. Each of those can take an unbounded amount of time on a bad day, and a bad day is exactly when users notice.</p>
+      <h2>Push, do not process</h2>
+      <p>The rule we settled on is that the callback only copies frames into a lock-free single-producer single-consumer ring buffer. Nothing else. A worker thread drains the ring buffer, runs the models and pushes events into a queue that Python polls.</p>
+      <blockquote><p>Dropped samples are counted and reported, never silently lost.</p></blockquote>
+      <p>Counting drops matters because it turns an invisible failure into a number on the dashboard. If the worker falls behind, the count climbs and we know to look.</p>
+      <ul>
+        <li>The callback never allocates, locks or logs.</li>
+        <li>The worker owns every model and every allocation.</li>
+        <li>Python learns about events by polling, never by callback.</li>
+      </ul>
+      <div class="share-buttons">
+        <a href="https://twitter.com/share">Tweet</a> <a href="https://facebook.com/share">Share</a> <a href="https://linkedin.com/share">Post</a>
+      </div>
+      <p>Short line.</p>
+    </article>
+    <aside class="sidebar">
+      <h3>Related posts</h3>
+      <p>Lots of text in the sidebar that is not part of the article and should never be read aloud to anyone.</p>
+      <ul>
+        <li><a href="/post-1">Barge-in that feels instant</a></li>
+        <li><a href="/post-2">Reproducing openWakeWord in C++</a></li>
+      </ul>
+    </aside>
+  </main>
+  <footer>
+    <p>&copy; 2026 The Jarvis Blog. All rights reserved. Privacy policy. Terms of service. Contact us by email.</p>
+  </footer>
+</body>
+</html>

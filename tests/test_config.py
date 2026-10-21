@@ -75,3 +75,22 @@ def test_local_mode_needs_no_credentials(make_settings: Callable[..., Settings])
 
 def test_cloud_mode_with_key_validates(make_settings: Callable[..., Settings]) -> None:
     make_settings(mode=RuntimeMode.CLOUD, anthropic_api_key="sk-ant-test").validate_for_mode()
+
+
+def test_web_and_document_defaults(make_settings: Callable[..., Settings]) -> None:
+    settings = make_settings()
+
+    assert settings.web_user_agent.startswith("JarvisDesktop/")
+    assert settings.brave_search_api_key is None
+
+
+def test_brave_key_is_a_secret(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSA-secret")
+
+    settings = make_settings()
+
+    assert settings.brave_search_api_key is not None
+    assert settings.brave_search_api_key.get_secret_value() == "BSA-secret"
+    assert "BSA-secret" not in repr(settings)
