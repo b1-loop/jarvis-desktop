@@ -89,6 +89,8 @@ artifacts = ["src/jarvis/_native/*.pyd", "src/jarvis/_native/*.so"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests", "scripts"]
+# whisper.cpp and llama.cpp ship their own Python scripts with their own style.
+extend-exclude = ["native/third_party"]
 
 [tool.ruff.lint]
 select = [

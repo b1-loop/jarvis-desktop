@@ -23,7 +23,7 @@ cd jarvis
 uv sync --all-extras                     # Python deps + dev tools
 uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 uv run python scripts/build_native.py    # builds native/ into src/jarvis/_native/
-uv run python scripts/download_models.py # VAD, wake word and (optionally) local models
+uv run python scripts/download_models.py # VAD and wake word; add --local for whisper.cpp / llama.cpp models
 copy .env.example .env                   # then fill in your keys
 ```
 
@@ -34,6 +34,10 @@ uv run jarvis --text-only          # terminal conversation, no audio needed
 uv run jarvis --mode cloud         # full voice pipeline
 uv run jarvis --mode local         # fully offline
 ```
+
+If the checkout already exists, fetch the native submodules with
+`git submodule update --init --recursive`; the native build fails with a
+clear message when `native/third_party/` is empty.
 
 ## Workflow
 
