@@ -20,6 +20,11 @@ add_executable(jarvis_tests
     audio/open_wake_word_test.cpp)
 if(JARVIS_BUILD_INFERENCE)
     target_sources(jarvis_tests PRIVATE
+        inference/cancellation_token_test.cpp
+        inference/chat_template_test.cpp
+        inference/generation_stream_test.cpp
+        inference/llama_generator_test.cpp
+        inference/stop_matcher_test.cpp
         inference/whisper_transcriber_test.cpp)
     target_link_libraries(jarvis_tests PRIVATE jarvis::inference)
 endif()
