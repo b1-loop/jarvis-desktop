@@ -1,14 +1,16 @@
-"""Download the ONNX models the audio engine needs, verifying each by SHA-256.
+"""Download the models Jarvis needs, verifying each by SHA-256.
 
 Usage::
 
-    uv run python scripts/download_models.py            # into JARVIS_MODELS_DIR
+    uv run python scripts/download_models.py            # audio models into JARVIS_MODELS_DIR
+    uv run python scripts/download_models.py --local    # plus whisper.cpp / llama.cpp models
     uv run python scripts/download_models.py --force    # re-download everything
     uv run python scripts/download_models.py --models-dir C:/models
 
 Files that already exist with the right hash are skipped, so this is safe to
-run on every setup. The model list lives in ``jarvis.audio.models`` next to
-the code that consumes it.
+run on every setup. The audio model list lives in ``jarvis.audio.models`` and
+the LOCAL-mode list in ``jarvis.inference.models``, next to the code that
+consumes them. ``--local`` is opt-in because those two files total 570 MB.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import httpx
 
 from jarvis.audio.models import AUDIO_MODELS, ModelFile
 from jarvis.config import Settings
+from jarvis.inference.models import INFERENCE_MODELS
 from jarvis.utils.downloads import DownloadError, download_verified, is_verified
 
 
@@ -35,7 +38,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="where to put the files (default: JARVIS_MODELS_DIR)",
     )
     parser.add_argument("--force", action="store_true", help="re-download even if verified")
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="also fetch the whisper.cpp and llama.cpp models for LOCAL mode (570 MB)",
+    )
     return parser.parse_args(argv)
+
+
+def selected_models(*, local: bool) -> tuple[ModelFile, ...]:
+    """The manifest entries a run should fetch."""
+    return AUDIO_MODELS + INFERENCE_MODELS if local else AUDIO_MODELS
 
 
 async def fetch(
@@ -51,11 +64,11 @@ async def fetch(
     print(f"  {model.name}: ok")
 
 
-async def run(models_dir: Path, *, force: bool) -> int:
-    """Download every audio model; return a process exit code."""
+async def run(models_dir: Path, *, force: bool, local: bool) -> int:
+    """Download every selected model; return a process exit code."""
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         try:
-            for model in AUDIO_MODELS:
+            for model in selected_models(local=local):
                 await fetch(client, model, models_dir, force=force)
         except DownloadError as error:
             print(f"error: {error}", file=sys.stderr)
@@ -67,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point."""
     args = parse_args(argv)
     print(f"models directory: {args.models_dir.resolve()}")
-    return asyncio.run(run(args.models_dir, force=args.force))
+    return asyncio.run(run(args.models_dir, force=args.force, local=args.local))
 
 
 if __name__ == "__main__":
