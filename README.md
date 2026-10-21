@@ -24,8 +24,8 @@ is Python 3.12.
 | --- | --- | --- |
 | 1 | Plan | done |
 | 2 | Scaffold, tooling, CI | done |
-| 3 | C++ audio engine | **next** |
-| 4 | C++ Windows integration | planned |
+| 3 | C++ audio engine | done |
+| 4 | C++ Windows integration | **next** |
 | 5 | STT / TTS / LLM cloud providers | planned |
 | 6 | Agent core, text-only loop | planned |
 | 7 | Voice pipeline with barge-in | planned |
@@ -137,12 +137,23 @@ backends.
 
 ## What was hard
 
-Written as the project progresses; candidate topics so far:
+Written as the project progresses.
 
-- keeping the real-time audio thread free of the GIL while still handing
-  frames to asyncio
-- barge-in without audible clicks
-- making the native build optional so text-only development needs no compiler
+- **Keeping the audio callback real-time safe while Python consumes the
+  data.** The callback only pushes into a lock-free SPSC ring buffer; a
+  worker thread runs the models and Python polls. No native thread ever
+  takes the GIL. Dropped samples are counted and reported instead of
+  silently lost.
+- **Barge-in that feels instant.** The playback queue is drained under a
+  `try_lock` so the device thread never blocks, and the worker stops playback
+  directly when speech starts. Python finds out afterwards through a stop
+  counter rather than being on the critical path.
+- **Reproducing openWakeWord's streaming maths in C++.** Each 80 ms chunk
+  yields 8 mel frames only if three hops of context from the previous chunk
+  are prepended; 76 mel frames make one embedding; 16 embeddings make one
+  score. Getting the window bookkeeping right was the bulk of the work.
+- **Making the native build optional** so text-only development and the
+  Linux CI lane need no compiler (ADR-0002).
 
 ## Development
 

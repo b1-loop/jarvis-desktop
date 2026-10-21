@@ -63,19 +63,43 @@ Stages never call each other; the orchestrator moves data between them over
 `core/state_machine.py` and published as `StateChanged` events. Barge-in is the
 transition `SPEAKING → LISTENING` triggered by VAD activity during playback.
 
-## 5. Threading model *(step 3)*
+## 5. Threading model
 
-| Thread | Owner | Work |
-| --- | --- | --- |
-| Audio callback | miniaudio (C++) | copy device frames into the ring buffer, nothing else |
-| Audio worker | C++ | VAD and wake-word inference on ring-buffer frames |
-| Playback | C++ | feed TTS chunks to the output device, honour cancellation |
-| Event loop | Python asyncio | everything else |
-| Executor threads | Python | STT and other CPU-bound Python work |
+| Thread | Owner | Work | Shares |
+| --- | --- | --- | --- |
+| Capture callback | miniaudio (C++) | push device frames into the SPSC ring buffer, nothing else | ring buffer (producer) |
+| Audio worker | `AudioEngine` (C++) | pop frames, run `AudioPipeline` (Silero VAD, openWakeWord, segmentation, pre-roll), append events, trigger barge-in | ring buffer (consumer), engine mutex |
+| Playback callback | miniaudio (C++) | drain the `Playback` chunk queue under `try_lock`; silence when contended or empty | playback mutex (never blocks) |
+| Event loop | Python asyncio | poll events every 10 ms, orchestrate STT/LLM/TTS, enqueue TTS chunks | engine mutex, playback mutex (brief) |
+| Executor threads | Python | STT and other CPU-bound Python work | none |
 
-The GIL is released for every native call that can block. Native threads
-never call into Python; they push into lock-free queues that the Python side
-drains.
+Rules that keep this safe:
+
+- The capture callback never allocates, locks or runs inference; overflow
+  drops samples and counts them (`SamplesDropped` event) instead of stalling.
+- Native threads never call into Python and never take the GIL. Python
+  polls; `start()`/`stop()` release the GIL while they touch devices.
+- `AudioPipeline` is single-threaded by construction. The engine wraps every
+  call to it in one mutex; the Python side only takes that mutex for
+  microsecond-scale operations (poll, toggle listening, take audio).
+- Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
+  when a barge-in target is set, so it takes effect on the next device period
+  without waiting for the event loop. Python learns about it afterwards via
+  `Playback::stopCount()`.
+
+### Audio engine data flow
+
+```
+mic ──callback──▶ ring buffer ──worker──▶ AudioPipeline
+                                          ├─ 512-sample frames ─▶ Silero VAD ─▶ SpeechSegmenter ─▶ SpeechStarted/Ended
+                                          ├─ 1280-sample chunks ▶ openWakeWord (mel → embedding → classifier) ─▶ WakeWordDetected
+                                          ├─ pre-roll (300 ms) ──▶ seeds capture when listening starts
+                                          └─ captured audio ─────▶ takeCaptured() ─▶ STT
+```
+
+Detection parameters (thresholds, hysteresis, cooldown, pre-roll) live in
+`PipelineConfig` and are exposed to Python unchanged. ADR-0003 records why
+this layer is C++.
 
 ## 6. Agent and tools *(step 6)*
 

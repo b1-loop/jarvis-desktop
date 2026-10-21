@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     hotkey: str = "ctrl+alt+j"
     log_level: LogLevel = "INFO"
     data_dir: Path = Path("data")
+    models_dir: Path = Path("models")
 
     # LLM
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")

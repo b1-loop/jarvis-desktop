@@ -8,7 +8,7 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | --- | --- | --- |
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0002](0002-decoupled-native-build.md) | Build native extensions separately from the Python package | Accepted |
-| 0003 | C++ for the audio hot path *(planned, step 3)* | Proposed |
+| [0003](0003-cpp-audio-hot-path.md) | C++ for the audio hot path | Accepted |
 | 0004 | Interfaces and dependency injection between stages *(planned, step 6)* | Proposed |
 | 0005 | Central confirmation policy for side-effecting tools *(planned, step 6)* | Proposed |
 | 0006 | Plugin architecture for tools *(planned, step 6)* | Proposed |

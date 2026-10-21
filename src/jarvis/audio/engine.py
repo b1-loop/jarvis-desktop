@@ -1,4 +1,361 @@
-"""Asyncio facade over the native capture/VAD/wake-word/playback engine.
+"""Asyncio facade over the native audio engine (``jarvis_audio``).
 
-Arrives in step 3 together with the C++ audio engine.
+The native engine runs its own threads and exposes a poll-based API so no
+native thread ever needs the GIL. This module turns that into asyncio
+primitives: an async stream of events, ``capture_utterance`` for the
+orchestrator and a ``Speaker`` that streams TTS chunks and knows when
+barge-in cut it short. Native objects are injected through Protocols, so
+this module is unit-tested with fakes and the real ``.pyd`` is exercised only
+by ``native``-marked tests.
 """
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Protocol, cast
+
+import numpy as np
+from numpy.typing import NDArray
+
+from jarvis import _native
+from jarvis.audio.models import AudioModelPaths
+from jarvis.utils.errors import ConfigError
+from jarvis.utils.logging import get_logger
+
+Samples = NDArray[np.float32]
+"""Mono float32 PCM in [-1, 1]."""
+
+log = get_logger(__name__)
+
+
+class AudioEventKind(StrEnum):
+    """Mirror of the native ``AudioEventType`` enum, by member name."""
+
+    WAKE_WORD_DETECTED = "wake_word_detected"
+    SPEECH_STARTED = "speech_started"
+    SPEECH_ENDED = "speech_ended"
+    SAMPLES_DROPPED = "samples_dropped"
+
+
+@dataclass(frozen=True, slots=True)
+class AudioEvent:
+    """One event from the engine.
+
+    Attributes:
+        kind: What happened.
+        value: Detector score, VAD probability or dropped-sample count.
+        sample_position: Engine clock in samples, for latency measurement.
+    """
+
+    kind: AudioEventKind
+    value: float
+    sample_position: int
+
+
+class NativeEventType(Protocol):
+    """The pybind11 enum value; only its name is needed."""
+
+    @property
+    def name(self) -> str:
+        """Enum member name, e.g. ``"SPEECH_STARTED"``."""
+
+
+class NativeEvent(Protocol):
+    """Shape of ``jarvis_audio.AudioEvent``."""
+
+    @property
+    def type(self) -> NativeEventType:
+        """Which event occurred."""
+
+    @property
+    def value(self) -> float:
+        """Score, probability or dropped-sample count."""
+
+    @property
+    def sample_position(self) -> int:
+        """Engine clock in samples."""
+
+
+class NativePlayback(Protocol):
+    """Shape of ``jarvis_audio.Playback``."""
+
+    def enqueue(self, samples: Samples) -> None:
+        """Queue mono float32 samples at ``sample_rate``."""
+
+    def stop(self) -> None:
+        """Discard the queue and fall silent immediately."""
+
+    def mark_end_of_stream(self) -> None:
+        """Declare that no more chunks follow for this utterance."""
+
+    def is_playing(self) -> bool:
+        """True while samples are queued or more are expected."""
+
+    def queued_samples(self) -> int:
+        """Samples not yet rendered."""
+
+    def stop_count(self) -> int:
+        """How many times ``stop`` has run, including native barge-in."""
+
+    def sample_rate(self) -> int:
+        """Rate of the output device."""
+
+
+class NativeEngine(Protocol):
+    """Shape of ``jarvis_audio.AudioEngine``."""
+
+    def start(self) -> None:
+        """Open the device and start the worker thread."""
+
+    def stop(self) -> None:
+        """Stop the worker and close the device."""
+
+    def running(self) -> bool:
+        """True between ``start`` and ``stop``."""
+
+    def set_listening(self, listening: bool) -> None:
+        """Retain audio for STT (and pause wake-word detection) while True."""
+
+    def listening(self) -> bool:
+        """Current listening state."""
+
+    def take_captured(self) -> Samples:
+        """Return and clear the retained audio."""
+
+    def poll_events(self) -> list[NativeEvent]:
+        """Drain the events reported since the previous poll."""
+
+    def set_barge_in_target(self, playback: NativePlayback | None) -> None:
+        """Stop ``playback`` natively when speech starts; ``None`` disables."""
+
+    def input_level(self) -> float:
+        """RMS of the latest frame."""
+
+    def dropped_samples(self) -> int:
+        """Total samples lost to ring-buffer overflow."""
+
+
+class AudioEngine:
+    """Asyncio view of the native capture engine.
+
+    Owns a polling task that drains native events into an ``asyncio.Queue``.
+    There is a single consumer by design: the orchestrator. Events that a
+    waiter is not interested in are logged and discarded rather than queued
+    forever.
+    """
+
+    def __init__(
+        self,
+        native: NativeEngine,
+        *,
+        poll_interval: float = 0.01,
+        max_utterance_seconds: float = 15.0,
+    ) -> None:
+        self._native = native
+        self._poll_interval = poll_interval
+        self._max_utterance_seconds = max_utterance_seconds
+        self._events: asyncio.Queue[AudioEvent] = asyncio.Queue()
+        self._poller: asyncio.Task[None] | None = None
+
+    async def __aenter__(self) -> AudioEngine:
+        await self.start()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.stop()
+
+    @property
+    def running(self) -> bool:
+        """True between ``start`` and ``stop``."""
+        return self._poller is not None
+
+    @property
+    def listening(self) -> bool:
+        """True while captured audio is being retained for STT."""
+        return self._native.listening()
+
+    @property
+    def input_level(self) -> float:
+        """RMS of the latest frame, for the overlay waveform."""
+        return self._native.input_level()
+
+    async def start(self) -> None:
+        """Open the device (off the event loop) and begin polling for events."""
+        if self._poller is not None:
+            return
+        await asyncio.to_thread(self._native.start)
+        self._poller = asyncio.create_task(self._poll_forever(), name="audio-engine-poller")
+        log.info("audio.engine.started")
+
+    async def stop(self) -> None:
+        """Stop polling and close the device. Idempotent."""
+        if self._poller is None:
+            return
+        self._poller.cancel()
+        try:
+            await self._poller
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            # Already reported with a traceback when it happened; note it
+            # again here so a stop() caller sees why no events arrived.
+            log.warning("audio.poller.was_dead", error=repr(error))
+        self._poller = None
+        await asyncio.to_thread(self._native.stop)
+        log.info("audio.engine.stopped", dropped_samples=self._native.dropped_samples())
+
+    async def events(self) -> AsyncIterator[AudioEvent]:
+        """Every event, in order, for as long as the caller iterates."""
+        while True:
+            yield await self._events.get()
+
+    async def next_event(self, *kinds: AudioEventKind) -> AudioEvent:
+        """Wait for the next event of one of ``kinds`` (any kind if none given).
+
+        Wrap the call in ``asyncio.timeout`` to bound the wait.
+        """
+        while True:
+            event = await self._events.get()
+            if not kinds or event.kind in kinds:
+                return event
+            log.debug("audio.event.skipped", kind=event.kind.value)
+
+    def set_listening(self, listening: bool) -> None:
+        """Start or stop retaining audio for STT; see the native docs."""
+        self._native.set_listening(listening)
+
+    def take_captured(self) -> Samples:
+        """Return and clear the audio retained while listening."""
+        return self._native.take_captured()
+
+    def enable_barge_in(self, playback: NativePlayback | None) -> None:
+        """Make speech onset stop ``playback`` natively; ``None`` disables it."""
+        self._native.set_barge_in_target(playback)
+
+    async def capture_utterance(self) -> Samples:
+        """Record until the user stops talking.
+
+        Listening is switched on, which seeds the capture with the pre-roll
+        buffer, and off again once the engine reports the end of speech or
+        ``max_utterance_seconds`` elapse. Whatever was captured is returned
+        either way, so a user who talks for too long is transcribed rather
+        than ignored.
+        """
+        self.set_listening(True)
+        try:
+            async with asyncio.timeout(self._max_utterance_seconds):
+                await self.next_event(AudioEventKind.SPEECH_ENDED)
+        except TimeoutError:
+            log.warning("audio.capture.timeout", limit_s=self._max_utterance_seconds)
+        finally:
+            self.set_listening(False)
+        return self.take_captured()
+
+    async def _poll_forever(self) -> None:
+        try:
+            while True:
+                for native_event in self._native.poll_events():
+                    await self._events.put(_convert(native_event))
+                await asyncio.sleep(self._poll_interval)
+        except Exception:
+            # A dead poller would make every waiter hang silently; make the
+            # cause visible before propagating it into the task.
+            log.exception("audio.poller.crashed")
+            raise
+
+
+def _convert(native_event: NativeEvent) -> AudioEvent:
+    event = AudioEvent(
+        kind=AudioEventKind[native_event.type.name],
+        value=float(native_event.value),
+        sample_position=int(native_event.sample_position),
+    )
+    if event.kind is AudioEventKind.SAMPLES_DROPPED:
+        log.warning("audio.samples_dropped", count=int(event.value))
+    return event
+
+
+class Speaker:
+    """Streams synthesised audio to native playback and reports interruption."""
+
+    def __init__(self, native: NativePlayback, *, poll_interval: float = 0.02) -> None:
+        self._native = native
+        self._poll_interval = poll_interval
+
+    @property
+    def native(self) -> NativePlayback:
+        """The underlying playback, to hand to ``AudioEngine.enable_barge_in``."""
+        return self._native
+
+    @property
+    def sample_rate(self) -> int:
+        """Rate the chunks passed to ``play`` must have."""
+        return self._native.sample_rate()
+
+    @property
+    def playing(self) -> bool:
+        """True while audio is queued or more chunks are expected."""
+        return self._native.is_playing()
+
+    async def play(self, chunks: AsyncIterator[Samples]) -> bool:
+        """Play ``chunks`` as they arrive and wait for the last one to finish.
+
+        Returns:
+            True if everything was played, False if ``stop`` (from Python or
+            from native barge-in) interrupted it.
+        """
+        stops_before = self._native.stop_count()
+        async for chunk in chunks:
+            if self._native.stop_count() != stops_before:
+                break
+            self._native.enqueue(chunk)
+        self._native.mark_end_of_stream()
+        await self._wait_until_done(stops_before)
+        return self._native.stop_count() == stops_before
+
+    def stop(self) -> None:
+        """Silence playback immediately and discard what was queued."""
+        self._native.stop()
+
+    async def _wait_until_done(self, stops_before: int) -> None:
+        # Polling is the only option: the native queue drains on the device
+        # thread and exposes no awaitable signal. ASYNC110 wants an Event.
+        while self._native.is_playing() and self._native.stop_count() == stops_before:  # noqa: ASYNC110
+            await asyncio.sleep(self._poll_interval)
+
+
+def create_native_engine(paths: AudioModelPaths, *, wake_word: bool = True) -> NativeEngine:
+    """Construct the real ``jarvis_audio.AudioEngine``.
+
+    Raises:
+        ConfigError: If a model file is missing.
+        NativeUnavailableError: If the extension module is not built.
+    """
+    missing = paths.missing()
+    if missing:
+        names = ", ".join(path.name for path in missing)
+        raise ConfigError(f"audio models missing ({names}); run scripts/download_models.py")
+    module = _native.load("jarvis_audio")
+    wake_word_models = (
+        (paths.melspectrogram, paths.embedding, paths.wake_word) if wake_word else None
+    )
+    return cast(NativeEngine, module.AudioEngine(paths.vad, wake_word_models))
+
+
+def create_native_playback(sample_rate: int) -> NativePlayback:
+    """Construct the real ``jarvis_audio.Playback`` on the default output device."""
+    module = _native.load("jarvis_audio")
+    return cast(NativePlayback, module.Playback(sample_rate))
+
+
+# Design notes:
+# - Polling instead of native callbacks: a callback would need the GIL on the
+#   worker thread and would run Python code at audio-thread cadence. A 10 ms
+#   poll adds at most 10 ms to wake-word latency, far below what a user notices.
+# - Speaker.play reports interruption via the native stop counter because
+#   barge-in happens entirely in C++; Python only learns about it afterwards.
+# - capture_utterance returns partial audio on timeout on purpose: a long
+#   monologue should be transcribed, not dropped.

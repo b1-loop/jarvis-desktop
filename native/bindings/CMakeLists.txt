@@ -15,6 +15,9 @@ function(jarvis_add_python_module name)
 endfunction()
 
 jarvis_add_python_module(jarvis_audio jarvis_audio_module.cpp)
+target_link_libraries(jarvis_audio PRIVATE jarvis::audio_engine)
+jarvis_copy_onnxruntime_dll(jarvis_audio)
+
 jarvis_add_python_module(jarvis_os jarvis_os_module.cpp)
 jarvis_add_python_module(jarvis_inference jarvis_inference_module.cpp)
 jarvis_add_python_module(jarvis_overlay jarvis_overlay_module.cpp)
