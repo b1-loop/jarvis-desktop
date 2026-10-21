@@ -13,5 +13,7 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | 0005 | Central confirmation policy for side-effecting tools *(planned, step 6)* | Proposed |
 | 0006 | Plugin architecture for tools *(planned, step 6)* | Proposed |
 | [0007](0007-proactive-module.md) | Proactive module: one scheduler, polled triggers, YAML routines | Accepted |
-| [0008](0008-plugin-tools-and-confirmation.md) | Plugin tools, central confirmation and a policy-first sandbox | Accepted |
+| [0008](0008-memory-storage.md) | SQLite for structured memory, ChromaDB for semantic memory | Accepted |
+| [0010](0010-plugin-tools-and-confirmation.md) | Plugin tools, central confirmation and a policy-first sandbox | Accepted |
+| TBD | CLOUD vs LOCAL runtime modes *(planned, step 12)* | Proposed |
 | 0009 | CLOUD vs LOCAL runtime modes *(planned, step 12)* | Proposed |

@@ -143,6 +143,17 @@ on the LLM interface and lands with it. See ADR-0008.
 
 ## 7. Memory *(step 9)*
 
+`memory/MemoryManager` is the only memory API the agent sees. Behind it:
+
+| Store | Holds | Role |
+| --- | --- | --- |
+| `SqliteStore` (aiosqlite, WAL, versioned migrations) | conversations, messages, notes, reminders, todos, facts | source of truth; FTS5 search with `LIKE` fallback |
+| `VectorStore` Protocol: `ChromaVectorStore` / `InMemoryVectorStore` | embeddings of turns and notes | recall by meaning; rebuildable from SQLite |
+
+`UserProfile` is a view over `profile.*` facts. `recall()` returns profile +
+facts + recent turns + semantic hits trimmed to a character budget. All data
+stays under `Settings.data_dir`. See ADR-0008.
+
 ## 8. Native build *(step 2)*
 
 See ADR-0002. `scripts/build_native.py` runs the CMake presets and copies the
