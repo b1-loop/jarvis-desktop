@@ -1,0 +1,16 @@
+# Normalise line endings to LF in the repository and the working tree so
+# clang-format, ruff and diffs behave identically on Windows and Linux.
+* text=auto eol=lf
+
+# Windows-only files that must keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets.
+*.png binary
+*.gif binary
+*.wav binary
+*.onnx binary
+*.gguf binary
+*.pyd binary

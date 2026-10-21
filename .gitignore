@@ -1,0 +1,42 @@
+# Secrets
+.env
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+
+# Native build outputs
+native/build/
+native/build-*/
+src/jarvis/_native/*.pyd
+src/jarvis/_native/*.so
+src/jarvis/_native/*.dylib
+compile_commands.json
+CMakeUserPresets.json
+
+# Models and data (downloaded by scripts/download_models.py)
+models/
+data/
+*.onnx
+*.gguf
+*.bin
+
+# Editors and OS
+.vscode/
+.idea/
+.vs/
+*.swp
+.DS_Store
+Thumbs.db
