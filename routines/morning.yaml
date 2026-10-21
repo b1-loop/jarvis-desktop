@@ -1,0 +1,35 @@
+# Morning briefing, run at 07:30 on weekdays. For a spoken trigger instead,
+# use `trigger: { kind: phrase, phrase: good morning }`.
+#
+# Schema: src/jarvis/proactive/routines.py (Routine). Tool names refer to
+# plugins in src/jarvis/tools/; a tool that is not installed yet is reported
+# aloud ("I don't have a tool called ...") and skipped, so this file is safe
+# to keep while the integrations land.
+#
+# Quote times: YAML would otherwise read 07:30 as the number 450.
+
+name: morning
+description: Weather, calendar, unread email and headlines to start the day.
+trigger:
+  kind: time
+  at: "07:30"
+  days: [mon, tue, wed, thu, fri]
+max_duration_seconds: 180
+on_error: continue
+intro: Good morning. Here is your briefing.
+outro: That is everything. Have a good day.
+steps:
+  - tool: weather
+    args: { location: home }
+    speak: "{result}"
+    timeout_seconds: 20
+  - tool: calendar_agenda
+    args: { day: today }
+    speak: "On your calendar today: {result}"
+  - tool: email_unread
+    args: { limit: 3, summarize: true }
+    speak: "Your top emails: {result}"
+    timeout_seconds: 45
+  - tool: news_headlines
+    args: { count: 3 }
+    speak: "In the news: {result}"
