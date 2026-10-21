@@ -148,7 +148,7 @@ class Fact:
 # Design notes:
 # - Facts are keyed by name rather than by row id because the agent reasons
 #   in terms of "what do I know about X"; a second statement about the same
-#   key is an update, not a new row. See ADR-0006.
+#   key is an update, not a new row. See ADR-0008.
 # - tool_calls is a tuple of plain dicts, not a typed model, because the
 #   exact shape belongs to the LLM provider (step 5/6); the store only
 #   promises to give back what it was given.

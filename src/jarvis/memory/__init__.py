@@ -1,7 +1,7 @@
 """Persistent memory: SQLite for facts and history, ChromaDB for semantics.
 
 ``MemoryManager`` is the only entry point the agent uses; the stores
-behind it are swappable and individually testable. See ADR-0006.
+behind it are swappable and individually testable. See ADR-0008.
 """
 
 from jarvis.memory.memory_manager import MemoryManager, RecalledContext
