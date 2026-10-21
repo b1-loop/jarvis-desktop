@@ -75,3 +75,37 @@ def test_local_mode_needs_no_credentials(make_settings: Callable[..., Settings])
 
 def test_cloud_mode_with_key_validates(make_settings: Callable[..., Settings]) -> None:
     make_settings(mode=RuntimeMode.CLOUD, anthropic_api_key="sk-ant-test").validate_for_mode()
+
+
+def test_agent_settings_default_to_asking_and_a_safe_allowlist(
+    make_settings: Callable[..., Settings],
+) -> None:
+    settings = make_settings()
+
+    assert settings.confirm_destructive is True
+    assert "git" in settings.shell_allowlist
+    assert "cmd" not in settings.shell_allowlist
+    assert settings.shell_timeout_seconds == 30
+    assert settings.shell_working_root is None
+
+
+def test_shell_allowlist_accepts_a_comma_separated_env_value(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    monkeypatch.setenv("JARVIS_SHELL_ALLOWLIST", "git, python ,, uv")
+    monkeypatch.setenv("JARVIS_CONFIRM_DESTRUCTIVE", "false")
+    monkeypatch.setenv("JARVIS_SHELL_WORKING_ROOT", "")
+
+    settings = make_settings()
+
+    assert settings.shell_allowlist == ["git", "python", "uv"]
+    assert settings.confirm_destructive is False
+    assert settings.shell_working_root is None
+
+
+def test_shell_working_root_is_a_path(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    monkeypatch.setenv("JARVIS_SHELL_WORKING_ROOT", "C:/projects")
+
+    assert make_settings().shell_working_root == Path("C:/projects")
