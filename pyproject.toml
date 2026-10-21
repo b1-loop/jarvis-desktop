@@ -152,6 +152,7 @@ module = [
   "edge_tts.*",
   "chromadb.*",
   "spotipy.*",
+  "msal.*",
   "pystray.*",
   "googleapiclient.*",
   "google_auth_oauthlib.*",
