@@ -19,6 +19,9 @@ from jarvis.utils.errors import ConfigError
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
+LLMProvider = Literal["anthropic", "ollama", "local"]
+"""Which ``LLMClient`` answers: Claude, a local Ollama server, or llama.cpp (step 12)."""
+
 
 class RuntimeMode(StrEnum):
     """Which set of providers the pipeline is assembled from.
@@ -56,12 +59,17 @@ class Settings(BaseSettings):
     models_dir: Path = Path("models")
 
     # LLM
+    llm_provider: LLMProvider = "anthropic"
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     llm_model: str = "claude-sonnet-5-5"
     vision_model: str = "claude-sonnet-5-5"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:7b"
 
     # Speech
     stt_model: str = "small"
+    stt_device: str = "auto"
+    stt_compute_type: str = "auto"
     tts_voice: str = "en-GB-RyanNeural"
     local_llm_model: Path = Path("models/llama.gguf")
     local_stt_model: Path = Path("models/ggml-base.bin")
@@ -98,12 +106,13 @@ class Settings(BaseSettings):
         root calls this right before building providers.
 
         Raises:
-            ConfigError: If CLOUD mode is selected without an Anthropic key.
+            ConfigError: If CLOUD mode uses the Anthropic provider without a key.
         """
-        if self.mode is RuntimeMode.CLOUD and self.anthropic_api_key is None:
+        needs_key = self.mode is RuntimeMode.CLOUD and self.llm_provider == "anthropic"
+        if needs_key and self.anthropic_api_key is None:
             raise ConfigError(
-                "ANTHROPIC_API_KEY is required in cloud mode. "
-                "Set it in .env or start with --mode local."
+                "ANTHROPIC_API_KEY is required in cloud mode with the anthropic provider. "
+                "Set it in .env, set JARVIS_LLM_PROVIDER=ollama, or start with --mode local."
             )
 
 
@@ -116,3 +125,7 @@ class Settings(BaseSettings):
 # - Model names default to the current Claude Sonnet because it has the best
 #   latency/quality balance for a conversational assistant; Opus is a config
 #   change away.
+# - llm_provider is separate from RuntimeMode on purpose: Ollama is a third
+#   option that runs locally but is not the fully offline LOCAL mode (it
+#   still pairs with faster-whisper and edge-tts). The default Ollama model
+#   is a small tool-capable one so tool calling works out of the box.
