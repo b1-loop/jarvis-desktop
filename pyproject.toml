@@ -26,6 +26,7 @@ dependencies = [
   "numpy>=2.1",
   "aiosqlite>=0.20",
   "pyyaml>=6.0",
+  "tzdata>=2024.1",
   "httpx>=0.27",
 ]
 
@@ -88,6 +89,8 @@ artifacts = ["src/jarvis/_native/*.pyd", "src/jarvis/_native/*.so"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests", "scripts"]
+# Agent worktrees live under .claude/ inside the checkout; they are separate repos.
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = [

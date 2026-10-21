@@ -27,7 +27,8 @@ class RuntimeMode(StrEnum):
     """Which set of providers the pipeline is assembled from.
 
     CLOUD trades privacy and cost for quality and simplicity; LOCAL runs
-    entirely offline. The trade-offs are documented in ADR-0013.
+    entirely offline. The trade-offs are documented in the CLOUD vs LOCAL ADR
+    listed in docs/adr/README.md.
     """
 
     CLOUD = "cloud"
@@ -86,6 +87,10 @@ class Settings(BaseSettings):
     home_assistant_token: SecretStr | None = Field(
         default=None, validation_alias="HOME_ASSISTANT_TOKEN"
     )
+
+    # Proactive
+    routines_dir: Path = Path("routines")
+    proactive_poll_seconds: int = Field(default=60, gt=0)
 
     @field_validator("log_level", mode="before")
     @classmethod

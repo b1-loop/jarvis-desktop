@@ -78,6 +78,22 @@ def test_cloud_mode_with_key_validates(make_settings: Callable[..., Settings]) -
     make_settings(mode=RuntimeMode.CLOUD, anthropic_api_key="sk-ant-test").validate_for_mode()
 
 
+def test_proactive_settings_have_defaults_and_read_env(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    assert make_settings().routines_dir == Path("routines")
+    assert make_settings().proactive_poll_seconds == 60
+
+    monkeypatch.setenv("JARVIS_ROUTINES_DIR", "C:/jarvis/routines")
+    monkeypatch.setenv("JARVIS_PROACTIVE_POLL_SECONDS", "15")
+    settings = make_settings()
+
+    assert settings.routines_dir == Path("C:/jarvis/routines")
+    assert settings.proactive_poll_seconds == 15
+    with pytest.raises(ValidationError):
+        make_settings(proactive_poll_seconds=0)
+
+
 def test_web_and_document_defaults(make_settings: Callable[..., Settings]) -> None:
     settings = make_settings()
 
