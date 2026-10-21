@@ -12,4 +12,5 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | 0004 | Interfaces and dependency injection between stages *(planned, step 6)* | Proposed |
 | 0005 | Central confirmation policy for side-effecting tools *(planned, step 6)* | Proposed |
 | 0006 | Plugin architecture for tools *(planned, step 6)* | Proposed |
-| 0007 | CLOUD vs LOCAL runtime modes *(planned, step 12)* | Proposed |
+| [0008](0008-imgui-overlay.md) | Dear ImGui on DirectX 11 for the status overlay | Accepted |
+| 0009 | CLOUD vs LOCAL runtime modes *(planned, step 12)* | Proposed |

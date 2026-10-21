@@ -40,7 +40,7 @@ jarvis/
     proactive/            scheduler, triggers, routines
     integrations/         email, calendar, music, chat, smart home providers
     vision/               screenshot to vision model
-    ui/                   tray icon, dashboard
+    ui/                   overlay facade, tray icon, dashboard
     utils/                errors, logging, timing, retry, sandbox
   tests/                  mirrors src/
   scripts/                build_native, download_models, record_test_audio, benchmark_latency
@@ -72,6 +72,7 @@ transition `SPEAKING → LISTENING` triggered by VAD activity during playback.
 | Playback callback | miniaudio (C++) | drain the `Playback` chunk queue under `try_lock`; silence when contended or empty | playback mutex (never blocks) |
 | Event loop | Python asyncio | poll events every 10 ms, orchestrate STT/LLM/TTS, enqueue TTS chunks | engine mutex, playback mutex (brief) |
 | Executor threads | Python | STT and other CPU-bound Python work | none |
+| Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11 rendering, DPI changes | overlay model mutex (read) |
 
 Rules that keep this safe:
 
@@ -82,6 +83,9 @@ Rules that keep this safe:
 - `AudioPipeline` is single-threaded by construction. The engine wraps every
   call to it in one mutex; the Python side only takes that mutex for
   microsecond-scale operations (poll, toggle listening, take audio).
+- The overlay never calls back into Python either: the event loop pushes
+  state, levels and text through setters that take the model mutex for
+  nanoseconds, and the UI thread draws a snapshot (ADR-0008).
 - Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
   when a barge-in target is set, so it takes effect on the next device period
   without waiting for the event loop. Python learns about it afterwards via
