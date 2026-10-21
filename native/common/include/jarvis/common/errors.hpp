@@ -29,4 +29,10 @@ public:
     using NativeError::NativeError;
 };
 
+/// Compressed audio (MP3 from the TTS service) could not be decoded.
+class DecodeError : public NativeError {
+public:
+    using NativeError::NativeError;
+};
+
 }  // namespace jarvis
