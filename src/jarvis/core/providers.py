@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from jarvis import _native
-from jarvis.config import LLMProvider, RuntimeMode, Settings
+from jarvis.config import LLMProvider, RuntimeMode, Settings, TTSProviderName
 from jarvis.llm.base import LLMClient
 from jarvis.llm.factory import create_llm_client
 from jarvis.stt.base import STT
@@ -88,14 +88,18 @@ def build_stt(settings: Settings, *, probe: DependencyProbe = DEFAULT_PROBE) -> 
 
 
 def build_tts(settings: Settings, *, probe: DependencyProbe = DEFAULT_PROBE) -> TTS:
-    """Text-to-speech for ``settings.mode``; the voice loads lazily on first use.
+    """Text-to-speech for ``settings.tts_provider`` (``auto``: the mode's voice).
+
+    The voice loads lazily on first use. ``JARVIS_TTS_PROVIDER=piper`` keeps
+    CLOUD mode's STT and LLM but speaks with the local Piper voice, which
+    has no network round trip per sentence (ADR-0030).
 
     Raises:
-        ConfigError: CLOUD without the ``cloud`` extra or the native
-            ``jarvis_audio`` build (it decodes edge-tts' MP3); LOCAL without
-            the ``local`` extra or the Piper voice and its ``.onnx.json``.
+        ConfigError: edge-tts without the ``cloud`` extra or the native
+            ``jarvis_audio`` build (it decodes edge-tts' MP3); Piper without
+            the ``local`` extra or the voice and its ``.onnx.json``.
     """
-    if settings.mode is RuntimeMode.LOCAL:
+    if effective_tts_provider(settings) == "piper":
         return PiperTTS.from_settings(settings)
     _require_package(probe, "edge_tts", "edge-tts")
     problem = probe.native_problem("jarvis_audio")
@@ -105,6 +109,13 @@ def build_tts(settings: Settings, *, probe: DependencyProbe = DEFAULT_PROBE) -> 
             f"unavailable ({problem}); {BUILD_REMEDY}"
         )
     return EdgeTTS.from_settings(settings)
+
+
+def effective_tts_provider(settings: Settings) -> TTSProviderName:
+    """``edge`` or ``piper``: the configured provider, or the mode's own for ``auto``."""
+    if settings.tts_provider != "auto":
+        return settings.tts_provider
+    return "piper" if settings.mode is RuntimeMode.LOCAL else "edge"
 
 
 def build_llm(settings: Settings) -> LLMClient:

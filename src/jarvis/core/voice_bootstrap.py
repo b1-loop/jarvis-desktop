@@ -117,6 +117,7 @@ class EngineFactory(Protocol):
         wake_word: bool,
         min_speech_ms: int | None,
         wake_word_threshold: float | None = None,
+        silence_end_ms: int | None = None,
     ) -> NativeEngine:
         """Load the models and return an unstarted engine."""
 
@@ -406,6 +407,8 @@ class VoiceFrontEndBuilder:
             speaker = Speaker(self._factories.playback(tts.sample_rate))
         except native_error as error:
             raise VoiceUnavailableError(f"no audio output device: {error}") from error
+        if isinstance(tts, _WarmsUp):
+            await tts.warm_up()  # a local voice (Piper) loads in seconds, not on the first answer
         stt = await self._load_stt(request.settings)
         hotkeys = HotkeyRouter(request.platform)
         triggers = await self._trigger(request, audio, hotkeys)
@@ -429,6 +432,7 @@ class VoiceFrontEndBuilder:
             native,
             poll_interval=self._factories.poll_interval,
             max_utterance_seconds=settings.max_utterance_seconds,
+            silence_end_ms=settings.vad_silence_end_ms,
         )
         try:
             await request.stack.enter_async_context(engine)
@@ -460,6 +464,7 @@ class VoiceFrontEndBuilder:
             wake_word=wake_word,
             min_speech_ms=settings.vad_min_speech_ms,
             wake_word_threshold=settings.wake_word_threshold,
+            silence_end_ms=settings.vad_silence_end_ms,
         )
 
     async def _load_stt(self, settings: Settings) -> STT:

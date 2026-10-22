@@ -35,7 +35,14 @@ Stages, all from the same run:
   what the user waits for after they stop talking;
 * barge-in: a second prompt is replayed while Jarvis is speaking; speech
   onset -> native playback stop (engine sample clock) and the moment Python
-  sees ``SPEECH_STARTED`` -> ``LISTENING``.
+  sees ``SPEECH_STARTED`` -> ``LISTENING``;
+* the parts of those stages, from the providers' own log events (ADR-0030):
+  the STT decode, Ollama's model load and prompt evaluation (and the prompt
+  size in tokens), and the TTS provider's time to its first audio chunk.
+
+``--set KEY=VALUE`` (repeatable) overrides any setting for the run, e.g.
+``--set stt_beam_size=5`` or ``--set tts_provider=piper``, so variants are
+compared on the same machine without editing ``.env``.
 
 Modes: ``cloud`` (faster-whisper + Ollama + edge-tts, the project default;
 Ollama is local but the TTS needs the network) and ``local`` (whisper.cpp +
@@ -52,6 +59,7 @@ import contextlib
 import hashlib
 import importlib
 import json
+import logging
 import platform
 import shutil
 import statistics
@@ -68,6 +76,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import numpy as np
+import structlog
 from numpy.typing import NDArray
 
 from jarvis import _native
@@ -81,6 +90,7 @@ from jarvis.core.events import (
     ToolCallStarted,
     TranscriptReady,
 )
+from jarvis.core.providers import effective_tts_provider
 from jarvis.core.voice_bootstrap import VoiceFactories, VoiceFrontEndBuilder
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.stt.faster_whisper import resample_linear
@@ -229,11 +239,21 @@ BARGE_IN_TO_STOP: Final = Stage(
 BARGE_IN_TO_LISTENING: Final = Stage(
     "barge_in_to_listening", "Barge-in: playback stopped -> LISTENING (Python)"
 )
+STT_DECODE: Final = Stage("stt_decode", "of which: STT decode")
+LLM_LOAD: Final = Stage("llm_load", "of which: LLM model load (Ollama)")
+LLM_PROMPT_EVAL: Final = Stage("llm_prompt_eval", "of which: LLM prompt evaluation (Ollama)")
+LLM_PROMPT_TOKENS: Final = Stage("llm_prompt_tokens", "LLM prompt size (tokens, not ms)")
+TTS_FIRST_CHUNK: Final = Stage("tts_first_chunk", "of which: TTS first audio chunk")
 STAGES: Final = (
     HOTKEY_TO_LISTENING,
     SPEECH_END_TO_TRANSCRIPT,
+    STT_DECODE,
     TRANSCRIPT_TO_TOKEN,
+    LLM_LOAD,
+    LLM_PROMPT_EVAL,
+    LLM_PROMPT_TOKENS,
     SENTENCE_TO_AUDIO,
+    TTS_FIRST_CHUNK,
     SPEECH_END_TO_AUDIO,
     LAST_WORD_TO_AUDIO,
     BARGE_IN_TO_STOP,
@@ -246,6 +266,20 @@ SAMPLE_STAGES: Final = {
     "voice.first_sentence_to_audio": SENTENCE_TO_AUDIO.key,
 }
 """``LatencySample`` stage names (``core/voice_latency.py``) -> table rows."""
+
+LOG_STAGES: Final = (
+    ("stt.transcribed", "elapsed_ms", STT_DECODE.key),
+    ("llm.turn_done", "load_ms", LLM_LOAD.key),
+    ("llm.turn_done", "prompt_eval_ms", LLM_PROMPT_EVAL.key),
+    ("llm.turn_done", "input_tokens", LLM_PROMPT_TOKENS.key),
+    ("tts.synthesized", "first_chunk_ms", TTS_FIRST_CHUNK.key),
+    ("tts.first_chunk", "first_chunk_ms", TTS_FIRST_CHUNK.key),
+)
+"""(log event, field, table row): the first such event of a turn breaks a stage down.
+
+The LLM rows describe the turn's first model request, the one the user waits
+for; Piper reports its first chunk at debug level, edge-tts in its summary."""
+TAPPED_EVENTS: Final = frozenset(event for event, _field, _key in LOG_STAGES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,6 +500,45 @@ class Recorder:
         return mark
 
 
+class LogTap:
+    """A structlog processor that copies provider timing events into the current recorder.
+
+    Installed in front of the normal processors with logging opened at
+    DEBUG, so it sees the events it needs whatever ``--log-level`` says;
+    events below that level are dropped after being copied, which keeps
+    the console as quiet as before.
+    """
+
+    def __init__(self, show_level: int = logging.WARNING) -> None:
+        self.recorder: Recorder | None = None
+        self.show_level = show_level
+
+    def __call__(self, _logger: object, method: str, event_dict: dict[str, Any]) -> dict[str, Any]:
+        """Copy a tapped event, then pass it on or drop it by level."""
+        if self.recorder is not None and event_dict.get("event") in TAPPED_EVENTS:
+            self.recorder.add("log", (event_dict["event"], dict(event_dict)))
+        if method_level(method) < self.show_level:
+            raise structlog.DropEvent
+        return event_dict
+
+
+def method_level(method: str) -> int:
+    """The ``logging`` level of a structlog method name (``exception`` is ERROR)."""
+    names = logging.getLevelNamesMapping()
+    return names.get(method.upper(), logging.ERROR)
+
+
+LOG_TAP: Final = LogTap()
+
+
+def install_log_tap(level: str) -> None:
+    """Configure Jarvis's logging with :data:`LOG_TAP` in front, showing ``level`` and up."""
+    configure_logging("DEBUG")
+    LOG_TAP.show_level = logging.getLevelNamesMapping()[level.upper()]
+    processors = structlog.get_config()["processors"]
+    structlog.configure(processors=[LOG_TAP, *processors])
+
+
 class TimedPlayback:
     """``NativePlayback`` decorator that records when audio reaches the device."""
 
@@ -576,6 +649,8 @@ class SessionSpec:
     mode: str
     language: str
     sink: str
+    overrides: tuple[tuple[str, str], ...] = ()
+    """``--set`` values, validated by ``Settings`` like environment variables."""
 
 
 class Session:
@@ -594,6 +669,7 @@ class Session:
     async def __aenter__(self) -> Session:
         self.feed = _native.load("jarvis_audio").ReplayFeed()
         self.settings = session_settings(self.spec)
+        LOG_TAP.recorder = self.recorder
         self._application = await self._build()
         self._task = asyncio.create_task(self._application.run(), name="bench-app")
         return self
@@ -618,8 +694,8 @@ class Session:
         return application
 
     def _factories(self) -> Any:
-        def engine(paths: Any, *, wake_word: bool, min_speech_ms: int | None) -> ReplayEngine:
-            native = replay_engine(paths, self.feed, wake_word, min_speech_ms)
+        def engine(paths: Any, *, wake_word: bool, **tuning: Any) -> ReplayEngine:
+            native = replay_engine(paths, self.feed, wake_word, tuning)
             return ReplayEngine(native, self.recorder)
 
         return VoiceFactories(engine=engine, playback=self._playback)
@@ -711,12 +787,19 @@ class ApplicationStoppedError(JarvisError):
     """The assistant under test exited; the scenario cannot continue."""
 
 
-def replay_engine(paths: Any, feed: Any, wake_word: bool, min_speech_ms: int | None) -> Any:
-    """The real ``jarvis_audio.AudioEngine`` with ``feed`` in place of the microphone."""
+def replay_engine(paths: Any, feed: Any, wake_word: bool, tuning: dict[str, Any]) -> Any:
+    """The real ``jarvis_audio.AudioEngine`` with ``feed`` in place of the microphone.
+
+    ``tuning`` holds the segmenter settings the application passes to its
+    engine factory (minimum speech, silence hangover), so the benchmark
+    measures the configured values.
+    """
     module = _native.load("jarvis_audio")
     config = module.EngineConfig()
-    if min_speech_ms is not None:
-        config.pipeline.segmenter.min_speech_ms = min_speech_ms
+    segmenter = config.pipeline.segmenter
+    for name in ("min_speech_ms", "silence_end_ms"):
+        if tuning.get(name) is not None:
+            setattr(segmenter, name, tuning[name])
     models = (paths.melspectrogram, paths.embedding, paths.wake_word) if wake_word else None
     return module.AudioEngine(paths.vad, models, config, replay=feed)
 
@@ -738,7 +821,7 @@ def session_settings(spec: SessionSpec) -> Any:
         overrides |= {"mode": RuntimeMode.LOCAL, "llm_provider": "local"}
     else:
         overrides |= {"mode": RuntimeMode.CLOUD, "llm_provider": "ollama"}
-    return Settings().model_copy(update=overrides)
+    return Settings(**dict(spec.overrides)).model_copy(update=overrides)
 
 
 def providers_of(settings: Any) -> dict[str, str]:
@@ -750,10 +833,13 @@ def providers_of(settings: Any) -> dict[str, str]:
             "tts": f"Piper {settings.local_tts_model.name}",
         }
     whisper = settings.whisper_model(gpu=settings.stt_device != "cpu")
+    piper = effective_tts_provider(settings) == "piper"
     return {
-        "stt": f"faster-whisper {whisper} ({settings.stt_device})",
+        "stt": f"faster-whisper {whisper} ({settings.stt_device}, beam {settings.stt_beam_size})",
         "llm": f"Ollama {settings.ollama_model}",
-        "tts": f"edge-tts {settings.tts_voice}",
+        "tts": f"Piper {settings.local_tts_model.name}"
+        if piper
+        else f"edge-tts {settings.tts_voice}",
     }
 
 
@@ -763,6 +849,7 @@ def turn_metrics(recorder: Recorder, start: int, last_word_at: float) -> dict[st
     for mark in recorder.marks[start:]:
         if mark.kind == "sample" and mark.value[0] in SAMPLE_STAGES:
             metrics.setdefault(SAMPLE_STAGES[mark.value[0]], round(mark.value[1], 1))
+    metrics |= log_metrics(recorder, start)
     transcript = recorder.find("transcript", start)
     metrics["transcript"] = None if transcript is None else transcript.value
     metrics["tools"] = [mark.value for mark in recorder.marks[start:] if mark.kind == "tool"]
@@ -773,6 +860,19 @@ def turn_metrics(recorder: Recorder, start: int, last_word_at: float) -> dict[st
     if first_audio is not None:
         metrics[SPEECH_END_TO_AUDIO.key] = round((first_audio.at - speech_end.at) * MS, 1)
         metrics[LAST_WORD_TO_AUDIO.key] = round((first_audio.at - last_word_at) * MS, 1)
+    return metrics
+
+
+def log_metrics(recorder: Recorder, start: int) -> dict[str, float]:
+    """Stage parts from the first tapped provider events of the turn at mark ``start``."""
+    metrics: dict[str, float] = {}
+    for mark in recorder.marks[start:]:
+        if mark.kind != "log":
+            continue
+        event, fields = mark.value
+        for name, field_name, key in LOG_STAGES:
+            if event == name and fields.get(field_name) is not None:
+                metrics.setdefault(key, round(float(fields[field_name]), 1))
     return metrics
 
 
@@ -813,6 +913,7 @@ class Options:
     barge_in_runs: int
     output: Path
     log_level: str
+    overrides: tuple[tuple[str, str], ...] = ()
 
 
 def parse_args(argv: Sequence[str] | None = None) -> Options:
@@ -830,6 +931,13 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
     )
     parser.add_argument("--output", type=Path, default=RESULTS_FILE)
     parser.add_argument("--log-level", default="WARNING", help="Jarvis log level (stderr)")
+    parser.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="override a setting for this run, e.g. stt_beam_size=5 (repeatable)",
+    )
     args = parser.parse_args(argv)
     return Options(
         modes=tuple(args.modes.split(",")),
@@ -839,7 +947,16 @@ def parse_args(argv: Sequence[str] | None = None) -> Options:
         barge_in_runs=args.barge_in_runs,
         output=args.output,
         log_level=args.log_level,
+        overrides=tuple(parse_override(item) for item in args.set),
     )
+
+
+def parse_override(item: str) -> tuple[str, str]:
+    """``"stt_beam_size=5"`` -> ``("stt_beam_size", "5")``; ``Settings`` validates the value."""
+    key, separator, value = item.partition("=")
+    if not separator or not key.strip():
+        raise argparse.ArgumentTypeError(f"--set expects KEY=VALUE, got {item!r}")
+    return key.strip(), value.strip()
 
 
 def scenarios_for(options: Options) -> Iterator[SessionSpec]:
@@ -848,7 +965,7 @@ def scenarios_for(options: Options) -> Iterator[SessionSpec]:
         for language in options.languages:
             if mode == "local" and language != "en":
                 continue
-            yield SessionSpec(mode, language, options.sink)
+            yield SessionSpec(mode, language, options.sink, options.overrides)
 
 
 async def measure_prompt(
@@ -945,13 +1062,18 @@ async def run(options: Options) -> list[ScenarioResult]:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the benchmark, print the table and write the JSON report."""
     options = parse_args(argv)
-    configure_logging(options.log_level)
+    install_log_tap(options.log_level)
     results = asyncio.run(run(options))
     if not results:
         print("nothing was measured")
         return 1
     hardware = hardware_info()
-    config = {"runs_per_prompt": options.runs, "warm_up_runs": 1, "sink": options.sink}
+    config = {
+        "runs_per_prompt": options.runs,
+        "warm_up_runs": 1,
+        "sink": options.sink,
+        "overrides": dict(options.overrides),
+    }
     options.output.parent.mkdir(parents=True, exist_ok=True)
     document = report_json(results, hardware=hardware, config=config)
     options.output.write_text(json.dumps(document, indent=2, ensure_ascii=False), "utf-8")
@@ -975,6 +1097,11 @@ if __name__ == "__main__":
 #   not the pipeline's latency.
 # - Importing this module needs no native build: jarvis loads jarvis_audio
 #   lazily, so the tests of the pure helpers run in the Linux CI lane too.
+# - Stage parts come from the providers' log events (a structlog processor in
+#   front of the normal ones) rather than new bus events: the timings exist
+#   only inside the providers (Ollama's server durations, the decode time
+#   behind asyncio.to_thread), and the log lines are already part of their
+#   contract with the person reading the log.
 # - Barge-in onset -> stop is measured on the engine's sample clock: the
 #   native stop runs in the same worker iteration as SPEECH_STARTED, so the
 #   event's sample position is the stop's position. It includes the

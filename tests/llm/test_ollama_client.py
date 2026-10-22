@@ -4,7 +4,9 @@ from typing import Any
 
 import httpx
 import pytest
+from structlog.testing import CapturingLogger
 
+from jarvis.llm import ollama_client as ollama_module
 from jarvis.llm.base import (
     AssistantMessage,
     Done,
@@ -22,7 +24,14 @@ from jarvis.llm.base import (
     ToolResultMessage,
     UserMessage,
 )
-from jarvis.llm.ollama_client import OllamaClient, is_retryable, to_message_params, to_tool_param
+from jarvis.llm.ollama_client import (
+    OllamaClient,
+    is_retryable,
+    keep_alive_param,
+    server_timings_ms,
+    to_message_params,
+    to_tool_param,
+)
 from jarvis.utils.retry import RetryPolicy
 
 TOOL = ToolDefinition("open_app", "Open an application", {"type": "object", "properties": {}})
@@ -437,3 +446,112 @@ async def test_a_tool_call_without_text_is_not_an_empty_reply() -> None:
     await collect(make_client(server, think=False), [UserMessage("öppna")], [TOOL])
 
     assert len(server.requests) == 1
+
+
+# -- keeping the model resident (ADR-0030) ---------------------------------------
+
+
+def timed_done_chunk(load_ms: float) -> dict[str, Any]:
+    return done_chunk() | {
+        "load_duration": int(load_ms * 1_000_000),
+        "prompt_eval_duration": 250_000_000,
+        "eval_duration": 900_000_000,
+    }
+
+
+async def test_every_request_keeps_the_model_loaded_with_a_fixed_context() -> None:
+    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk()))])
+
+    await collect(make_client(server, keep_alive="-1", num_ctx=8192), [UserMessage("hi")])
+
+    assert server.requests[0]["keep_alive"] == -1
+    assert server.requests[0]["options"] == {"num_ctx": 8192}
+
+
+async def test_the_default_keeps_the_model_for_thirty_minutes_and_the_servers_context() -> None:
+    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk()))])
+
+    await collect(make_client(server), [UserMessage("hi")])
+
+    assert server.requests[0]["keep_alive"] == "30m"
+    assert "options" not in server.requests[0]
+
+
+@pytest.mark.parametrize(
+    ("configured", "sent"), [("30m", "30m"), (" 2h ", "2h"), ("-1", -1), ("600", 600)]
+)
+def test_keep_alive_numbers_are_sent_as_seconds(configured: str, sent: str | int) -> None:
+    assert keep_alive_param(configured) == sent
+
+
+async def test_warm_up_loads_the_model_with_an_empty_chat() -> None:
+    server = FakeServer([httpx.Response(200, json={"done": True, "done_reason": "load"})])
+
+    await make_client(server, num_ctx=4096).warm_up()
+
+    assert server.requests == [
+        {
+            "model": "qwen2.5:7b",
+            "keep_alive": "30m",
+            "options": {"num_ctx": 4096},
+            "messages": [],
+            "stream": False,
+        }
+    ]
+
+
+async def test_a_failed_warm_up_is_logged_not_raised(monkeypatch: pytest.MonkeyPatch) -> None:
+    logger = CapturingLogger()
+    monkeypatch.setattr(ollama_module, "log", logger)
+    server = FakeServer([httpx.ConnectError("refused")])
+
+    await make_client(server).warm_up()
+
+    (warning,) = [call for call in logger.calls if call.method_name == "warning"]
+    assert warning.args[0] == "llm.warm_up_failed"
+    assert "Is it running?" in warning.kwargs["error"]
+
+
+def test_server_timings_are_converted_to_milliseconds() -> None:
+    assert server_timings_ms(timed_done_chunk(load_ms=12.5)) == {
+        "load_ms": 12.5,
+        "prompt_eval_ms": 250.0,
+        "eval_ms": 900.0,
+    }
+    assert server_timings_ms({}) == {"load_ms": 0.0, "prompt_eval_ms": 0.0, "eval_ms": 0.0}
+
+
+@pytest.mark.parametrize(("load_ms", "warned"), [(15.0, False), (4200.0, True)])
+async def test_a_turn_that_had_to_load_the_model_is_warned_about(
+    monkeypatch: pytest.MonkeyPatch, load_ms: float, warned: bool
+) -> None:
+    logger = CapturingLogger()
+    monkeypatch.setattr(ollama_module, "log", logger)
+    server = FakeServer([httpx.Response(200, content=ndjson(timed_done_chunk(load_ms)))])
+
+    await collect(make_client(server), [UserMessage("hi")])
+
+    warnings = [call.args[0] for call in logger.calls if call.method_name == "warning"]
+    assert warnings == (["llm.model_was_not_loaded"] if warned else [])
+    (done,) = [call for call in logger.calls if call.args[0] == "llm.turn_done"]
+    assert done.kwargs["load_ms"] == load_ms
+
+
+async def test_from_settings_passes_keep_alive_and_context(
+    make_settings: Callable[..., Any],
+) -> None:
+    server = FakeServer([httpx.Response(200, content=ndjson(text_chunk("Hej."), done_chunk()))])
+    settings = make_settings(
+        ollama_base_url="http://ollama.test:11434", ollama_keep_alive="1h", ollama_num_ctx=6144
+    )
+    client = OllamaClient.from_settings(settings)
+    await client.aclose()
+    client._http = httpx.AsyncClient(
+        base_url=settings.ollama_base_url, transport=httpx.MockTransport(server)
+    )
+
+    await collect(client, [UserMessage("hi")])
+
+    assert server.requests[0]["keep_alive"] == "1h"
+    assert server.requests[0]["options"] == {"num_ctx": 6144}
+    await client.aclose()

@@ -14,8 +14,10 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import locale
 import time
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
 import numpy as np
@@ -145,7 +147,8 @@ class PiperTTS(TTS):
 
     def _load(self) -> PiperSynthesizer:
         try:
-            return self._factory()
+            with keep_character_locale():
+                return self._factory()
         except JarvisError:
             raise
         except Exception as error:
@@ -162,10 +165,32 @@ class PiperTTS(TTS):
 
 
 async def _call[T](step: Callable[[], T]) -> T:
+    def guarded() -> T:
+        with keep_character_locale():
+            return step()
+
     try:
-        return await asyncio.to_thread(step)
+        return await asyncio.to_thread(guarded)
     except Exception as error:
         raise SynthesisError(f"Piper synthesis failed: {error}") from error
+
+
+@contextmanager
+def keep_character_locale() -> Iterator[None]:
+    """Undo the process-wide ``LC_CTYPE`` change espeak-ng makes on every Piper call.
+
+    espeak-ng switches the C runtime to ``en_US.UTF-8`` while it loads and
+    phonemises. On Windows, Python then decodes ANSI strings from the C
+    runtime (the time-zone name, "Västeuropa, sommartid") as UTF-8 with
+    lone surrogates, and the next request that carried such text to the
+    LLM failed to encode as JSON: Jarvis stopped on its second turn after
+    speaking with Piper (ADR-0030).
+    """
+    saved = locale.setlocale(locale.LC_CTYPE)
+    try:
+        yield
+    finally:
+        locale.setlocale(locale.LC_CTYPE, saved)
 
 
 def read_voice_sample_rate(voice_path: Path) -> int:
@@ -229,6 +254,11 @@ def piper_voice_factory(voice_path: Path) -> VoiceFactory:
 #   was verified in both import orders on the dev machine (1.31 on both
 #   sides). A version skew between the two would show up in the native
 #   Piper test.
+# - The locale guard runs inside the worker thread, around each call into
+#   Piper. setlocale is process-wide, so another thread formatting a time
+#   zone in the instant between espeak-ng's change and the restore could
+#   still see the UTF-8 locale; the window is one phonemisation call, and
+#   the alternative (patching espeak-ng) is not ours to ship.
 # - Piper splits text into sentences itself and yields one chunk each, so a
 #   multi-sentence input still streams; the orchestrator normally sends one
 #   sentence, which arrives as one chunk.

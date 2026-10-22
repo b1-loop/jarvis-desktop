@@ -3,8 +3,9 @@
 :class:`VoiceInput` waits for a trigger (wake word or hotkey), plays an
 earcon, moves the state machine to LISTENING, records one utterance and
 transcribes it. :class:`VoiceOutput` speaks the agent's sentences as they
-stream: each sentence is synthesised by the TTS provider while the
-previous one is still playing, and :meth:`VoiceOutput.flush` reports
+stream: each sentence is synthesised by the TTS provider as soon as the
+agent produces it, concurrently with the sentences before it and while
+they play, and :meth:`VoiceOutput.flush` reports
 whether the user interrupted. :class:`VoiceConfirmation` asks a yes/no
 question out loud. The orchestrator drives all three exactly as it drives
 the terminal in text mode (ADR-0014, ADR-0019).
@@ -46,7 +47,7 @@ TTS_FAILED_NOTICE: Final = "Speech output failed ({error}); answers are printed 
 DEFAULT_LISTEN_TIMEOUT: Final = 6.0
 DEFAULT_MIN_TRANSCRIPT_CHARS: Final = 2
 DEFAULT_LOOKAHEAD: Final = 2
-"""Sentences synthesised ahead of the one playing; bounds wasted work on barge-in."""
+"""Sentences queued, and synthesised, behind the one playing; bounds work lost to a barge-in."""
 CHUNK_POLL_SECONDS: Final = 0.02
 """How often a playing sentence checks for a native stop while waiting for audio."""
 
@@ -307,10 +308,13 @@ class VoiceOutput:
     """``OutputSink`` that speaks: TTS per sentence, pipelined into the speaker.
 
     Two worker tasks connected by a bounded queue: the synthesiser turns
-    sentences into chunk queues, the player feeds them to the speaker in
-    order. While sentence *n* plays, sentence *n + 1* is already being
-    synthesised. Every sentence is also printed (``Jarvis> ...``), which
-    keeps the terminal a transcript and is the TTS-failure fallback.
+    sentences into chunk queues, starting one synthesis task per sentence
+    at once, and the player feeds the queues to the speaker in order. So
+    sentences *n + 1* and *n + 2* are synthesised concurrently with each
+    other and with *n*, and a slow network round trip for one sentence no
+    longer delays the ones after it. Every sentence is also printed
+    (``Jarvis> ...``), which keeps the terminal a transcript and is the
+    TTS-failure fallback.
 
     Args:
         tts: The speech provider; its ``SynthesisError`` degrades to text.
@@ -320,7 +324,7 @@ class VoiceOutput:
         observer: Usually the barge-in controller.
         on_sentence: Called as each sentence starts (the overlay's response line).
         clock: Monotonic time for latency.
-        lookahead: Sentences synthesised ahead of the one playing.
+        lookahead: Sentences queued, and synthesised, behind the one playing.
     """
 
     def __init__(
@@ -347,6 +351,7 @@ class VoiceOutput:
         self._utterances: asyncio.Queue[_Sentence | _Flush] = asyncio.Queue(lookahead)
         self._pending: set[asyncio.Future[bool]] = set()
         self._synthesiser: asyncio.Task[None] | None = None
+        self._syntheses: set[asyncio.Task[None]] = set()
         self._player: asyncio.Task[None] | None = None
         self._answer_watch: Stopwatch | None = None
         self._answer_open = False
@@ -386,7 +391,7 @@ class VoiceOutput:
 
     async def aclose(self) -> None:
         """Stop the workers and fall silent; pending flushes report False."""
-        for task in (self._synthesiser, self._player):
+        for task in (self._synthesiser, self._player, *self._cancel_syntheses()):
             if task is not None:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -425,7 +430,22 @@ class VoiceOutput:
                 continue
             sentence = _Sentence(item, asyncio.Queue())
             await self._utterances.put(sentence)
-            await self._synthesise(sentence)
+            self._start_synthesis(sentence)
+
+    def _start_synthesis(self, sentence: _Sentence) -> None:
+        """Synthesise ``sentence`` in its own task, concurrently with earlier ones."""
+        task = asyncio.create_task(self._synthesise(sentence), name="voice-synthesis")
+        self._syntheses.add(task)
+        task.add_done_callback(self._syntheses.discard)
+        task.add_done_callback(self._on_worker_done)
+
+    def _cancel_syntheses(self) -> list[asyncio.Task[None]]:
+        """Cancel every running synthesis; returns them so a caller can await them."""
+        tasks = list(self._syntheses)
+        for task in tasks:
+            task.cancel()
+        self._syntheses.clear()
+        return tasks
 
     async def _synthesise(self, sentence: _Sentence) -> None:
         error: SynthesisError | None = None
@@ -512,6 +532,7 @@ class VoiceOutput:
         if self._synthesiser is not None:
             self._synthesiser.cancel()
             self._synthesiser = None
+        self._cancel_syntheses()
         self._sentences = asyncio.Queue()
         self._utterances = asyncio.Queue(self._lookahead)
         self._resolve_pending(False)
@@ -600,9 +621,15 @@ class VoiceConfirmation:
 
 # Design notes:
 # - Sentence pipelining with a bounded hand-off queue (``lookahead``): the
-#   synthesiser runs ahead of the player by at most two sentences, enough
-#   to hide edge-tts's first-chunk latency between sentences, little
+#   synthesiser runs ahead of the player by at most two sentences, little
 #   enough that a barge-in throws away seconds, not paragraphs, of work.
+# - One synthesis task per sentence rather than one after the other
+#   (ADR-0030): edge-tts's time to first byte is a service round trip of
+#   0.6 s at the median and up to several seconds, and a sentence that
+#   waited for the previous one's whole download inherited that delay as a
+#   gap in the speech. Measured with three Swedish sentences, the third was
+#   complete after 2.7 s sequentially and 0.9 s concurrently. The queue
+#   bound keeps at most lookahead + 1 requests in flight.
 # - Interruption is detected twice over: Speaker.play compares the native
 #   stop counter per chunk, and _next_chunk checks it while waiting for a
 #   slow TTS chunk, so a barge-in is noticed within ~20 ms even when the

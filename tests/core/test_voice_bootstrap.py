@@ -49,11 +49,19 @@ class WarmSTT(ScriptedSTT):
         self.warmed += 1
 
 
+class WarmTTS(ScriptedTTS):
+    warmed: int = 0
+
+    async def warm_up(self) -> None:
+        self.warmed += 1
+
+
 def factories(
     *,
     engine: Callable[..., BargeInEngine] | None = None,
     playback: Callable[[int], DevicePlayback] | None = None,
     stt: ScriptedSTT | None = None,
+    tts: ScriptedTTS | None = None,
 ) -> VoiceFactories:
     native = BargeInEngine()
 
@@ -65,7 +73,7 @@ def factories(
         engine=engine or default_engine,
         playback=playback or (lambda _rate: DevicePlayback()),
         stt=lambda _settings: stt or ScriptedSTT(),
-        tts=lambda _settings: ScriptedTTS(),
+        tts=lambda _settings: tts or ScriptedTTS(),
         overlay=lambda _settings: Overlay(StubOverlay()),
         autostart=lambda _settings: None,
         output_endpoint=lambda: OutputEndpoint("Headphones (USB)", "headphones"),
@@ -101,6 +109,17 @@ async def test_full_front_end_has_wake_word_hotkey_and_warm_stt(
         assert front.microphone is not None
 
 
+async def test_a_local_voice_is_loaded_before_the_first_answer(
+    make_settings: MakeSettings,
+) -> None:
+    tts = WarmTTS()
+    builder = VoiceFrontEndBuilder(factories=factories(tts=tts), write=lambda _t: None)
+    async with AsyncExitStack() as stack:
+        await builder(request(make_settings(), stack))
+
+        assert tts.warmed == 1
+
+
 async def test_wake_word_model_failure_falls_back_to_the_hotkey(
     make_settings: MakeSettings,
 ) -> None:
@@ -113,6 +132,7 @@ async def test_wake_word_model_failure_falls_back_to_the_hotkey(
         wake_word: bool,
         min_speech_ms: int | None,
         wake_word_threshold: float | None = None,
+        silence_end_ms: int | None = None,
     ) -> BargeInEngine:
         asked.append(wake_word)
         if wake_word:
@@ -141,6 +161,7 @@ async def test_no_wakeword_flag_is_hotkey_only_without_a_warning(
         wake_word: bool,
         min_speech_ms: int | None,
         wake_word_threshold: float | None = None,
+        silence_end_ms: int | None = None,
     ) -> BargeInEngine:
         asked.append(wake_word)
         return BargeInEngine()

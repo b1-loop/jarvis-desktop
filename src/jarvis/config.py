@@ -9,9 +9,11 @@ of knobs visible in one file. Field names mirror ``.env.example``.
 from __future__ import annotations
 
 import os
+import re
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Final, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import (
@@ -35,6 +37,11 @@ OverlayIntensityName = Literal["calm", "normal", "max"]
 OverlaySizeName = Literal["compact", "normal", "large"]
 """Which ``LLMClient`` answers: Claude, a local Ollama server, or in-process llama.cpp."""
 BargeInModeName = Literal["auto", "voice", "wake_word", "off"]
+TTSProviderName = Literal["auto", "edge", "piper"]
+_KEEP_ALIVE: Final = re.compile(r"-?\d+|-?(?:\d+(?:\.\d+)?(?:ns|us|ms|s|m|h))+")
+"""Ollama's ``keep_alive``: whole seconds, or a Go duration ("30m", "1h30m")."""
+LOCALHOST: Final = "localhost"
+IPV4_LOOPBACK: Final = "127.0.0.1"
 """What may interrupt speech; ``auto`` decides from the output device (ADR-0019)."""
 
 DEFAULT_STT_HOTWORDS: Final = "Jarvis, Discord, Gmail, Spotify"
@@ -157,7 +164,7 @@ class Settings(BaseSettings):
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     llm_model: str = "claude-sonnet-5-5"
     vision_model: str = "claude-sonnet-5-5"
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5:7b"
 
     # Speech
@@ -479,6 +486,56 @@ class Settings(BaseSettings):
     """faster-whisper model on the CPU, including the fallback from auto."""
     stt_hotwords: str = DEFAULT_STT_HOTWORDS
     """Names Whisper should prefer when unsure; empty disables the bias."""
+
+    # Voice latency (ADR-0030)
+    stt_beam_size: int = Field(default=1, ge=1, le=10)
+    """faster-whisper beam width; 1 (greedy) matched 5 on short commands, faster."""
+    vad_silence_end_ms: int = Field(default=700, ge=200, le=3000)
+    """Silence that ends an utterance. Lower answers sooner but cuts off users
+    who pause mid-sentence; 500 suits short commands spoken in one breath."""
+    ollama_keep_alive: str = "30m"
+    """How long Ollama keeps the chat model loaded after a request ("30m",
+    "2h", or "-1" for as long as Ollama runs). Ollama's own default is five
+    minutes, after which the next request pays a multi-second reload."""
+    llm_warm_up: bool = True
+    """Load the LLM in the background at startup instead of on the first request."""
+    ollama_num_ctx: int | None = Field(default=None, ge=512)
+    """Context window sent with every Ollama request; None keeps the server's.
+    Keep it fixed: a request with a different value reloads the model."""
+    tts_provider: TTSProviderName = "auto"
+    """``auto`` speaks with the mode's voice (edge-tts in CLOUD, Piper in LOCAL);
+    ``piper`` uses the local Piper voice (``local_tts_model``) in CLOUD mode
+    too, which removes the network round trip per sentence; ``edge`` forces
+    edge-tts."""
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def _localhost_is_ipv4(cls, value: str) -> str:
+        """Point ``localhost`` at 127.0.0.1, where Ollama listens by default.
+
+        Windows resolves ``localhost`` to ``::1`` first and Ollama does not
+        listen on IPv6, so every new connection waited about two seconds for
+        the IPv6 attempt to fail before falling back (ADR-0030).
+        """
+        parts = urlsplit(value)
+        if parts.hostname != LOCALHOST:
+            return value
+        userinfo, at, _host = parts.netloc.rpartition("@")
+        port = f":{parts.port}" if parts.port is not None else ""
+        netloc = f"{userinfo}{at}{IPV4_LOOPBACK}{port}"
+        return urlunsplit(parts._replace(netloc=netloc))
+
+    @field_validator("ollama_keep_alive")
+    @classmethod
+    def _keep_alive_is_seconds_or_a_duration(cls, value: str) -> str:
+        """Reject what Ollama would reject only at the first request ("30 min")."""
+        text = value.strip()
+        if not _KEEP_ALIVE.fullmatch(text):
+            raise ValueError(
+                f"ollama_keep_alive must be whole seconds or a duration such as 30m, 2h "
+                f"or 1h30m (-1 keeps the model loaded); got {value!r}"
+            )
+        return text
 
     def whisper_model(self, *, gpu: bool) -> str:
         """The faster-whisper model for a GPU or CPU load; ``stt_model`` wins when set."""

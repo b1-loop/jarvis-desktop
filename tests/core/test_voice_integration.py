@@ -58,9 +58,11 @@ class VoiceSession:
             wake_word: bool,
             min_speech_ms: int | None,
             wake_word_threshold: float | None = None,
+            silence_end_ms: int | None = None,
         ) -> BargeInEngine:
             assert wake_word
             assert min_speech_ms == 250
+            assert silence_end_ms == 700
             return self.native
 
         return VoiceFactories(

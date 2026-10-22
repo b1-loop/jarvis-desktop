@@ -97,6 +97,11 @@ class _Closeable(Protocol):
     async def aclose(self) -> None: ...
 
 
+@runtime_checkable
+class _WarmsUp(Protocol):
+    async def warm_up(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class FrontEndRequest:
     """What a front-end builder may use: the shared core built before it.
@@ -375,7 +380,30 @@ def build_llm(settings: Settings, stack: AsyncExitStack) -> LLMClient:
     if isinstance(client, _Closeable):
         stack.push_async_callback(client.aclose)
     log.info("llm.selected", provider=settings.llm_provider, model=client.model)
+    if settings.llm_warm_up:
+        start_llm_warm_up(client, stack)
     return client
+
+
+def start_llm_warm_up(client: LLMClient, stack: AsyncExitStack) -> asyncio.Task[None] | None:
+    """Load the model in the background while the rest of the application starts.
+
+    Without it the first request pays the model load (seconds for a 7B
+    model in Ollama). The task is cancelled with ``stack``; a failure is
+    logged, because the first real request reports the problem again with
+    its remedy (ADR-0030).
+    """
+    if not isinstance(client, _WarmsUp):
+        return None
+    task = asyncio.create_task(client.warm_up(), name="llm-warm-up")
+    task.add_done_callback(_log_warm_up_failure)
+    stack.callback(task.cancel)
+    return task
+
+
+def _log_warm_up_failure(task: asyncio.Task[None]) -> None:
+    if not task.cancelled() and (error := task.exception()) is not None:
+        log.warning("llm.warm_up_failed", error=repr(error))
 
 
 def build_registry() -> ToolRegistry:

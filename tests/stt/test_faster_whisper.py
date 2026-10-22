@@ -11,6 +11,7 @@ from jarvis.config import Settings
 from jarvis.stt import faster_whisper as faster_whisper_module
 from jarvis.stt.base import ENGINE_SAMPLE_RATE, STT, Transcript, TranscriptionError
 from jarvis.stt.faster_whisper import (
+    DecodeOptions,
     FasterWhisperSTT,
     is_gpu_library_error,
     missing_gpu_library,
@@ -63,9 +64,11 @@ async def test_transcript_joins_segments_and_carries_timings(
         {
             "samples": 16_000,
             "language": None,
-            "beam_size": 5,
+            "beam_size": 1,
             "vad_filter": False,
             "hotwords": None,
+            "without_timestamps": True,
+            "condition_on_previous_text": False,
         }
     ]
 
@@ -105,13 +108,29 @@ async def test_model_is_loaded_lazily_and_only_once() -> None:
     assert loads == 1
 
 
-async def test_warm_up_loads_the_model_ahead_of_time(model: FakeWhisperModel) -> None:
+async def test_warm_up_loads_the_model_and_decodes_a_second_of_silence(
+    model: FakeWhisperModel,
+) -> None:
     stt = FasterWhisperSTT(lambda: model)
 
     await stt.warm_up()
 
     assert stt.loaded
-    assert model.calls == []
+    assert [call["samples"] for call in model.calls] == [16_000]
+
+
+async def test_a_failing_warm_up_decode_is_logged_not_raised(
+    model: FakeWhisperModel, logs: CapturingLogger
+) -> None:
+    model.failure = RuntimeError("CUDA out of memory")
+    stt = FasterWhisperSTT(lambda: model)
+
+    await stt.warm_up()
+
+    assert stt.loaded
+    assert [call.args[0] for call in logs.calls if call.method_name == "warning"] == [
+        "stt.warm_up_failed"
+    ]
 
 
 async def test_empty_audio_is_an_empty_transcript_without_loading(
@@ -139,14 +158,31 @@ async def test_silence_with_no_segments_is_empty_but_keeps_the_duration() -> Non
     assert transcript.confidence is None
 
 
-async def test_language_and_beam_size_are_forwarded(model: FakeWhisperModel) -> None:
-    stt = FasterWhisperSTT(lambda: model, language="bg", beam_size=2, vad_filter=True)
+async def test_language_and_decode_options_are_forwarded(model: FakeWhisperModel) -> None:
+    decode = DecodeOptions(
+        beam_size=2, vad_filter=True, without_timestamps=False, condition_on_previous_text=True
+    )
+    stt = FasterWhisperSTT(lambda: model, language="bg", decode=decode)
 
     await stt.transcribe(one_second_of_noise())
 
     assert model.calls[0]["language"] == "bg"
     assert model.calls[0]["beam_size"] == 2
     assert model.calls[0]["vad_filter"] is True
+    assert model.calls[0]["without_timestamps"] is False
+    assert model.calls[0]["condition_on_previous_text"] is True
+
+
+async def test_the_beam_size_comes_from_settings(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings], registered: list[int]
+) -> None:
+    model = FakeWhisperModel(info=FakeInfo(duration=0.5))
+    install(monkeypatch, SimpleNamespace(WhisperModel=lambda *_a, **_k: model))
+    stt = FasterWhisperSTT.from_settings(make_settings(stt_device="cpu", stt_beam_size=4))
+
+    await stt.transcribe(one_second_of_noise())
+
+    assert model.calls[0]["beam_size"] == 4
 
 
 async def test_other_sample_rates_are_resampled_to_16k(model: FakeWhisperModel) -> None:

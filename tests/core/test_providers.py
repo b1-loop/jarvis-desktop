@@ -9,7 +9,13 @@ import pytest
 from jarvis import _native
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core import providers
-from jarvis.core.providers import DependencyProbe, build_llm, build_stt, build_tts
+from jarvis.core.providers import (
+    DependencyProbe,
+    build_llm,
+    build_stt,
+    build_tts,
+    effective_tts_provider,
+)
 from jarvis.llm.anthropic_client import AnthropicClient
 from jarvis.llm.local_llama_client import LocalLlamaClient
 from jarvis.llm.ollama_client import OllamaClient
@@ -132,6 +138,34 @@ def test_cloud_anthropic_without_a_key_explains_the_remedy(
 ) -> None:
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
         build_llm(make_settings(llm_provider="anthropic"))
+
+
+def test_cloud_mode_speaks_with_piper_when_asked(
+    local_settings: Settings, piper_installed: None
+) -> None:
+    hybrid = local_settings.model_copy(update={"mode": RuntimeMode.CLOUD, "tts_provider": "piper"})
+
+    tts = build_tts(hybrid, probe=probe(missing=("edge_tts",)))
+
+    assert isinstance(tts, PiperTTS)
+    assert effective_tts_provider(hybrid) == "piper"
+
+
+@pytest.mark.parametrize(
+    ("mode", "configured", "expected"),
+    [
+        (RuntimeMode.CLOUD, "auto", "edge"),
+        (RuntimeMode.LOCAL, "auto", "piper"),
+        (RuntimeMode.LOCAL, "edge", "edge"),
+        (RuntimeMode.CLOUD, "piper", "piper"),
+    ],
+)
+def test_effective_tts_provider_follows_the_mode_only_for_auto(
+    make_settings: Callable[..., Settings], mode: RuntimeMode, configured: str, expected: str
+) -> None:
+    settings = make_settings(mode=mode, tts_provider=configured)
+
+    assert effective_tts_provider(settings) == expected
 
 
 # --- LOCAL mode -------------------------------------------------------------

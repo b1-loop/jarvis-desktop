@@ -38,11 +38,13 @@ DESKTOP_SIDE_EFFECTS = (
     "JARVIS_DASHBOARD_ENABLED",
     "JARVIS_PROACTIVE_ENABLED",
     "JARVIS_USER_SETTINGS_ENABLED",
+    "JARVIS_LLM_WARM_UP",
 )
 """Off in every test: no windows or tray icons on a developer's desktop, no
 real battery or calendar polling speaking into a test's recorded output, and
 no ``data/user_settings.json`` from the developer's own HUD leaking into
-settings. Tests that exercise these turn them back on explicitly."""
+settings, and no model load on a real Ollama server at startup. Tests that
+exercise these turn them back on explicitly."""
 
 
 @pytest.fixture(autouse=True)

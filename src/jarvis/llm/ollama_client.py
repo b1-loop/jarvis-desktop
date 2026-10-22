@@ -10,12 +10,21 @@ Thinking models (``qwen3``) reason before answering when Ollama's ``think``
 field is on, which is their default. The client sends ``think`` as
 configured (``Settings.ollama_think``, off by default for spoken turns) and
 never turns streamed ``thinking`` text into answer text.
+
+Latency (ADR-0030): every request carries ``keep_alive`` so the model stays
+loaded between turns (Ollama's own default unloads it after five idle
+minutes), and an optional fixed ``num_ctx`` so no request reloads it with a
+different context size. :meth:`OllamaClient.warm_up` loads the model at
+startup, and each turn logs Ollama's load and prompt-evaluation times,
+with a warning when the model had to be loaded again mid-session.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import re
+import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import AsyncExitStack, aclosing
@@ -54,6 +63,17 @@ _SERVER_ERROR_STATUS: Final = 500
 _NOT_FOUND_STATUS: Final = 404
 _BAD_REQUEST_STATUS: Final = 400
 
+DEFAULT_KEEP_ALIVE: Final = "30m"
+"""Matches ``Settings.ollama_keep_alive``; six times Ollama's own five minutes."""
+
+RELOAD_WARNING_MS: Final = 1000.0
+"""A turn whose ``load_duration`` exceeds this found the model unloaded (evicted or expired).
+
+A resident model reports a few milliseconds; a 7B reload takes seconds."""
+
+_NS_PER_MS: Final = 1_000_000
+_INTEGER: Final = re.compile(r"-?\d+")
+
 EMPTY_REPLY_RETRIES: Final = 1
 """Extra requests when the model stops before writing anything (seen with qwen3, think off)."""
 
@@ -67,6 +87,8 @@ class OllamaClient(LLMClient):
         http: Client whose ``base_url`` is the Ollama server.
         model: Chat model tag.
         think: Ollama's ``think`` field; ``None`` omits it (the model's default).
+        keep_alive: How long Ollama keeps the model loaded after each request.
+        num_ctx: Context window for every request; ``None`` keeps the server's.
         policy: Retry policy for opening the stream.
         sleep: Back-off sleep, replaced in tests.
     """
@@ -77,12 +99,16 @@ class OllamaClient(LLMClient):
         *,
         model: str,
         think: bool | None = None,
+        keep_alive: str = DEFAULT_KEEP_ALIVE,
+        num_ctx: int | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         sleep: SleepFn = asyncio.sleep,
     ) -> None:
         self._http = http
         self._model = model
         self._think = think
+        self._keep_alive = keep_alive_param(keep_alive)
+        self._num_ctx = num_ctx
         self._policy = policy
         self._sleep = sleep
 
@@ -90,7 +116,13 @@ class OllamaClient(LLMClient):
     def from_settings(cls, settings: Settings) -> OllamaClient:
         """Build the real client pointed at ``settings.ollama_base_url``."""
         http = httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=DEFAULT_TIMEOUT)
-        return cls(http, model=settings.ollama_model, think=settings.ollama_think)
+        return cls(
+            http,
+            model=settings.ollama_model,
+            think=settings.ollama_think,
+            keep_alive=settings.ollama_keep_alive,
+            num_ctx=settings.ollama_num_ctx,
+        )
 
     @property
     def model(self) -> str:
@@ -100,6 +132,29 @@ class OllamaClient(LLMClient):
     async def aclose(self) -> None:
         """Release the HTTP connection pool."""
         await self._http.aclose()
+
+    async def warm_up(self) -> None:
+        """Load the model into memory now, so the first request does not wait for it.
+
+        A chat request without messages makes Ollama load the model (with
+        this client's ``keep_alive`` and ``num_ctx``) and answer at once. A
+        failure is logged, not raised: Ollama may still be starting, and
+        the first real request reports any lasting problem with its remedy.
+        """
+        payload = self._base_payload() | {"messages": [], "stream": False}
+        started = time.perf_counter()
+        try:
+            response = await self._http.post(CHAT_PATH, json=payload)
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            log.warning("llm.warm_up_failed", provider="ollama", error=self._describe(error))
+            return
+        log.info(
+            "llm.warmed_up",
+            provider="ollama",
+            model=self._model,
+            elapsed_ms=round((time.perf_counter() - started) * 1000),
+        )
 
     async def stream(
         self, messages: Sequence[Message], tools: Sequence[ToolDefinition] = ()
@@ -145,8 +200,7 @@ class OllamaClient(LLMClient):
     def _payload(
         self, messages: Sequence[Message], tools: Sequence[ToolDefinition]
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": self._model,
+        payload = self._base_payload() | {
             "messages": [param for message in messages for param in to_message_params(message)],
             "stream": True,
         }
@@ -154,6 +208,13 @@ class OllamaClient(LLMClient):
             payload["think"] = self._think
         if tools:
             payload["tools"] = [to_tool_param(tool) for tool in tools]
+        return payload
+
+    def _base_payload(self) -> dict[str, Any]:
+        """Fields every request repeats so Ollama never unloads or reloads the model."""
+        payload: dict[str, Any] = {"model": self._model, "keep_alive": self._keep_alive}
+        if self._num_ctx is not None:
+            payload["options"] = {"num_ctx": self._num_ctx}
         return payload
 
     async def _open(self, stack: AsyncExitStack, payload: dict[str, Any]) -> httpx.Response:
@@ -181,6 +242,16 @@ class OllamaClient(LLMClient):
             f"could not reach Ollama at {self._http.base_url}: {error}. "
             "Is it running? Start it with 'ollama serve' or fix JARVIS_OLLAMA_BASE_URL."
         )
+
+
+def keep_alive_param(value: str) -> str | int:
+    """``keep_alive`` as Ollama parses it: whole seconds as a number, else a duration.
+
+    Ollama reads a JSON number as seconds (negative: keep forever) and a
+    string as a Go duration ("30m"), so "-1" must be sent as the number -1.
+    """
+    text = value.strip()
+    return int(text) if _INTEGER.fullmatch(text) else text
 
 
 def _empty(done: Done) -> bool:
@@ -283,6 +354,7 @@ class _ChunkTranslator:
         stop_reason = _stop_reason(chunk.get("done_reason"), has_tool_calls=bool(self._calls))
         if self._thinking_chars:
             log.debug("llm.thinking", provider="ollama", chars=self._thinking_chars)
+        timings = server_timings_ms(chunk)
         log.info(
             "llm.turn_done",
             provider="ollama",
@@ -291,9 +363,31 @@ class _ChunkTranslator:
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             tool_calls=len(self._calls),
+            **timings,
         )
+        if timings["load_ms"] > RELOAD_WARNING_MS:
+            log.warning(
+                "llm.model_was_not_loaded",
+                provider="ollama",
+                model=chunk.get("model"),
+                load_ms=timings["load_ms"],
+                hint="another Ollama model may have evicted it; see README, Troubleshooting",
+            )
         message = AssistantMessage(text="".join(self._text_parts), tool_calls=tuple(self._calls))
         return Done(stop_reason=stop_reason, usage=usage, message=message)
+
+
+def server_timings_ms(chunk: dict[str, Any]) -> dict[str, float]:
+    """Ollama's own durations from the final chunk (nanoseconds), in milliseconds.
+
+    ``load_ms`` is the model load (near zero when resident), ``prompt_eval_ms``
+    the prompt processing (short when the prompt prefix was cached) and
+    ``eval_ms`` the generation.
+    """
+    return {
+        f"{name}_ms": round(float(chunk.get(f"{name}_duration") or 0) / _NS_PER_MS, 1)
+        for name in ("load", "prompt_eval", "eval")
+    }
 
 
 def _to_tool_call(raw: dict[str, Any]) -> ToolCall:
@@ -341,6 +435,11 @@ def _stop_reason(done_reason: object, *, has_tool_calls: bool) -> StopReason:
 #   text. ``think=False`` is accepted by non-thinking models too, so the
 #   default is safe for any model; ``think=True`` on one is a 400, reported
 #   with the setting that fixes it.
+# - keep_alive and num_ctx go on every request, not only the warm-up:
+#   Ollama applies keep_alive per request (a request without it resets the
+#   timer to the server default), and a different num_ctx reloads the model.
+#   A 7B reload took seconds in the measurements, 12 s once on an 8 GB GPU
+#   after another model had evicted it, hence the warning on load_ms.
 # - Empty-reply retry: in a measured run qwen3:8b with think=false answered
 #   a plain question ("vad är 17 gånger 23?") three times out of four with a
 #   single final chunk (done_reason "stop", no content, no thinking, no

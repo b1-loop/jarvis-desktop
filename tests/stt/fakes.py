@@ -47,6 +47,8 @@ class FakeWhisperModel:
         beam_size: int,
         vad_filter: bool,
         hotwords: str | None = None,
+        without_timestamps: bool = False,
+        condition_on_previous_text: bool = True,
     ) -> tuple[Iterable[FakeSegment], FakeInfo]:
         if self.failure is not None:
             raise self.failure
@@ -57,6 +59,8 @@ class FakeWhisperModel:
                 "beam_size": beam_size,
                 "vad_filter": vad_filter,
                 "hotwords": hotwords,
+                "without_timestamps": without_timestamps,
+                "condition_on_previous_text": condition_on_previous_text,
             }
         )
         return lazy(self.segments, self.log), self.info
