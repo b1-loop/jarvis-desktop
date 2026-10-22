@@ -37,13 +37,13 @@ cloud = ["faster-whisper>=1.1", "edge-tts>=6.1"]
 # Semantic memory. Separate extra because ChromaDB pulls heavy dependencies.
 memory = ["chromadb>=0.5"]
 # Integrations that need third-party SDKs; each provider is optional.
+# Only auth helpers and SDKs the providers import are listed: Gmail, Google
+# Calendar and Discord are called through httpx (see ADR-0009).
 integrations = [
-  "google-api-python-client>=2.150",
   "google-auth-oauthlib>=1.2",
   "msal>=1.31",
   "spotipy>=2.24",
   "slack-sdk>=3.33",
-  "discord.py>=2.4",
 ]
 # Files and documents.
 documents = ["pypdf>=5.0", "python-docx>=1.1", "youtube-transcript-api>=0.6"]
@@ -162,7 +162,6 @@ module = [
   "spotipy.*",
   "msal.*",
   "pystray.*",
-  "googleapiclient.*",
   "google_auth_oauthlib.*",
   "youtube_transcript_api.*",
 ]
