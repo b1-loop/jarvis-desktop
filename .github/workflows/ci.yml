@@ -22,11 +22,11 @@ jobs:
   # package never imports the native modules at import time
   # (see docs/adr/0002-decoupled-native-build.md).
   python-quality:
-    name: Python lint, format, types
+    name: Lint, format, types (ruff, mypy, clang-format)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
       - run: uv python install 3.12
@@ -34,13 +34,22 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
+      # The pre-commit hook is the one place clang-format is pinned, so CI,
+      # the commit hook and the dev machine all run the same version instead
+      # of whatever LLVM the runner image happens to ship.
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+      - name: clang-format check
+        run: uv run pre-commit run clang-format --all-files --show-diff-on-failure
 
   python-tests:
     name: Python tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
       - run: uv python install 3.12
@@ -55,34 +64,120 @@ jobs:
   # The native build runs on Windows because the OS integration layer is Win32.
   # scripts/build_native.py is the single entry point so CI and a developer
   # machine run exactly the same configure, build, test and lint commands.
+  #
+  # Caches (see CONTRIBUTING.md, "CI caches"):
+  #  - FetchContent sources (miniaudio, ONNX Runtime, Catch2, Dear ImGui) live
+  #    in native/build/_fetchcontent (FETCHCONTENT_BASE_DIR in the ci-windows
+  #    preset). FetchContent re-validates every dependency against its
+  #    declaration, so a cache restored through the prefix key is safe: an
+  #    unchanged dependency is reused, a changed one is downloaded again.
+  #  - Compiled objects go through sccache (compiler launcher in the
+  #    ci-windows preset), stored in the GitHub Actions cache. A Release build
+  #    carries no debug info and the preset embeds it (/Z7) if any target asks,
+  #    so every object, whisper.cpp and llama.cpp included, is cacheable.
+  #  - The audio ONNX models, keyed on their manifest. LOCAL-mode models
+  #    (570 MB) are never downloaded in CI; their tests skip themselves.
   native:
-    name: C++ build, tests, clang-format, clang-tidy
+    name: C++ build and tests
     runs-on: windows-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
       - run: uv python install 3.12
       - run: uv sync --all-extras --group dev
-      - name: Download ONNX models (cached by hash check)
+      - name: Restore ONNX models
+        uses: actions/cache@v5
+        with:
+          path: models
+          key: models-audio-${{ hashFiles('src/jarvis/audio/models.py') }}
+      - name: Download ONNX models (skips files whose hash already matches)
         run: uv run python scripts/download_models.py
+      - name: Restore FetchContent downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            native/build/_fetchcontent
+            !native/build/_fetchcontent/*-build
+          key: fetchcontent-${{ runner.os }}-${{ hashFiles('native/audio_engine/CMakeLists.txt', 'native/overlay/CMakeLists.txt', 'native/tests/CMakeLists.txt') }}
+          restore-keys: fetchcontent-${{ runner.os }}-
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
       - uses: lukka/get-cmake@latest
-      - name: clang-format check
-        shell: pwsh
-        run: |
-          $files = Get-ChildItem -Recurse native -Include *.cpp,*.hpp |
-            Where-Object { $_.FullName -notmatch 'third_party|build' }
-          clang-format --dry-run --Werror $files.FullName
-      - name: Configure, build, test, clang-tidy
-        run: uv run python scripts/build_native.py --preset ci-windows --tidy
+      - name: Configure, build, test
+        run: uv run python scripts/build_native.py --preset ci-windows
+      - name: Compiler cache statistics
+        if: always()
+        run: sccache --show-stats
       - name: Python can import the native modules
         run: uv run python -c "import jarvis._native as n; print(n.available_modules())"
       - name: Native-marked Python tests
         run: uv run pytest -m "native and not hardware" --no-cov
+
+  # clang-tidy needs only the compile database and the sources FetchContent
+  # places at configure time, never a compiled object, so it runs in its own
+  # job next to the build instead of after it. It is as required as any other
+  # job: a diagnostic fails the workflow (WarningsAsErrors in .clang-tidy).
+  #
+  # A full run is ~40 s per translation unit (windows.h, pybind11 and the
+  # analyzer checks), 42 minutes for 64 files in one serial process. So:
+  #  - the files are split across a matrix of shards, each linting its slice
+  #    with one clang-tidy process per CPU;
+  #  - on a pull request only the .cpp files the PR changed are linted, unless
+  #    it touches a header, a CMake file, a submodule, the preset or
+  #    .clang-tidy, in which case every file is (scripts/build_native.py,
+  #    needs_full_tidy). Pushes to main always lint every file, so nothing a
+  #    PR run narrowed away goes unchecked once it lands.
+  native-tidy:
+    name: clang-tidy (${{ matrix.shard }}/4)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      # On a PR the checkout is the merge commit, whose first parent is the
+      # tip of the base branch: HEAD^1..HEAD is exactly what the PR changes.
+      TIDY_SCOPE: ${{ github.event_name == 'pull_request' && '--tidy-changed-since HEAD^1' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 2
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --all-extras --group dev
+      # Restore only: the build job owns saving this cache.
+      - name: Restore FetchContent downloads
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            native/build/_fetchcontent
+            !native/build/_fetchcontent/*-build
+          key: fetchcontent-${{ runner.os }}-${{ hashFiles('native/audio_engine/CMakeLists.txt', 'native/overlay/CMakeLists.txt', 'native/tests/CMakeLists.txt') }}
+          restore-keys: fetchcontent-${{ runner.os }}-
+      # The ci-windows preset names sccache as launcher; configure checks it.
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - uses: lukka/get-cmake@latest
+      - name: clang-tidy version and CPU count
+        run: |
+          clang-tidy --version
+          echo "CPUs: $env:NUMBER_OF_PROCESSORS"
+      - name: Configure and clang-tidy
+        run: uv run python scripts/build_native.py --preset ci-windows --tidy-only --tidy-shard ${{ matrix.shard }}/4 ${{ env.TIDY_SCOPE }}
 
   secrets-scan:
     name: Secrets scan
