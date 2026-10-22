@@ -318,3 +318,18 @@ def test_tk_start_does_not_retry_a_missing_display(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(tkinter.TclError, match="no display"):
         dashboard_module.create_tk_root()
+
+
+def test_tk_start_retries_a_half_loaded_tcl_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[int] = []
+
+    def flaky_tk() -> object:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise tkinter.TclError('invalid command name "tcl_findLibrary"')
+        return "root"
+
+    monkeypatch.setattr(dashboard_module.tkinter, "Tk", flaky_tk)
+    monkeypatch.setattr(dashboard_module.time, "sleep", lambda _s: None)
+
+    assert dashboard_module.create_tk_root() == "root"

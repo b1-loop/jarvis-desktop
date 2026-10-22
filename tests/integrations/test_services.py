@@ -67,11 +67,12 @@ def test_the_bundle_is_frozen_and_empty_by_default() -> None:
         services.email = (StubEmailProvider(),)  # type: ignore[misc]
 
 
-async def test_builder_selects_stubs_without_credentials(
+async def test_builder_selects_stubs_in_demo_mode_without_credentials(
     make_settings: Callable[..., Settings], tmp_path: Path
 ) -> None:
+    settings = make_settings(data_dir=tmp_path, demo_integrations=True)
     async with httpx.AsyncClient() as http:
-        services = build_integration_services(make_settings(data_dir=tmp_path), http)
+        services = build_integration_services(settings, http)
 
     assert [type(p) for p in services.email] == [StubEmailProvider]
     assert [type(p) for p in services.calendar] == [StubCalendarProvider]
@@ -108,3 +109,14 @@ def test_bootstrap_alias_builds_the_same_bundle() -> None:
 
     assert isinstance(bundle, IntegrationServices)
     assert bundle.web_search is None  # web tools then answer "not configured"
+
+
+async def test_builder_leaves_unconnected_services_empty_by_default(
+    make_settings: Callable[..., Settings], tmp_path: Path
+) -> None:
+    async with httpx.AsyncClient() as http:
+        services = build_integration_services(make_settings(data_dir=tmp_path), http)
+
+    assert services.email == services.calendar == services.music == ()
+    assert services.chat == services.smart_home == ()
+    assert isinstance(services.web_search, DuckDuckGoSearchProvider)  # keyless, always real

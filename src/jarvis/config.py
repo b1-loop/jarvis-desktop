@@ -277,6 +277,7 @@ class Settings(BaseSettings):
     # Voice (step 7)
     barge_in_echo_guard_ms: int = Field(default=400, ge=0)
     vad_min_speech_ms: int = Field(default=250, ge=32)
+    wake_word_threshold: float = Field(default=0.8, gt=0.0, lt=1.0)
     listen_timeout_seconds: float = Field(default=6.0, gt=0)
     max_utterance_seconds: float = Field(default=20.0, gt=0)
     min_transcript_chars: int = Field(default=2, ge=1)
@@ -325,6 +326,11 @@ class Settings(BaseSettings):
     # Overlay richness
     overlay_intensity: OverlayIntensityName = "normal"
     overlay_size: OverlaySizeName = "large"
+
+    # Integrations demo data
+    demo_integrations: bool = False
+    """Serve the ``Stub*`` sample mail, events and chats when no account is
+    connected. Off by default: unconnected services say so instead."""
 
 
 # Design notes:

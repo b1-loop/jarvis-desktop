@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -285,3 +286,111 @@ def test_speaker_exposes_output_level_and_stop_count() -> None:
 
     assert speaker.output_level == pytest.approx(0.3)
     assert speaker.stop_count == 1
+
+
+WAKE_AT = 20_000
+HANGOVER = 700 * 16  # samples of silence before SPEECH_ENDED at 16 kHz
+
+
+async def _wake_while_speaking(engine: AudioEngine, native: FakeNativeEngine) -> None:
+    """The VAD saw speech start, then the wake word fired; the queue is then cleared."""
+    native.script(
+        native_event("SPEECH_STARTED", 0.9, 4_000),
+        native_event("WAKE_WORD_DETECTED", 0.97, WAKE_AT),
+    )
+    for _ in range(int(WAIT / POLL)):
+        if engine.speech_active:
+            break
+        await asyncio.sleep(POLL)
+    assert engine.speech_active
+    engine.discard_pending_events()  # as the voice front end does before listening
+
+
+async def test_request_spoken_in_one_breath_with_the_wake_phrase_is_captured(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    async with engine:
+        await _wake_while_speaking(engine, native)
+        capture = asyncio.create_task(engine.record_utterance(start_timeout=0.2))
+        await asyncio.sleep(POLL * 5)
+        native.script(native_event("SPEECH_ENDED", 0.1, WAKE_AT + 16_000 + HANGOVER))
+        utterance = await asyncio.wait_for(capture, WAIT)
+
+    assert utterance.speech_detected
+    assert not utterance.truncated
+    assert not engine.speech_active
+
+
+async def test_pause_after_the_wake_phrase_waits_for_the_request(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    async with engine:
+        await _wake_while_speaking(engine, native)
+        capture = asyncio.create_task(engine.record_utterance(start_timeout=WAIT))
+        await asyncio.sleep(POLL * 5)
+        native.script(native_event("SPEECH_ENDED", 0.1, WAKE_AT + 2_000 + HANGOVER))
+        await asyncio.sleep(POLL * 5)
+        assert not capture.done(), "ending right after the wake phrase must keep listening"
+        native.script(native_event("SPEECH_STARTED", 0.9, WAKE_AT + 30_000))
+        native.script(native_event("SPEECH_ENDED", 0.1, WAKE_AT + 60_000))
+        utterance = await asyncio.wait_for(capture, WAIT)
+
+    assert utterance.speech_detected
+    assert native.listening_calls == [True, False]
+
+
+async def test_pause_after_the_wake_phrase_then_silence_counts_as_nothing_heard(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    async with engine:
+        await _wake_while_speaking(engine, native)
+        capture = asyncio.create_task(engine.record_utterance(start_timeout=0.05))
+        await asyncio.sleep(POLL * 5)
+        native.script(native_event("SPEECH_ENDED", 0.1, WAKE_AT + 1_000 + HANGOVER))
+        utterance = await asyncio.wait_for(capture, WAIT)
+
+    assert not utterance.speech_detected
+
+
+async def test_speech_without_a_wake_phrase_is_the_request_itself(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    # Hotkey pressed mid-sentence: speech is in progress but contains no wake
+    # phrase, so its end completes the capture even though it ends quickly.
+    native.script(native_event("SPEECH_STARTED", 0.9, 4_000))
+    async with engine:
+        for _ in range(int(WAIT / POLL)):
+            if engine.speech_active:
+                break
+            await asyncio.sleep(POLL)
+        engine.discard_pending_events()
+        capture = asyncio.create_task(engine.record_utterance(start_timeout=0.05))
+        await asyncio.sleep(POLL * 5)
+        native.script(native_event("SPEECH_ENDED", 0.1, 4_000 + 1_000 + HANGOVER))
+        utterance = await asyncio.wait_for(capture, WAIT)
+
+    assert utterance.speech_detected
+
+
+def test_wake_word_threshold_reaches_the_native_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, float] = {}
+
+    class FakeConfig:
+        def __init__(self) -> None:
+            self.pipeline = SimpleNamespace(
+                wake_word_threshold=0.5, segmenter=SimpleNamespace(min_speech_ms=200)
+            )
+
+    def fake_engine(_vad: object, _wake: object, config: FakeConfig) -> object:
+        captured["threshold"] = config.pipeline.wake_word_threshold
+        return object()
+
+    module = SimpleNamespace(
+        EngineConfig=FakeConfig, ModelError=RuntimeError, AudioEngine=fake_engine
+    )
+    monkeypatch.setattr("jarvis.audio.engine._native.load", lambda _name: module)
+    monkeypatch.setattr(AudioModelPaths, "missing", lambda _self: ())
+
+    create_native_engine(AudioModelPaths.in_directory(Path()), wake_word_threshold=0.8)
+
+    assert captured["threshold"] == pytest.approx(0.8)

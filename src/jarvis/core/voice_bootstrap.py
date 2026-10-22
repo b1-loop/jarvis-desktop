@@ -90,7 +90,12 @@ class EngineFactory(Protocol):
     """Builds the native capture engine (``audio.engine.create_native_engine``)."""
 
     def __call__(
-        self, paths: AudioModelPaths, *, wake_word: bool, min_speech_ms: int | None
+        self,
+        paths: AudioModelPaths,
+        *,
+        wake_word: bool,
+        min_speech_ms: int | None,
+        wake_word_threshold: float | None = None,
     ) -> NativeEngine:
         """Load the models and return an unstarted engine."""
 
@@ -310,7 +315,10 @@ class VoiceFrontEndBuilder:
         self, paths: AudioModelPaths, settings: Settings, *, wake_word: bool
     ) -> NativeEngine:
         return self._factories.engine(
-            paths, wake_word=wake_word, min_speech_ms=settings.vad_min_speech_ms
+            paths,
+            wake_word=wake_word,
+            min_speech_ms=settings.vad_min_speech_ms,
+            wake_word_threshold=settings.wake_word_threshold,
         )
 
     async def _load_stt(self, settings: Settings) -> STT:
