@@ -15,6 +15,8 @@ def test_defaults_are_cloud_mode_with_no_credentials(
     settings = make_settings()
 
     assert settings.mode is RuntimeMode.CLOUD
+    assert settings.llm_provider == "ollama"
+    assert settings.ollama_model == "qwen2.5:7b"
     assert settings.wake_word == "hey jarvis"
     assert settings.anthropic_api_key is None
     assert settings.data_dir == Path("data")
@@ -63,11 +65,17 @@ def test_unknown_mode_is_rejected(
         make_settings()
 
 
-def test_cloud_mode_requires_anthropic_key(make_settings: Callable[..., Settings]) -> None:
-    settings = make_settings(mode=RuntimeMode.CLOUD)
+def test_cloud_mode_with_the_anthropic_provider_requires_a_key(
+    make_settings: Callable[..., Settings],
+) -> None:
+    settings = make_settings(mode=RuntimeMode.CLOUD, llm_provider="anthropic")
 
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
         settings.validate_for_mode()
+
+
+def test_the_default_ollama_provider_needs_no_key(make_settings: Callable[..., Settings]) -> None:
+    make_settings(mode=RuntimeMode.CLOUD).validate_for_mode()
 
 
 def test_local_mode_needs_no_credentials(make_settings: Callable[..., Settings]) -> None:
@@ -75,7 +83,9 @@ def test_local_mode_needs_no_credentials(make_settings: Callable[..., Settings])
 
 
 def test_cloud_mode_with_key_validates(make_settings: Callable[..., Settings]) -> None:
-    make_settings(mode=RuntimeMode.CLOUD, anthropic_api_key="sk-ant-test").validate_for_mode()
+    make_settings(
+        mode=RuntimeMode.CLOUD, llm_provider="anthropic", anthropic_api_key="sk-ant-test"
+    ).validate_for_mode()
 
 
 def test_proactive_settings_have_defaults_and_read_env(

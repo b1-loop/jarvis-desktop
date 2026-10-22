@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     models_dir: Path = Path("models")
 
     # LLM
-    llm_provider: LLMProvider = "anthropic"
+    llm_provider: LLMProvider = "ollama"
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     llm_model: str = "claude-sonnet-5-5"
     vision_model: str = "claude-sonnet-5-5"
@@ -269,9 +269,11 @@ class Settings(BaseSettings):
 # - SecretStr for every credential so an accidental repr() or log never leaks
 #   it; the redaction processor in utils/logging.py is the second line of
 #   defence.
-# - Model names default to the current Claude Sonnet because it has the best
-#   latency/quality balance for a conversational assistant; Opus is a config
-#   change away.
+# - The LLM provider defaults to Ollama with qwen2.5:7b: free, local and
+#   good enough for tool calling. Claude is the opt-in upgrade
+#   (JARVIS_LLM_PROVIDER=anthropic, ADR-0013); its model names default to
+#   the current Sonnet because it has the best latency/quality balance for
+#   a conversational assistant.
 # - llm_provider is separate from RuntimeMode on purpose: Ollama is a third
 #   option that runs locally but is not the fully offline LOCAL mode (it
 #   still pairs with faster-whisper and edge-tts). The default Ollama model

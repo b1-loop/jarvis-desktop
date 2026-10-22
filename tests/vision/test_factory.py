@@ -14,7 +14,10 @@ from jarvis.vision.screen import VisionOptions
 
 def test_anthropic_answers_with_the_vision_model(make_settings: Callable[..., Settings]) -> None:
     settings = make_settings(
-        anthropic_api_key="sk-ant-test", llm_model="chat-model", vision_model="claude-opus-5-5"
+        llm_provider="anthropic",
+        anthropic_api_key="sk-ant-test",
+        llm_model="chat-model",
+        vision_model="claude-opus-5-5",
     )
 
     backend = create_vision_backend(settings)
@@ -28,7 +31,7 @@ def test_anthropic_answers_with_the_vision_model(make_settings: Callable[..., Se
 
 def test_anthropic_without_a_key_fails_at_startup(make_settings: Callable[..., Settings]) -> None:
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
-        create_vision_backend(make_settings())
+        create_vision_backend(make_settings(llm_provider="anthropic"))
 
 
 def test_ollama_without_a_vision_model_is_unavailable(

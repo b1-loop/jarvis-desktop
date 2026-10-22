@@ -18,7 +18,7 @@ Toolchain on the development machine: Python 3.12, uv, CMake 4, Ninja, MSVC from
   2. Native OS integration layer: global hotkeys, active window title/app, window management, text injection at cursor, system notifications, volume/brightness, lock screen, screenshot. Win32 API on Windows.
   3. Local inference wrappers: whisper.cpp for offline STT and llama.cpp for offline LLM, built from source as submodules and wrapped in our own thin C++ API.
   4. Status overlay: a small always-on-top window with live waveform, state indicator and transcript, written with Dear ImGui on DirectX 11.
-- LLM: Anthropic Claude via the official SDK with native tool calling and streaming, behind an `LLMClient` interface. Second implementation: `LocalLlamaClient` using our llama.cpp wrapper. Vision-capable model calls for screen understanding.
+- LLM: behind an `LLMClient` interface with native tool calling and streaming. Default: Ollama with `qwen2.5:7b` (free, local; `OllamaClient`). Optional cloud upgrade: Anthropic Claude via the official SDK (`JARVIS_LLM_PROVIDER=anthropic`). Offline: `LocalLlamaClient` using our llama.cpp wrapper. Vision-capable model calls for screen understanding.
 - STT: faster-whisper (default) and whisper.cpp (offline) behind an `STT` interface.
 - TTS: edge-tts (default) and Piper (offline) behind a `TTS` interface. Streaming playback so speech starts before the full answer is generated.
 - Storage: SQLite for conversation history, notes, reminders and long-term facts; ChromaDB for semantic memory.

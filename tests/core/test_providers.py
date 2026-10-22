@@ -113,7 +113,9 @@ def test_cloud_tts_without_the_native_decoder_names_the_build(
 
 
 def test_cloud_mode_honours_the_llm_provider(make_settings: Callable[..., Settings]) -> None:
-    assert isinstance(build_llm(make_settings(anthropic_api_key="sk-test")), AnthropicClient)
+    anthropic = make_settings(llm_provider="anthropic", anthropic_api_key="sk-test")
+
+    assert isinstance(build_llm(anthropic), AnthropicClient)
     assert isinstance(build_llm(make_settings(llm_provider="ollama")), OllamaClient)
 
 
@@ -129,7 +131,7 @@ def test_cloud_anthropic_without_a_key_explains_the_remedy(
     make_settings: Callable[..., Settings],
 ) -> None:
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
-        build_llm(make_settings())
+        build_llm(make_settings(llm_provider="anthropic"))
 
 
 # --- LOCAL mode -------------------------------------------------------------
@@ -164,6 +166,15 @@ def test_local_mode_keeps_an_explicit_ollama_provider(local_settings: Settings) 
     settings = local_settings.model_copy(update={"llm_provider": "ollama"})
 
     assert isinstance(build_llm(settings), OllamaClient)
+
+
+def test_local_mode_uses_llama_cpp_when_ollama_is_only_the_default(
+    local_settings: Settings, native_built: None
+) -> None:
+    assert local_settings.llm_provider == "ollama"
+    assert "llm_provider" not in local_settings.model_fields_set
+
+    assert isinstance(build_llm(local_settings), LocalLlamaClient)
 
 
 @pytest.mark.parametrize(

@@ -111,17 +111,24 @@ def build_llm(settings: Settings) -> LLMClient:
     """The LLM client for ``settings.mode`` and ``settings.llm_provider``.
 
     CLOUD honours ``llm_provider`` as is. LOCAL never sends a request off
-    the machine: it uses llama.cpp, unless ``llm_provider`` is ``ollama``,
-    which is also local (localhost) and was chosen explicitly.
+    the machine: it uses llama.cpp, unless ``llm_provider`` was explicitly
+    set to ``ollama``, which is also local (localhost).
 
     Raises:
         ConfigError: If the selected client's credentials, native build or
             model file are missing.
     """
-    if settings.mode is RuntimeMode.CLOUD or settings.llm_provider in ("local", "ollama"):
+    if settings.mode is RuntimeMode.CLOUD or _local_mode_keeps_provider(settings):
         return create_llm_client(settings)
     log.info("providers.local_llm_selected", ignored_provider=settings.llm_provider)
     return create_llm_client(settings.model_copy(update={"llm_provider": "local"}))
+
+
+def _local_mode_keeps_provider(settings: Settings) -> bool:
+    """llama.cpp, or Ollama when the user chose it rather than inheriting the default."""
+    if settings.llm_provider == "local":
+        return True
+    return settings.llm_provider == "ollama" and "llm_provider" in settings.model_fields_set
 
 
 def _require_package(probe: DependencyProbe, module: str, package: str) -> None:
@@ -145,3 +152,7 @@ def _require_package(probe: DependencyProbe, module: str, package: str) -> None:
 #   default. The switch is logged so it is never invisible.
 # - The probe is a dataclass of two callables rather than a Protocol class
 #   hierarchy: tests replace one function, production needs no wiring.
+# - Ollama became the default ``llm_provider`` (ADR-0013 update). LOCAL mode
+#   still means llama.cpp unless Ollama was set explicitly (env, .env or
+#   code: pydantic's ``model_fields_set``), so ``--mode local`` on a fresh
+#   checkout stays the self-contained C++ stack the mode documents.
