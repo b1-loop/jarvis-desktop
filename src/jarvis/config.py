@@ -71,6 +71,10 @@ class Settings(BaseSettings):
         env_prefix="JARVIS_",
         env_file=".env",
         env_file_encoding="utf-8",
+        # ``.env.example`` lists every key with an empty value; a copied
+        # ``KEY=`` line must mean "not set", not "set to an empty string",
+        # or providers would think they are configured.
+        env_ignore_empty=True,
         extra="ignore",
         populate_by_name=True,
     )

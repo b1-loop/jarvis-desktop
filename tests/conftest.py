@@ -34,7 +34,12 @@ CREDENTIAL_VARIABLES = (
 
 @pytest.fixture(autouse=True)
 def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Remove every Jarvis-related variable so tests start from defaults."""
+    """Remove every Jarvis-related variable so tests start from defaults.
+
+    Also stops ``Settings()`` from reading a developer's real ``.env``, which
+    code under test (the CLI, bootstrap) constructs without ``_env_file``.
+    """
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
     for name in list(os.environ):
         if name.startswith("JARVIS_") or name in CREDENTIAL_VARIABLES:
             monkeypatch.delenv(name, raising=False)
