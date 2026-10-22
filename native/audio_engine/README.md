@@ -16,7 +16,7 @@ playback with barge-in. Exposed to Python as `jarvis_audio`.
 | `wake_word.hpp` / `open_wake_word.hpp` | `WakeWordDetector`, `OpenWakeWord` | three-stage streaming detector, 80 ms chunks |
 | `playback.hpp` | `Playback` | chunk queue drained under `try_lock`; `stop()` is barge-in |
 | `pipeline.hpp` | `AudioPipeline` | synchronous core: frame assembly, detection, pre-roll, capture, events |
-| `engine.hpp` | `AudioEngine` | threads, ring buffer, event queue, barge-in wiring |
+| `engine.hpp` | `AudioEngine` | threads, ring buffer, event queue, barge-in wiring, device events, `restartCapture()` |
 | `mp3_decoder.hpp` | `decodeMp3`, `toMono` | decodes a complete MP3 buffer (edge-tts speech) to float32 PCM via dr_mp3 |
 
 Interfaces (`AudioSource`, `AudioSink`, `VoiceActivityDetector`,
@@ -40,6 +40,17 @@ See `ARCHITECTURE.md` section 5. In short: the capture callback only pushes
 into the ring buffer, the worker thread runs the pipeline, the playback
 callback drains a queue without ever blocking, and Python polls. No native
 thread takes the GIL.
+
+## Device changes and recovery
+
+`MiniaudioMicrophone` opens the default input (null device id), so
+miniaudio's WASAPI backend follows a change of the default by itself and
+reports it as `DeviceRerouted`. A device that stops on its own (a 5 s WASAPI
+read timeout after a stall or a resume, an invalidated or unplugged
+endpoint) is reported as `DeviceStopped`. The engine counts every delivered
+sample (`samplesReceived()`) and can reopen the current default device with
+`restartCapture()`, which also resets the detectors. When to call it is
+decided in Python by `jarvis.audio.watchdog` (ADR-0027).
 
 ## Tests
 

@@ -67,11 +67,13 @@ TEST_CASE("ReplaySource delivers fixed-size frames until stopped", "[audio][repl
     std::vector<std::size_t> sizes;
     std::atomic<std::size_t> frames{0};
 
-    source.start([&](std::span<const float> frame) {
-        const std::scoped_lock lock(mutex);
-        sizes.push_back(frame.size());
-        ++frames;
-    });
+    source.start(
+        [&](std::span<const float> frame) {
+            const std::scoped_lock lock(mutex);
+            sizes.push_back(frame.size());
+            ++frames;
+        },
+        nullptr);
     REQUIRE(waitUntil([&] { return frames.load() >= 4; }));
     source.stop();
     const std::size_t afterStop = frames.load();
