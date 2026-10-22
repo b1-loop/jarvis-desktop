@@ -14,10 +14,12 @@ from jarvis.core.state_machine import AssistantState, StateMachine
 from jarvis.ui.hud_protocol import (
     CloseRequested,
     HudProtocolError,
+    Minimized,
     OpenLog,
     PlacementChanged,
     QuitRequested,
     RestartRequested,
+    Restored,
     SetExpanded,
     SettingChanged,
     SettingsOpened,
@@ -95,7 +97,13 @@ class RecordingHandlers:
         self.calls.append(("restart",))
 
     async def placement_changed(self, event: PlacementChanged) -> None:
-        self.calls.append(("placement", event.expanded, event.custom, event.monitor))
+        self.calls.append(("placement", event.expanded, event.custom, event.monitor, event.orb))
+
+    async def minimized(self, automatic: bool) -> None:
+        self.calls.append(("minimized", automatic))
+
+    async def restored(self, automatic: bool) -> None:
+        self.calls.append(("restored", automatic))
 
 
 def hud_bridge() -> tuple[OverlayBridge, StubOverlay, Overlay, RecordingHandlers]:
@@ -154,7 +162,38 @@ async def test_placement_events_are_parsed_and_dispatched() -> None:
 
     await bridge.drain_ui_events()
 
-    assert handlers.calls == [("placement", False, True, "DISPLAY1")]
+    assert handlers.calls == [("placement", False, True, "DISPLAY1", False)]
+
+
+async def test_minimize_and_restore_events_reach_their_handlers() -> None:
+    bridge, native, overlay, handlers = hud_bridge()
+    overlay.inject_ui_event(Minimized(automatic=False))
+    overlay.inject_ui_event(Restored(automatic=True))
+    # Exactly the dicts the native queue produces, orb placement included.
+    native.inject_ui_event({"kind": "minimize", "automatic": True})
+    native.inject_ui_event(
+        {
+            "kind": "placement_changed",
+            "expanded": False,
+            "custom": True,
+            "monitor": "D2",
+            "x": 12.0,
+            "y": 900.0,
+            "width": 48.0,
+            "height": 48.0,
+            "orb": True,
+        }
+    )
+    native.inject_ui_event({"kind": "restore", "automatic": False})
+
+    assert await bridge.drain_ui_events() == 5
+    assert handlers.calls == [
+        ("minimized", False),
+        ("restored", True),
+        ("minimized", True),
+        ("placement", False, True, "D2", True),
+        ("restored", False),
+    ]
 
 
 async def test_a_failing_handler_does_not_stop_the_next_event() -> None:

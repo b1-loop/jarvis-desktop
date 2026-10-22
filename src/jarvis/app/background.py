@@ -255,6 +255,10 @@ class ErrorTrayControls:
         """Nothing to toggle; logged so a click is visible in the log."""
         log.info("desktop.error_tray.overlay_unavailable")
 
+    def toggle_hud_minimized(self) -> None:
+        """No HUD to minimize; logged."""
+        log.info("desktop.error_tray.hud_unavailable")
+
     def toggle_microphone(self) -> None:
         """Nothing to mute; logged."""
         log.info("desktop.error_tray.microphone_unavailable")

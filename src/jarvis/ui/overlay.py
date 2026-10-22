@@ -14,7 +14,11 @@ callbacks. The HUD is also interactive (ADR-0024): hover controls, a text
 field, dragging, an expanded conversation view and a settings page. What
 the user does there is queued natively and drained by
 :meth:`Overlay.poll_ui_events` (the overlay bridge polls every ~30 ms);
-the types that cross the boundary are in ``ui/hud_protocol.py``.
+the types that cross the boundary are in ``ui/hud_protocol.py``. The HUD
+can be minimized to a small glowing orb at the nearest screen edge
+(:meth:`Overlay.minimize`, :meth:`Overlay.restore`), by itself after a
+quiet spell (auto-minimize), and hides while a full-screen application is
+in front (ADR-0024, update).
 
 The native window is injected through the :class:`NativeOverlay` Protocol
 so the facade is unit-tested with fakes, and :class:`StubOverlay` stands in
@@ -151,6 +155,13 @@ class OverlayConfig:
             transparent pixels stay click-through (ADR-0024).
         position: Where the corner HUD was dragged to; None anchors it.
         expanded_bounds: Position and size of the expanded panel, or None.
+        start_minimized: Open as the orb (the user left it minimized).
+        orb_position: Where the orb was dragged to; None docks it next to
+            the HUD.
+        auto_minimize_seconds: Shrink to the orb after this many quiet
+            seconds; 0 is off.
+        hide_in_fullscreen: Hide the HUD and the orb while a full-screen
+            application is in front on their monitor.
     """
 
     corner: OverlayCorner = OverlayCorner.BOTTOM_RIGHT
@@ -172,6 +183,10 @@ class OverlayConfig:
     interactive: bool = True
     position: SavedPosition | None = None
     expanded_bounds: SavedPosition | None = None
+    start_minimized: bool = False
+    orb_position: SavedPosition | None = None
+    auto_minimize_seconds: float = 0.0
+    hide_in_fullscreen: bool = True
 
 
 class NativeOverlay(Protocol):
@@ -250,6 +265,18 @@ class NativeOverlay(Protocol):
     def expanded(self) -> bool:
         """Whether the HUD is (or is animating towards) the expanded panel."""
 
+    def set_minimized(self, minimized: bool) -> None:
+        """Shrink the HUD to the orb or grow it back (animated)."""
+
+    def minimized(self) -> bool:
+        """Whether the HUD is (or is animating towards) the orb."""
+
+    def set_auto_minimize(self, seconds: float) -> None:
+        """Auto-minimize after ``seconds`` of quiet; 0 switches it off."""
+
+    def set_hide_in_fullscreen(self, hide: bool) -> None:
+        """Hide while a full-screen application is in front."""
+
 
 class StubOverlay:
     """Stand-in for the native window in text-only mode.
@@ -273,7 +300,10 @@ class StubOverlay:
         self.history: list[tuple[str, str, str]] = []
         self.settings: dict[str, object] = {}
         self.appearance: tuple[str, str, str] | None = None
+        self.auto_minimize_seconds = 0.0
+        self.hide_in_fullscreen = True
         self._expanded = False
+        self._minimized = False
         self._events: list[dict[str, object]] = []
         self._visible = True
         self._running = True
@@ -378,6 +408,24 @@ class StubOverlay:
     def expanded(self) -> bool:
         """The last request."""
         return self._expanded
+
+    def set_minimized(self, minimized: bool) -> None:
+        """Record the request; minimizing collapses, like the native window."""
+        self._minimized = minimized
+        if minimized:
+            self._expanded = False
+
+    def minimized(self) -> bool:
+        """The last request."""
+        return self._minimized
+
+    def set_auto_minimize(self, seconds: float) -> None:
+        """Record the delay; nothing ever shrinks a stub by itself."""
+        self.auto_minimize_seconds = max(seconds, 0.0)
+
+    def set_hide_in_fullscreen(self, hide: bool) -> None:
+        """Record the switch."""
+        self.hide_in_fullscreen = hide
 
 
 class Overlay:
@@ -548,6 +596,34 @@ class Overlay:
         """Expand to the panel or collapse to the corner HUD (animated)."""
         self._forward(lambda: self._native.set_expanded(expanded))
 
+    # --- minimize to the orb (ADR-0024, update) -----------------------------
+
+    @property
+    def minimized(self) -> bool:
+        """Whether the HUD is (or is shrinking into) the orb, whoever asked for it."""
+        return not self._closed and self._native.minimized()
+
+    def minimize(self) -> None:
+        """Shrink the HUD into the orb at the nearest screen edge (animated).
+
+        The orb keeps showing the state, clicks on it restore the HUD and
+        everything around it is click-through. Asked for here (tray, hotkey),
+        no ``Minimized`` event comes back; the caller remembers the choice.
+        """
+        self._forward(lambda: self._native.set_minimized(True))
+
+    def restore(self) -> None:
+        """Grow the orb back into the HUD (animated)."""
+        self._forward(lambda: self._native.set_minimized(False))
+
+    def set_auto_minimize(self, seconds: float) -> None:
+        """Shrink to the orb after ``seconds`` of quiet; 0 switches it off."""
+        self._forward(lambda: self._native.set_auto_minimize(float(seconds)))
+
+    def set_hide_in_fullscreen(self, hide: bool) -> None:
+        """Hide while a full-screen application is in front on the HUD's monitor."""
+        self._forward(lambda: self._native.set_hide_in_fullscreen(hide))
+
     def _forward(self, call: _Setter) -> None:
         if self._closed:
             log.debug("overlay.ignored_after_close")
@@ -610,6 +686,10 @@ def _native_config(module: Any, config: OverlayConfig) -> Any:
     native_config.interactive = config.interactive
     native_config.position = _native_position(module, config.position)
     native_config.expanded_bounds = _native_position(module, config.expanded_bounds)
+    native_config.start_minimized = config.start_minimized
+    native_config.orb_position = _native_position(module, config.orb_position)
+    native_config.auto_minimize_seconds = config.auto_minimize_seconds
+    native_config.hide_in_fullscreen = config.hide_in_fullscreen
     native_config.limits.level_history = config.level_history
     native_config.limits.max_text_chars = config.max_text_chars
     return native_config
@@ -673,6 +753,11 @@ def create_overlay(config: OverlayConfig | None = None, *, enabled: bool = True)
 #   a programming error and should surface.
 # - No asyncio here: every native setter returns in microseconds, so wrapping
 #   them in executors would only add latency to the waveform.
+# - minimize()/restore() mirror set_expanded: the request is applied on the
+#   UI thread's next frame and not echoed back as an event, while the HUD's
+#   own minimize control, a click on the orb and auto-minimize do report
+#   Minimized/Restored, flagged automatic or not, so Python remembers only
+#   the user's choices.
 # - UI events are polled, not called back: a callback from the native UI
 #   thread would need the GIL there and could stall a frame behind the
 #   event loop; a queue drained by the bridge keeps both sides independent.

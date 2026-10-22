@@ -1,9 +1,10 @@
 """The application actions behind the tray menu, and the tray/dashboard builders.
 
 The tray (``ui/tray.py``) and dashboard (``ui/dashboard.py``) observe the
-bus and never drive the pipeline. The tray's menu needs four actions that
+bus and never drive the pipeline. The tray's menu needs five actions that
 only the composition root can perform (show the dashboard, toggle the
-overlay, mute the microphone, quit); :class:`AppControls` implements them
+overlay, minimize or restore the HUD, mute the microphone, quit);
+:class:`AppControls` implements them
 over whatever the session actually has, so a text-mode session without an
 overlay or microphone gets a logged no-op instead of an error.
 """
@@ -11,7 +12,7 @@ overlay or microphone gets a logged no-op instead of an error.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from typing import Protocol
 
@@ -41,6 +42,8 @@ class AppControls:
         dashboard: Shown from the menu; ``None`` when there is none.
         toggle_overlay: Shows/hides the overlay; ``None`` without one.
         microphone: Mutes speech input; ``None`` in text mode.
+        toggle_hud_minimized: Shrinks the HUD to its orb or restores it
+            (and remembers the choice); ``None`` without an interactive HUD.
     """
 
     def __init__(
@@ -50,11 +53,13 @@ class AppControls:
         dashboard: DashboardSurface | None = None,
         toggle_overlay: Callable[[], None] | None = None,
         microphone: MicrophoneSwitch | None = None,
+        toggle_hud_minimized: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._stop = stop
         self._dashboard = dashboard
         self._toggle_overlay = toggle_overlay
         self._microphone = microphone
+        self._toggle_hud_minimized = toggle_hud_minimized
         self._tray: TraySurface | None = None
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -81,12 +86,25 @@ class AppControls:
             return
         self._toggle_overlay()
 
+    def toggle_hud_minimized(self) -> None:
+        """Minimize the HUD to its orb, or restore it; the choice is saved off this callback."""
+        if self._toggle_hud_minimized is None:
+            log.info("ui.hud.absent")
+            return
+        self._spawn(self._toggle_hud_minimized())
+
     def toggle_microphone(self) -> None:
         """Mute or unmute speech input; the device is touched off this callback."""
         if self._microphone is None:
             log.info("ui.microphone.absent")
             return
-        task = asyncio.get_running_loop().create_task(self._flip_microphone(self._microphone))
+        self._spawn(self._flip_microphone(self._microphone))
+
+    def _spawn(self, work: Awaitable[None]) -> None:
+        async def run() -> None:
+            await work
+
+        task = asyncio.get_running_loop().create_task(run())
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
