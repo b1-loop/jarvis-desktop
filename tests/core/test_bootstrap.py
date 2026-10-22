@@ -173,7 +173,7 @@ async def test_missing_credentials_fail_before_anything_opens(
     make_settings: MakeSettings, tmp_path: Path
 ) -> None:
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
-        await build_application(make_settings(data_dir=tmp_path))
+        await build_application(make_settings(data_dir=tmp_path, llm_provider="anthropic"))
 
     assert not (tmp_path / MEMORY_DB_FILENAME).exists()
 

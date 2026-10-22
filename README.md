@@ -75,11 +75,14 @@ Two runtime modes:
 
 | Mode | LLM | STT | TTS | Network |
 | --- | --- | --- | --- | --- |
-| `cloud` (default) | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
-| `cloud` + `JARVIS_LLM_PROVIDER=ollama` | Ollama (local HTTP API) | faster-whisper | edge-tts | TTS only |
+| `cloud` (default) | Ollama `qwen2.5:7b` (local HTTP API, free) | faster-whisper | edge-tts | TTS only |
+| `cloud` + `JARVIS_LLM_PROVIDER=anthropic` | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
 | `local` (`uv sync --extra local`, `download_models.py --local`) | llama.cpp (in process) | whisper.cpp | Piper | none |
 
 Measured latency, quality, privacy and cost of each mode: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
+Small local models get a short, relevant tool list per request instead of all
+of them, and never get to claim success for a tool that failed:
+[ADR-0020](docs/adr/0020-tool-selection-for-small-models.md).
 
 Full design, threading model and trade-offs: [ARCHITECTURE.md](ARCHITECTURE.md)
 and the [ADRs](docs/adr/README.md).
@@ -88,17 +91,23 @@ and the [ADRs](docs/adr/README.md).
 
 Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), CMake ≥ 3.28,
 Ninja, Visual Studio 2022/2026 with the "Desktop development with C++"
-workload, LLVM (for clang-format / clang-tidy).
+workload, LLVM (for clang-format / clang-tidy), and
+[Ollama](https://ollama.com/download) for the default, free, local LLM.
 
 ```powershell
 git clone --recurse-submodules https://github.com/b1-loop/jarvis-desktop.git
 cd jarvis
+ollama pull qwen2.5:7b   # the default model; Ollama must be running
 uv sync --all-extras
 uv run python scripts/build_native.py
 uv run python scripts/download_models.py
-copy .env.example .env   # add ANTHROPIC_API_KEY
+copy .env.example .env   # no key needed for the Ollama default
 uv run jarvis --text-only
 ```
+
+Optional cloud upgrade: Claude answers better and faster on long tool
+chains. Set `JARVIS_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in
+`.env`; everything else stays the same.
 
 macOS and Linux: the OS layer is behind a `Platform` interface and not yet
 implemented for those systems. Text-only mode runs anywhere.
@@ -106,7 +115,7 @@ implemented for those systems. Text-only mode runs anywhere.
 ## Usage
 
 ```powershell
-uv run jarvis                       # cloud mode, wake word "hey jarvis"
+uv run jarvis                       # default mode (Ollama LLM), wake word "hey jarvis"
 uv run jarvis --mode local          # fully offline
 uv run jarvis --no-wakeword         # push-to-talk with the global hotkey only
 uv run jarvis --text-only           # type instead of talk, for development

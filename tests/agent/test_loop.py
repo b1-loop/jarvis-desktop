@@ -3,15 +3,16 @@ from collections.abc import Callable
 
 import pytest
 
+from jarvis.agent.confirmation import DECLINED_SPOKEN
 from jarvis.agent.loop import (
     APOLOGY,
     CLOUD_HINT,
-    NOTHING_DONE,
     NOTHING_TO_SAY,
     ROUND_LIMIT_DETAIL,
     SUMMARY_REQUEST,
     AgentLimits,
 )
+from jarvis.agent.tool_selection import RelevanceToolSelector
 from jarvis.config import Settings
 from jarvis.core.events import AssistantSaid, Event, EventBus, LatencySample
 from jarvis.llm.base import (
@@ -24,6 +25,7 @@ from jarvis.llm.base import (
 )
 from tests.agent.fakes import DestructiveTool, EchoTool, FakeConfirmation
 from tests.agent.llm_fakes import (
+    AddNoteTool,
     Block,
     FakeMemory,
     ScriptedLLM,
@@ -192,13 +194,125 @@ async def test_fallback_summary_uses_the_tools_own_words(make_settings: MakeSett
     assert sink.sentences == ["hi there"]
 
 
-async def test_fallback_when_every_tool_failed(make_settings: MakeSettings) -> None:
-    llm = ScriptedLLM(rounds=[tool_round(call("t1", "ghost")), text_round(), text_round()])
+async def test_fallback_when_every_tool_failed_uses_the_failures_own_words(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(rounds=[tool_round(call("t1", "ghost")), text_round()])
+    sink = SentenceCollector()
+
+    report = await make_agent(make_settings(), llm).respond("do magic", sink)
+
+    assert sink.sentences == ["I don't have a tool called ghost."]
+    assert report.llm_rounds == 2  # no summary request: nothing the model adds is grounded
+
+
+async def test_success_claim_after_a_decline_is_replaced_by_the_decline(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(
+        rounds=[
+            tool_round(call("t1", "destroy", target="logs")),
+            text_round("Done. ", "It printed: ansel."),
+        ]
+    )
+    sink = SentenceCollector()
+    agent = make_agent(
+        make_settings(), llm, DestructiveTool(), confirmation=FakeConfirmation(answers=[False])
+    )
+
+    report = await agent.respond("delete the logs", sink)
+
+    assert sink.sentences == [DECLINED_SPOKEN]
+    assert report.reply == DECLINED_SPOKEN
+    assert "Done" not in report.reply
+
+
+async def test_duplicate_failures_are_spoken_once(make_settings: MakeSettings) -> None:
+    llm = ScriptedLLM(
+        rounds=[tool_round(call("t1", "ghost"), call("t2", "ghost")), text_round("All done!")]
+    )
+    sink = SentenceCollector()
+
+    await make_agent(make_settings(), llm).respond("do magic twice", sink)
+
+    assert sink.sentences == ["I don't have a tool called ghost."]
+
+
+async def test_retry_after_a_failure_is_spoken_and_its_success_summarised(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(
+        rounds=[
+            tool_round(call("t1", "ghost")),
+            tool_round(call("t2", "echo", text="hi"), text="Let me try echo instead."),
+            text_round("Echo said hi."),
+        ]
+    )
+    sink = SentenceCollector()
+
+    await make_agent(make_settings(), llm, EchoTool()).respond("say hi", sink)
+
+    assert sink.sentences == ["Let me try echo instead.", "Echo said hi."]
+
+
+async def test_partial_success_keeps_the_model_summary(make_settings: MakeSettings) -> None:
+    llm = ScriptedLLM(
+        rounds=[
+            tool_round(call("t1", "echo", text="hi"), call("t2", "ghost")),
+            text_round("I echoed hi but had no ghost tool."),
+        ]
+    )
+    sink = SentenceCollector()
+
+    await make_agent(make_settings(), llm, EchoTool()).respond("echo and haunt", sink)
+
+    assert sink.sentences == ["I echoed hi but had no ghost tool."]
+
+
+async def test_llm_failure_after_a_failed_tool_is_still_apologised_for(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(rounds=[tool_round(call("t1", "ghost")), LLMError("connection reset")])
     sink = SentenceCollector()
 
     await make_agent(make_settings(), llm).respond("do magic", sink)
 
-    assert sink.sentences == [NOTHING_DONE]
+    assert sink.sentences[:2] == [APOLOGY, "Connection reset."]
+
+
+async def test_only_relevant_tools_are_offered_and_used_ones_stay(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(
+        rounds=[tool_round(call("t1", "destroy", target="x")), text_round("Deleted x.")]
+    )
+    agent = make_agent(
+        make_settings(),
+        llm,
+        EchoTool(),
+        DestructiveTool(),
+        AddNoteTool(),
+        selector=RelevanceToolSelector(max_tools=2),
+    )
+
+    await agent.respond("repeat after me", SentenceCollector())
+
+    assert [tool.name for tool in llm.tools_seen[0]] == ["echo"]
+    assert [tool.name for tool in llm.tools_seen[1]] == ["destroy", "echo"]
+
+
+async def test_default_selector_follows_the_settings_cap(make_settings: MakeSettings) -> None:
+    llm = ScriptedLLM(rounds=[text_round("Hello.")])
+    agent = make_agent(
+        make_settings(max_tools_per_turn=1, core_tools=[]),
+        llm,
+        EchoTool(),
+        AddNoteTool(),
+    )
+
+    await agent.respond("add a note", SentenceCollector())
+
+    assert [tool.name for tool in llm.tools_seen[0]] == ["add_note"]
 
 
 async def test_summary_round_tool_calls_are_ignored(make_settings: MakeSettings) -> None:

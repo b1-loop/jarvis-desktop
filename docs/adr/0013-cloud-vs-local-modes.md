@@ -151,3 +151,22 @@ own run of the script.
   device even if the CUDA runtime (`cublas64_12.dll`) is missing, and then
   fails to load; the benchmark pins `cpu`/`int8`. Choosing a safer CLOUD
   default is left to the CLOUD provider owner.
+
+## Update 2026-10-22: Ollama is the default LLM
+
+The product decision changed: Jarvis now runs on Ollama with `qwen2.5:7b`
+by default (`Settings.llm_provider = "ollama"`), because it is free, local
+and needs no account. Claude stays available as the cloud upgrade with
+`JARVIS_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`; only then does
+startup demand the key. The CLOUD runtime mode keeps its name and its
+speech stack (faster-whisper, edge-tts). LOCAL mode is unchanged: it
+still uses llama.cpp unless Ollama was set explicitly, so inheriting the
+new default does not change what `--mode local` runs. Making a 7B model the
+default exposed two weaknesses the text above did not cover, too many tool
+schemas per request and success claimed for declined tools;
+[ADR-0020](0020-tool-selection-for-small-models.md) records the fixes.
+
+The faster-whisper `stt_device=auto` problem noted under Consequences is
+now handled in the provider: on a missing cuBLAS/cuDNN library during load
+or the first transcription it falls back to CPU int8 once, with one logged
+warning naming the library. An explicit `cuda` device still fails loudly.

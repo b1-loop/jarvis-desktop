@@ -219,6 +219,9 @@ class Tool[InputT: BaseModel](ABC):
     Subclasses declare ``name``, ``description`` and ``Input`` as class
     attributes and implement ``run``. ``requires_confirmation`` marks tools
     that change the world; ``needs_confirmation`` can refine that per call.
+    ``keywords`` lists words a user says for this tool that appear in neither
+    its name nor its description ("clock" for ``current_time``); the
+    per-turn tool selection (``agent/tool_selection.py``) matches on them.
     Discovery instantiates tools with no arguments, so constructor
     parameters must all have defaults.
     """
@@ -228,6 +231,7 @@ class Tool[InputT: BaseModel](ABC):
     Input: ClassVar[type[BaseModel]]
     category: ClassVar[ToolCategory] = ToolCategory.INFORMATION
     requires_confirmation: ClassVar[bool] = False
+    keywords: ClassVar[tuple[str, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

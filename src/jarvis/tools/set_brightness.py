@@ -57,6 +57,7 @@ class SetBrightnessTool(Tool[SetBrightnessInput]):
     )
     Input = SetBrightnessInput
     category = ToolCategory.SYSTEM
+    keywords = ("dim", "dimmer", "brighter", "screen", "display")
 
     async def run(self, params: SetBrightnessInput, context: ToolContext) -> ToolResult:
         """Compute the clamped target and apply it."""

@@ -43,7 +43,9 @@ def test_help_lists_every_launch_flag() -> None:
 
 
 def test_missing_api_key_stops_startup_with_the_remedy(tmp_path: Path) -> None:
-    result = runner.invoke(app, ["--text-only"], env={"JARVIS_DATA_DIR": str(tmp_path)})
+    env = {"JARVIS_DATA_DIR": str(tmp_path), "JARVIS_LLM_PROVIDER": "anthropic"}
+
+    result = runner.invoke(app, ["--text-only"], env=env)
 
     assert result.exit_code == EXIT_STARTUP_FAILED
     assert "mode=cloud" in result.output

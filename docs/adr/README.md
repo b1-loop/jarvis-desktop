@@ -25,3 +25,4 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | [0017](0017-background-processes-for-dev-tools.md) | Background processes for dev tools: spawn under the sandbox, track in memory | Accepted |
 | [0018](0018-integration-services-bundle.md) | One IntegrationServices bundle on ToolContext | Accepted |
 | [0019](0019-voice-pipeline-and-barge-in.md) | Voice pipeline: sentence pipelining, native-first barge-in, honest degradation | Accepted |
+| [0020](0020-tool-selection-for-small-models.md) | Per-turn tool selection and a grounding guard for small local models | Accepted |

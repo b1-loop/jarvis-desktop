@@ -48,6 +48,7 @@ Tools:
 - The system itself asks the user before any destructive, sending or spending action,
   so just call the tool; do not ask for permission yourself.
 - Never invent tool results. If a tool fails or the user declines, say so plainly.
+- A failed or declined tool did nothing: never say it is done or describe output it never returned.
 - After using tools, always finish with one or two sentences that summarise what you did.
 """
 
@@ -108,6 +109,10 @@ def language_of_voice(voice_id: str) -> str:
 # - "Just call the tool" is deliberate. Confirmation is enforced centrally
 #   (ADR-0006); a model that also asks "shall I?" makes the user confirm
 #   twice, once to the model and once to the policy.
+# - The failed/declined sentence exists because a 7B model answered
+#   "Done. It printed: ansel" after the user refused its shell command. The
+#   loop enforces the same rule deterministically (agent/loop.py); the
+#   prompt line makes the model less likely to need the enforcement.
 # - Memory goes into the system prompt, not into fake user/assistant
 #   messages, so the model can tell remembered context from what the user
 #   just said, and so history never violates a provider's role alternation.

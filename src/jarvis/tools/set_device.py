@@ -85,6 +85,7 @@ class SetDeviceTool(Tool[SetDeviceInput]):
     )
     Input = SetDeviceInput
     category = ToolCategory.SMART_HOME
+    keywords = ("light", "lamp", "switch", "turn")
 
     def needs_confirmation(self, params: SetDeviceInput, context: ToolContext) -> bool:
         """Confirm only for sensitive domains, read from the id (``lock.front_door``)."""

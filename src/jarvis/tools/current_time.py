@@ -40,6 +40,7 @@ class CurrentTimeTool(Tool[CurrentTimeInput]):
     )
     Input = CurrentTimeInput
     category = ToolCategory.INFORMATION
+    keywords = ("time", "clock", "date", "day", "today", "hour")
 
     async def run(self, params: CurrentTimeInput, context: ToolContext) -> ToolResult:
         """Read the clock and phrase it for speech and for the model."""

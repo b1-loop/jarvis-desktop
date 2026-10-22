@@ -12,8 +12,17 @@ from jarvis.llm.ollama_client import OllamaClient
 from jarvis.utils.errors import ConfigError
 
 
-def test_anthropic_is_the_default_provider(make_settings: Callable[..., Settings]) -> None:
-    client = create_llm_client(make_settings(anthropic_api_key="sk-ant-test"))
+def test_ollama_is_the_default_provider(make_settings: Callable[..., Settings]) -> None:
+    client = create_llm_client(make_settings())
+
+    assert isinstance(client, OllamaClient)
+    assert client.model == "qwen2.5:7b"
+
+
+def test_anthropic_is_selected_when_configured(make_settings: Callable[..., Settings]) -> None:
+    client = create_llm_client(
+        make_settings(llm_provider="anthropic", anthropic_api_key="sk-ant-test")
+    )
 
     assert isinstance(client, AnthropicClient)
     assert client.model == "claude-sonnet-5-5"
@@ -23,7 +32,7 @@ def test_anthropic_without_a_key_explains_the_remedy(
     make_settings: Callable[..., Settings],
 ) -> None:
     with pytest.raises(ConfigError, match="ANTHROPIC_API_KEY"):
-        create_llm_client(make_settings())
+        create_llm_client(make_settings(llm_provider="anthropic"))
 
 
 async def test_ollama_provider_uses_the_configured_model_and_url(

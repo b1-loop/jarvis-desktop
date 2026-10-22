@@ -34,7 +34,7 @@ jarvis/
     audio/                asyncio facade over jarvis_audio
     os_integration/       Platform interface and Windows backend over jarvis_os
     stt/ tts/ llm/        interfaces + providers
-    agent/                loop, tool base, registry, confirmation, chaining
+    agent/                loop, tool base, registry, confirmation, chaining, tool selection
     tools/                one plugin per file, auto-discovered
     memory/               SQLite, Chroma, memory manager, user profile
     proactive/            scheduler, triggers, routines
@@ -287,8 +287,8 @@ root, scrubbed environment, timeout, output cap). See ADR-0006.
 
 `agent/loop.py` runs one request: a system prompt from `agent/persona.py`
 (name, tone, language from the TTS voice, spoken-style rules) plus the
-`MemoryManager.recall` context, the user's words and the registry's tool
-definitions go to `LLMClient.stream`; text deltas become sentences for the
+`MemoryManager.recall` context, the user's words and the tool definitions
+chosen by `agent/tool_selection.py` go to `LLMClient.stream`; text deltas become sentences for the
 sink as they complete; requested tools run and their results go back to the
 model until it stops or `JARVIS_MAX_TOOL_ROUNDS` is reached. A turn with
 tools always ends with a spoken summary (asked for once if the model is
@@ -296,6 +296,13 @@ silent, otherwise built from the tools' own `spoken` results). LLM failures
 are spoken as an apology with the provider's remedy and, for cloud
 providers, the LOCAL/Ollama hint. The turn is recorded in memory with its
 tool calls.
+
+`agent/tool_selection.py` keeps small models on track: for Ollama and
+llama.cpp each round offers at most `JARVIS_MAX_TOOLS_PER_TURN` (default 12)
+tools, ranked by word overlap with the request, plus a core set and every
+tool already used this turn; Claude gets all tools. When every tool call of
+a turn failed or was declined, the loop ends with the tools' own `spoken`
+sentences instead of the model's final text. See ADR-0020.
 
 `agent/chaining.py` makes the chain robust: one `ToolChain` per request
 with a tool-call budget, bounded parallel execution of the calls in one

@@ -10,6 +10,12 @@ back to the model, and the loop repeats until the model stops or the
 tool-round limit is reached. A turn that used tools always ends with a
 spoken summary.
 
+Two guards keep small local models honest. A :class:`ToolSelector` trims the
+tool list each round to what the request needs (ADR-0020), and when every
+tool call of the turn failed or was declined, the closing words come from
+the tools' own results instead of the model, which has been seen to report
+"Done" for a command the user had just refused.
+
 The turn is plain ``async`` code with no shielding, so cancelling the task
 that runs it (barge-in, step 7) stops streaming and tool execution at the
 next await.
@@ -17,7 +23,7 @@ next await.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass
 from typing import Final, Protocol
 
@@ -31,6 +37,7 @@ from jarvis.agent.confirmation import ConfirmationPolicy
 from jarvis.agent.persona import Persona
 from jarvis.agent.registry import ToolRegistry
 from jarvis.agent.tool import ToolContext
+from jarvis.agent.tool_selection import RelevanceToolSelector, ToolSelector
 from jarvis.core.events import AssistantSaid, LatencySample
 from jarvis.llm.base import (
     AssistantMessage,
@@ -122,6 +129,8 @@ class Agent:
         limits: Tool-round, tool-call and parallelism bounds.
         cloud_provider: Whether ``llm`` is a hosted service, which decides
             if a failure apology suggests switching to local mode.
+        selector: Which tools each request offers the model; defaults to
+            ``RelevanceToolSelector.from_settings(context.settings)``.
     """
 
     def __init__(
@@ -135,6 +144,7 @@ class Agent:
         memory: ConversationMemory | None = None,
         limits: AgentLimits | None = None,
         cloud_provider: bool = False,
+        selector: ToolSelector | None = None,
     ) -> None:
         self.llm = llm
         self.registry = registry
@@ -144,6 +154,7 @@ class Agent:
         self.memory = memory
         self.limits = limits or AgentLimits()
         self.cloud_provider = cloud_provider
+        self.selector = selector or RelevanceToolSelector.from_settings(context.settings)
 
     async def respond(self, user_text: str, sink: SentenceSink) -> TurnReport:
         """Answer ``user_text``, streaming sentences into ``sink``.
@@ -154,11 +165,16 @@ class Agent:
         """
         return await _Turn(self, user_text, sink).run()
 
-    def tool_definitions(self) -> list[ToolDefinition]:
-        """The registry's tools in the provider-neutral shape."""
+    def tool_definitions(self, request: str, *, keep: Collection[str] = ()) -> list[ToolDefinition]:
+        """The tools offered for ``request`` in the provider-neutral shape.
+
+        Args:
+            request: The user's words, which the selector ranks tools against.
+            keep: Tools already used this turn; they stay offered.
+        """
+        tools = self.selector.select(request, self.registry.tools(), keep=keep)
         return [
-            ToolDefinition.from_model(tool.name, tool.description, tool.Input)
-            for tool in self.registry.tools()
+            ToolDefinition.from_model(tool.name, tool.description, tool.Input) for tool in tools
         ]
 
 
@@ -180,9 +196,9 @@ class _Turn:
             max_calls=agent.limits.max_tool_calls,
             max_parallel=agent.limits.max_parallel_tools,
         )
-        self.tools = agent.tool_definitions()
         self.messages: list[Message] = []
         self.spoken: list[str] = []
+        self.held: list[str] | None = None
         self.spoken_since_tools = False
         self.llm_rounds = 0
         self.round_limit_hit = False
@@ -217,7 +233,7 @@ class _Turn:
             tool_rounds += 1
             self.spoken_since_tools = False
             self.messages.append(await self.chain.run_round(calls, round_index=tool_rounds))
-        if tool_rounds and not self.spoken_since_tools:
+        if tool_rounds and not self.spoken_since_tools and not self._every_call_failed():
             await self._request_summary()
 
     async def _system_prompt(self) -> str:
@@ -237,7 +253,8 @@ class _Turn:
         watch = Stopwatch(self.clock)
         splitter = SentenceSplitter()
         done: Done | None = None
-        stream = self.agent.llm.stream(self.messages, self.tools)
+        self.held = [] if self._every_call_failed() else None
+        stream = self.agent.llm.stream(self.messages, self._offered_tools())
         try:
             async for event in stream:
                 done = await self._handle(event, splitter) or done
@@ -249,7 +266,36 @@ class _Turn:
         if done is None:
             raise LLMError(f"{self.agent.llm.model} stream ended without a final event")
         self.messages.append(done.message)
+        await self._release_held(done)
         return done
+
+    def _offered_tools(self) -> list[ToolDefinition]:
+        """This round's tools: re-selected so tools used earlier stay offered."""
+        used = {record.name for record in self.chain.records}
+        tools = self.agent.tool_definitions(self.user_text, keep=used)
+        log.debug("agent.tools.offered", count=len(tools), tools=[tool.name for tool in tools])
+        return tools
+
+    def _every_call_failed(self) -> bool:
+        """True once tools were called this turn and not one of them succeeded."""
+        records = self.chain.records
+        return bool(records) and not any(record.ok for record in records)
+
+    async def _release_held(self, done: Done) -> None:
+        """Speak or drop what the model said while every tool had failed.
+
+        A reply that calls more tools is the model trying again, so its words
+        are spoken. A final reply is replaced by the tools' own results in
+        ``run``: after nothing succeeded, nothing the model adds is grounded.
+        """
+        held, self.held = self.held, None
+        if not held:
+            return
+        if done.message.tool_calls:
+            for sentence in held:
+                await self._emit(sentence)
+            return
+        log.warning("agent.grounding.reply_replaced", dropped=" ".join(held))
 
     async def _handle(self, event: LLMEvent, splitter: SentenceSplitter) -> Done | None:
         if isinstance(event, TextDelta):
@@ -269,6 +315,7 @@ class _Turn:
             log.warning("agent.summary.ignored_tool_calls", count=len(done.message.tool_calls))
 
     async def _apologise(self, error: LLMError) -> None:
+        self.held = None
         self.error = str(error)
         log.error("agent.llm_failed", error=self.error, cloud=self.agent.cloud_provider)
         await self._emit(APOLOGY)
@@ -277,6 +324,9 @@ class _Turn:
             await self._emit(CLOUD_HINT)
 
     async def _emit(self, sentence: str) -> None:
+        if self.held is not None:
+            self.held.append(sentence)
+            return
         if not self.spoken:
             self.bus.publish(LatencySample(stage="agent.first_sentence", ms=self.watch.elapsed_ms))
         self.spoken.append(sentence)
@@ -284,11 +334,17 @@ class _Turn:
         await self.sink(sentence)
 
     def _fallback_summary(self) -> str:
-        """Built from the tools' own spoken results when the model said nothing."""
-        succeeded = [record.spoken for record in self.chain.records if record.ok and record.spoken]
-        if succeeded:
-            return " ".join(dict.fromkeys(succeeded))
-        return NOTHING_DONE if self.chain.records else NOTHING_TO_SAY
+        """Built from the tools' own spoken results when the model said nothing.
+
+        Successes are reported when there are any; when every call failed,
+        the failures' own sentences ("Okay, I won't do that.") are the summary.
+        """
+        records = self.chain.records
+        succeeded = [record.spoken for record in records if record.ok and record.spoken]
+        reported = succeeded or [record.spoken for record in records if record.spoken]
+        if reported:
+            return " ".join(dict.fromkeys(reported))
+        return NOTHING_DONE if records else NOTHING_TO_SAY
 
     def _report(self) -> TurnReport:
         return TurnReport(
@@ -347,6 +403,18 @@ async def _close(stream: AsyncIterator[LLMEvent]) -> None:
 #   from the tools' own ``spoken`` sentences: "always end with a spoken
 #   summary" holds even when the model misbehaves, without inventing
 #   anything a tool did not report.
+# - Grounding guard: once every call of the turn has failed or been
+#   declined, the model's next reply is held back. If it calls tools again
+#   it is spoken; if it is the final answer it is dropped and the turn ends
+#   with the failed tools' own ``spoken`` sentences, deduplicated. Replacing
+#   rather than checking the text is deliberate: deciding whether free text
+#   "claims success" needs a classifier, and a 7B model's "Done. It printed:
+#   ansel" after a declined command (a real run) shows the model cannot be
+#   the judge. The cost is losing a correct paraphrase or a follow-up
+#   question in that case; the tools' sentences are short, true and say
+#   what did not happen. No summary request is made then, saving a round.
+# - The tool list is re-selected every round with the tools already used
+#   pinned, so a chain keeps its tools while each round stays short.
 # - Memory failures are logged with a traceback and the turn continues: a
 #   broken database must not make Jarvis mute (graceful degradation).
 #   LLM failures become an apology that includes the provider's own remedy

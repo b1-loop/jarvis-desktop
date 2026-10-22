@@ -50,6 +50,15 @@ DEFAULT_SHELL_ALLOWLIST: Final[tuple[str, ...]] = (
 )
 """Programs the shell tool runs without asking; anything else needs spoken confirmation."""
 
+DEFAULT_CORE_TOOLS: Final[tuple[str, ...]] = ("current_time", "web_search")
+"""Tools offered on every turn when the per-turn selection is active (ADR-0020)."""
+
+SMALL_MODEL_TOOLS_PER_TURN: Final = 12
+"""Tool schemas per request for Ollama and llama.cpp models; measured in ADR-0020."""
+
+ALL_TOOLS_PER_TURN: Final = 0
+"""``max_tools_per_turn`` value that offers every tool (the Claude default)."""
+
 
 class RuntimeMode(StrEnum):
     """Which set of providers the pipeline is assembled from.
@@ -102,7 +111,7 @@ class Settings(BaseSettings):
     models_dir: Path = Path("models")
 
     # LLM
-    llm_provider: LLMProvider = "anthropic"
+    llm_provider: LLMProvider = "ollama"
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     llm_model: str = "claude-sonnet-5-5"
     vision_model: str = "claude-sonnet-5-5"
@@ -273,6 +282,32 @@ class Settings(BaseSettings):
     dashboard_enabled: bool = True
     proactive_enabled: bool = True
 
+    # Agent hardening
+    max_tools_per_turn: int | None = Field(default=None, ge=0)
+    core_tools: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: list(DEFAULT_CORE_TOOLS)
+    )
+
+    @field_validator("core_tools", mode="before")
+    @classmethod
+    def _split_core_tools(cls, value: object) -> object:
+        """Accept ``current_time,web_search`` from the env file."""
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    def tools_per_turn(self) -> int:
+        """How many tool schemas one request may carry; 0 means all of them.
+
+        ``JARVIS_MAX_TOOLS_PER_TURN`` wins when set. Otherwise Claude gets
+        every tool and the small models (Ollama, llama.cpp, and LOCAL mode,
+        which never uses Claude) get a short, relevant list.
+        """
+        if self.max_tools_per_turn is not None:
+            return self.max_tools_per_turn
+        uses_claude = self.mode is RuntimeMode.CLOUD and self.llm_provider == "anthropic"
+        return ALL_TOOLS_PER_TURN if uses_claude else SMALL_MODEL_TOOLS_PER_TURN
+
 
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can
@@ -280,9 +315,11 @@ class Settings(BaseSettings):
 # - SecretStr for every credential so an accidental repr() or log never leaks
 #   it; the redaction processor in utils/logging.py is the second line of
 #   defence.
-# - Model names default to the current Claude Sonnet because it has the best
-#   latency/quality balance for a conversational assistant; Opus is a config
-#   change away.
+# - The LLM provider defaults to Ollama with qwen2.5:7b: free, local and
+#   good enough for tool calling once the tool list is trimmed per turn
+#   (ADR-0020). Claude is the opt-in upgrade (JARVIS_LLM_PROVIDER=anthropic,
+#   ADR-0013); its model names default to the current Sonnet because it has
+#   the best latency/quality balance for a conversational assistant.
 # - llm_provider is separate from RuntimeMode on purpose: Ollama is a third
 #   option that runs locally but is not the fully offline LOCAL mode (it
 #   still pairs with faster-whisper and edge-tts). The default Ollama model
