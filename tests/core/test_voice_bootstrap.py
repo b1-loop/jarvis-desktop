@@ -289,3 +289,35 @@ def test_build_overlay_honours_a_disabled_boot_animation(make_settings: MakeSett
 
     assert isinstance(overlay._native, StubOverlay)
     assert not overlay._native.boot_started
+
+
+def test_build_overlay_passes_the_boot_readout(
+    make_settings: MakeSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(voice_bootstrap, "default_microphone_name", lambda: "Test Mic")
+    overlay = voice_bootstrap.build_overlay(
+        make_settings(overlay_enabled=False, ollama_model="qwen2.5:7b", llm_provider="ollama")
+    )
+
+    assert isinstance(overlay._native, StubOverlay)
+    assert overlay._native.boot_info == [
+        ("MODEL", "qwen2.5:7b"),
+        ("MODE", "CLOUD"),
+        ("MIC", "Test Mic"),
+    ]
+
+
+def test_boot_readout_names_the_model_of_each_mode(
+    make_settings: MakeSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(voice_bootstrap, "default_microphone_name", lambda: None)
+
+    claude = voice_bootstrap.boot_readout(
+        make_settings(llm_provider="anthropic", llm_model="claude-test")
+    )
+    local = voice_bootstrap.boot_readout(make_settings(mode=RuntimeMode.LOCAL))
+
+    assert claude["MODEL"] == "claude-test"
+    assert claude["MIC"] == "system default"
+    assert local["MODE"] == "LOCAL"
+    assert local["MODEL"].endswith(".gguf")

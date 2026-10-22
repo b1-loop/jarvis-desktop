@@ -4,10 +4,13 @@ The overlay is a small always-on-top HUD showing what Jarvis is doing: an
 animated ring whose motion tells the state (breathing when idle, a radial
 waveform while listening and speaking, orbiting arcs while thinking, a
 ripple when the wake word is heard), the user's transcript and the spoken
-reply. At startup it can play a short boot sequence in the middle of the
-screen before gliding into its corner. All rendering and animation happen
-on a native UI thread; Python only pushes state through cheap, thread-safe
-setters and never receives callbacks.
+reply, with a wireframe globe, orbiting satellites and a particle field
+around it, all bloomed on the GPU (ADR-0023). At startup it plays a ~4 s
+boot sequence in the middle of the screen, with a diagnostic readout of
+real values passed in by the caller, before whipping into its corner.
+All rendering and animation happen on a native UI thread; Python only
+pushes state through cheap, thread-safe setters and never receives
+callbacks.
 
 The native window is injected through the :class:`NativeOverlay` Protocol
 so the facade is unit-tested with fakes, and :class:`StubOverlay` stands in
@@ -19,6 +22,7 @@ starts; the tray icon and dashboard read the same state from the event bus.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, cast
@@ -64,14 +68,36 @@ class OverlayTheme(StrEnum):
     AMBER = "amber"
 
 
+class OverlayIntensity(StrEnum):
+    """How rich the HUD is (particles, bloom, motion); values are the settings spelling."""
+
+    CALM = "calm"
+    NORMAL = "normal"
+    MAX = "max"
+
+
+class OverlaySize(StrEnum):
+    """Preset size of the corner HUD; values are the settings spelling."""
+
+    COMPACT = "compact"
+    NORMAL = "normal"
+    LARGE = "large"
+
+
+BootInfo = Mapping[str, str]
+"""Diagnostic readout for the boot sequence, label to value, in display order."""
+
+
 @dataclass(frozen=True, slots=True)
 class OverlayConfig:
     """Geometry and behaviour of the panel. Sizes are logical pixels at 96 DPI.
 
     Attributes:
         corner: Which corner of the primary monitor's work area to anchor to.
-        width: Panel width.
-        height: Panel height.
+        size: Preset size of the HUD (compact 420x132, normal 600x216, large
+            760x300 at 96 DPI); its text scales with it.
+        width: Explicit panel width overriding the preset, or None.
+        height: Explicit panel height overriding the preset, or None.
         margin: Distance from the two edges of the chosen corner.
         click_through: Let clicks fall through to the window underneath.
         opacity: Overall opacity, 0 (invisible) to 255 (opaque).
@@ -83,11 +109,15 @@ class OverlayConfig:
             whole-window-alpha fallback is used when it is off or unavailable.
         theme: Palette of the HUD.
         boot_animation: Whether :meth:`Overlay.play_boot` plays anything.
+        intensity: Particle count, bloom strength and motion of the HUD.
+        bloom: Run the GPU bloom pipeline (it falls back to plain additive
+            light by itself if the GPU cannot run it).
     """
 
     corner: OverlayCorner = OverlayCorner.BOTTOM_RIGHT
-    width: int = 420
-    height: int = 132
+    size: OverlaySize = OverlaySize.LARGE
+    width: int | None = None
+    height: int | None = None
     margin: int = 24
     click_through: bool = True
     opacity: int = 235
@@ -98,6 +128,8 @@ class OverlayConfig:
     transparent: bool = True
     theme: OverlayTheme = OverlayTheme.CYAN
     boot_animation: bool = True
+    intensity: OverlayIntensity = OverlayIntensity.NORMAL
+    bloom: bool = True
 
 
 class NativeOverlay(Protocol):
@@ -125,14 +157,20 @@ class NativeOverlay(Protocol):
     def wake_pulse(self) -> None:
         """Ripple the ring outwards to acknowledge the wake word."""
 
-    def play_boot(self) -> bool:
-        """Start the boot sequence; True only for the call that started it."""
+    def play_boot(self, info: Sequence[tuple[str, str]] = ()) -> bool:
+        """Start the boot sequence with ``info`` as its readout; True only once."""
 
     def skip_boot(self) -> bool:
         """Cut a running boot sequence short; True if one was skipped."""
 
     def transparent(self) -> bool:
         """Whether the window has per-pixel transparency."""
+
+    def bloom(self) -> bool:
+        """Whether the GPU bloom pipeline renders the light."""
+
+    def bloom_reason(self) -> str:
+        """Why there is no bloom; empty when there is."""
 
     def fallback_reason(self) -> str:
         """Why the fallback surface is used; empty when transparent."""
@@ -164,6 +202,7 @@ class StubOverlay:
         self.wake_flashes = 0
         self.boot_started = False
         self.boot_skipped = False
+        self.boot_info: list[tuple[str, str]] = []
         self._visible = True
         self._running = True
 
@@ -192,11 +231,12 @@ class StubOverlay:
         """Count the pulse."""
         self.wake_flashes += 1
 
-    def play_boot(self) -> bool:
-        """Record the first request only, like the native model."""
+    def play_boot(self, info: Sequence[tuple[str, str]] = ()) -> bool:
+        """Record the first request (and its readout) only, like the native model."""
         if self.boot_started:
             return False
         self.boot_started = True
+        self.boot_info = list(info)
         return True
 
     def skip_boot(self) -> bool:
@@ -211,6 +251,14 @@ class StubOverlay:
         return False
 
     def fallback_reason(self) -> str:
+        """Explain that nothing is drawn."""
+        return "stub overlay: nothing is drawn"
+
+    def bloom(self) -> bool:
+        """A stub draws nothing, so nothing is bloomed."""
+        return False
+
+    def bloom_reason(self) -> str:
         """Explain that nothing is drawn."""
         return "stub overlay: nothing is drawn"
 
@@ -271,6 +319,11 @@ class Overlay:
         """Whether the panel is drawn with per-pixel transparency."""
         return self._native.transparent()
 
+    @property
+    def bloom(self) -> bool:
+        """Whether the HUD's light is bloomed on the GPU."""
+        return self._native.bloom()
+
     def set_state(self, state: OverlayState) -> None:
         """Switch the HUD to ``state``; the native side cross-fades over ~200 ms."""
         self._state = state
@@ -296,13 +349,20 @@ class Overlay:
         """Same as :meth:`wake_pulse`; the name the voice pipeline's bridge uses."""
         self.wake_pulse()
 
-    def play_boot(self) -> bool:
+    def play_boot(self, info: BootInfo | None = None) -> bool:
         """Play the boot sequence once. Non-blocking and idempotent.
 
-        Returns immediately; the animation (about 2.5 s) runs on the native
+        Returns immediately; the animation (about 4 s) runs on the native
         UI thread and ends with the panel in its corner. Later calls, calls
         after :meth:`close` and calls with ``boot_animation`` disabled do
         nothing.
+
+        Args:
+            info: The systems-check readout, e.g. ``{"MODEL": "qwen2.5:7b",
+                "MODE": "CLOUD", "MIC": "Microphone (Realtek Audio)"}``, shown
+                in insertion order. The idle panel keeps showing ``MODEL``,
+                ``MODE`` and ``MIC`` afterwards. None shows only what the
+                renderer knows itself (GPU, surface, bloom).
 
         Returns:
             True only for the call that started the sequence.
@@ -310,9 +370,10 @@ class Overlay:
         if self._closed or not self._boot_animation:
             log.debug("overlay.boot.skipped", closed=self._closed, enabled=self._boot_animation)
             return False
-        started = self._native.play_boot()
+        lines = [(str(label), str(value)) for label, value in (info or {}).items()]
+        started = self._native.play_boot(lines)
         if started:
-            log.info("overlay.boot.started")
+            log.info("overlay.boot.started", readout=[label for label, _ in lines])
         return started
 
     def skip_boot(self) -> bool:
@@ -363,8 +424,9 @@ def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
     module = _native.load("jarvis_overlay")
     native_config = module.OverlayConfig()
     native_config.corner = module.Corner.__members__[config.corner.value]
-    native_config.width = config.width
-    native_config.height = config.height
+    native_config.size = module.PanelSize.__members__[config.size.name]
+    native_config.width = config.width or 0
+    native_config.height = config.height or 0
     native_config.margin = config.margin
     native_config.click_through = config.click_through
     native_config.opacity = config.opacity
@@ -372,6 +434,8 @@ def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
     native_config.idle_fps = config.idle_fps
     native_config.transparent = config.transparent
     native_config.theme = module.Theme.__members__[config.theme.name]
+    native_config.intensity = module.Intensity.__members__[config.intensity.name]
+    native_config.bloom = config.bloom
     native_config.limits.level_history = config.level_history
     native_config.limits.max_text_chars = config.max_text_chars
     try:
@@ -382,10 +446,29 @@ def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
         "overlay.created",
         corner=config.corner.value,
         theme=config.theme.value,
+        size=config.size.value,
+        intensity=config.intensity.value,
         transparent=window.transparent(),
         fallback_reason=window.fallback_reason() or None,
+        bloom=window.bloom(),
+        bloom_reason=window.bloom_reason() or None,
     )
     return Overlay(cast(NativeOverlay, window), boot_animation=config.boot_animation)
+
+
+def default_microphone_name() -> str | None:
+    """Friendly name of the default capture device, for the boot readout.
+
+    The audio engine records from the default device, so this is the
+    microphone Jarvis listens on. None when the native overlay is not built
+    or there is no capture device.
+    """
+    try:
+        module = _native.load("jarvis_overlay")
+    except NativeUnavailableError:
+        return None
+    name: str | None = module.default_microphone_name()
+    return name
 
 
 def create_overlay(config: OverlayConfig | None = None, *, enabled: bool = True) -> Overlay:
@@ -409,6 +492,9 @@ def create_overlay(config: OverlayConfig | None = None, *, enabled: bool = True)
 # - set_state crosses the boundary as a string on purpose: the native enum
 #   lives in a module that text-only mode never imports, and a name lookup
 #   costs nothing against the per-frame work on the other side.
+# - The boot readout crosses the boundary as a list of pairs, not a dict:
+#   the order is the display order, and pybind11 maps a list of tuples onto
+#   the native vector without a custom caster.
 # - play_boot returns a bool instead of raising on repeats: the launcher and
 #   the voice front end may both ask for it at startup, and "already
 #   playing" is not an error, just a no-op worth knowing about in tests.
