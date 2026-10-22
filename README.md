@@ -133,7 +133,7 @@ failed: [ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). They are
 told the current time every turn, can set "in five minutes" reminders without
 date arithmetic, never see an old tool answer in memory, so live data is
 always fetched again, and take the user's name from the profile rather than
-from a misheard turn: [ADR-0028](docs/adr/0028-grounding-time-and-live-data.md).
+from a misheard turn: [ADR-0029](docs/adr/0029-grounding-time-and-live-data.md).
 Full design, threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
 decision with its reasons: [the ADRs](docs/adr/README.md).
 

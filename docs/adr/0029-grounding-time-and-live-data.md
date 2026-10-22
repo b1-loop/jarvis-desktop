@@ -1,4 +1,4 @@
-# 0028. Grounding small models: the clock, relative reminders, no tool answers in memory, the profile's name
+# 0029. Grounding small models: the clock, relative reminders, no tool answers in memory, the profile's name
 
 Date: 2026-10-22
 Status: Accepted
@@ -104,41 +104,57 @@ the prompt entirely.
 
 ## Consequences
 
-`scripts/compare_models.py` gained two cases: the reminder request above
+`scripts/compare_models.py` gained four cases: the reminder request above
 (its check now matches the reminder's text, so the two reminder cases
-cannot pass on each other's row), and "list todos again", which adds a
-todo straight to the store before asking a second time, so only a fresh
-`list_todos` call can be right. Same machine as ADR-0020, models warm,
-nine requests per round:
+cannot pass on each other's row); "list todos again", which adds a todo
+straight to the store before asking a second time, so only a fresh
+`list_todos` call can be right; and "greeting by name" and "name from
+profile", which plant the profile name Bozhi and three past turns that
+call the user Ravel, and fail on any "Ravel" in the answer. `--case` runs
+a subset. Same machine as ADR-0020, models warm, eleven requests per
+round, `qwen2.5:7b` with thinking off, "before" being `main` with PRs #38
+and #39 (system monitor speed, capture recovery):
 
-| Model (think off) | Before | After |
+| Requests | Before (3 rounds) | After (3 rounds) |
 | --- | --- | --- |
-| `qwen2.5:7b`, all requests | 9/18 (2 rounds) | 27/27 (3 rounds) |
-| `qwen3:8b`, all requests | 13/18 (2 rounds) | 26/27 (3 rounds) |
-| both, the two reminder requests | 0/8 | 11/12 |
-| `qwen2.5:7b`, "list todos" and "list todos again" | 0/4 (spoke memory's note) | 6/6 |
+| all eleven | 21/33 | 31/33 |
+| "list todos", "list todos again" | 0/6 (spoke memory's note) | 4/6 |
+| the two reminder requests | 0/6 (2023 dates, `P1M`) | 6/6 (`in_minutes: 5`) |
+| the two name requests | 6/6 | 6/6 |
 
-"Before" is `main` at PR #37; "after" includes PR #38 (system monitor
-speed, ADR-0026), which is what fixed `qwen2.5:7b`'s RAM answers. The one
-`qwen3:8b` miss is a correct `add_reminder(in_minutes=5)` that the Ollama
-server only answered after a 600 s stall, so the reminder was due ten
-minutes after the request; a shared server, not the model.
+The two misses after the change are one round in which the model said the
+list was empty without calling `list_todos`, for both list requests. The
+name cases did not reproduce the real failure reliably: in a further
+seven-request subset on `main`, 5 of 6 name answers were right and one was
+"Bozhi är ditt namn, Ravel"; after the change no answer has said Ravel
+(12 of 12, including a name-only run). In the real session the profile
+held no name at first, which a synthetic store cannot replay exactly.
 
-On the way there, keeping the user's questions of tool-answered exchanges
-in the recent conversation (only the answers removed) scored 20/27 for
-`qwen2.5:7b`: with a run of unanswered requests in the transcript, it
-"answered" later requests in prose without calling tools ("Påminner om att
-ringa mamma i fem minuter"). Dropping those exchanges whole scored 24/27
-on the same code before PR #38 (the misses were RAM and one invented
-todo list), so that is what memory does.
+`qwen3:8b` (thinking off) was measured on the nine requests before the
+name cases only, to keep it from evicting the user's model: 13/18 before
+(2 rounds, every reminder failing) and 26/27 after (3 rounds); the one
+miss was a correct `add_reminder(in_minutes=5)` answered only after a
+600 s stall of the shared Ollama server, so the reminder was due ten
+minutes after the request.
+
+On the way there, two memory variants were measured and dropped, both
+with `qwen2.5:7b`. Keeping the user's questions of tool-answered exchanges
+in the recent conversation (only the answers removed) scored 20/27: with a
+run of unanswered requests in the transcript, the model "answered" later
+requests in prose without calling tools ("Påminner om att ringa mamma i
+fem minuter"). Letting a hidden recent exchange come back as a
+question-only semantic hit made "list todos again" fail 3 of 3: the model
+read the list off the earlier "lägg till mjölk" question.
 
 - The system prompt changes once a minute, so a provider-side prompt cache
   covers the fixed rules before the clock section, not the whole prompt.
 - An answer the model once gave from memory without a tool call is not
   tool-derived and still appears in the recent conversation; the prompt
   rule, not memory, guards against repeating it.
-- The recent conversation no longer shows tool-answered exchanges at all,
-  and semantic recall finds their questions but not the data a tool
-  answered with (yesterday's agenda, last hour's battery). Facts about the
-  user are stored separately and unaffected.
+- Tool-answered exchanges disappear from the recent conversation, and older
+  ones come back through semantic recall as their questions only, never
+  with the data a tool answered with (yesterday's agenda, last hour's
+  battery). "What did I just ask?" right after a tool turn therefore has
+  nothing to go on. Facts about the user are stored separately and
+  unaffected.
 - The live-data list in the prompt must grow with new kinds of live tools.

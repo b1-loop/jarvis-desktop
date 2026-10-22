@@ -56,7 +56,7 @@ async def test_text_mode_answers_with_tools_and_remembers_the_turn(
     ]
     assert [e.name for e in finished if isinstance(e, ToolCallFinished)] == ["current_time"]
     # The first turn was answered with a tool, so its stale data stays out of
-    # the second prompt (ADR-0028); the turn itself is still stored below.
+    # the second prompt (ADR-0029); the turn itself is still stored below.
     second_system = llm.requests[2][0]
     assert isinstance(second_system, SystemMessage)
     assert "It is a fine evening" not in second_system.text

@@ -443,7 +443,7 @@ async def _close(stream: AsyncIterator[LLMEvent]) -> None:
 #   in-process history, so a new session continues where the last one
 #   ended and the agent itself stays stateless between turns.
 # - The system prompt states the current moment from the context's clock
-#   (ADR-0028), so the model resolves "tomorrow" against today rather than
+#   (ADR-0029), so the model resolves "tomorrow" against today rather than
 #   its training data, and tests see a fixed time. The clock is read even
 #   when memory recall fails; the two are independent.
 # - The tool-round limit answers any still-pending calls with an error
