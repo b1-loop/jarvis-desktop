@@ -39,12 +39,14 @@ py::bytes toBytes(const std::vector<std::uint8_t>& data) {
 // Translators are consulted most-recently-registered first, so the base
 // class goes first and the derived classes after it.
 void defineExceptions(const py::module_& module) {
-    const auto& nativeError =
-        py::register_exception<jarvis::NativeError>(module, "NativeError", PyExc_RuntimeError);
-    const auto& osError = py::register_exception<OsError>(module, "OsError", nativeError.ptr());
-    py::register_exception<UnsupportedError>(module, "UnsupportedError", osError.ptr());
-    py::register_exception<WindowNotFoundError>(module, "WindowNotFoundError", osError.ptr());
-    py::register_exception<ProcessNotFoundError>(module, "ProcessNotFoundError", osError.ptr());
+    const auto& nativeError = py::register_local_exception<jarvis::NativeError>(
+        module, "NativeError", PyExc_RuntimeError);
+    const auto& osError =
+        py::register_local_exception<OsError>(module, "OsError", nativeError.ptr());
+    py::register_local_exception<UnsupportedError>(module, "UnsupportedError", osError.ptr());
+    py::register_local_exception<WindowNotFoundError>(module, "WindowNotFoundError", osError.ptr());
+    py::register_local_exception<ProcessNotFoundError>(module, "ProcessNotFoundError",
+                                                       osError.ptr());
 }
 
 void defineHotkeys(py::module_& module) {
