@@ -1,6 +1,6 @@
 # Jarvis
 
-> A voice-controlled personal AI assistant for the desktop.
+> A voice-controlled personal AI assistant for the Windows desktop.
 > **Python is the conductor, C++ is the muscle.**
 
 [![CI](https://github.com/b1-loop/jarvis-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/b1-loop/jarvis-desktop/actions/workflows/ci.yml)
@@ -8,137 +8,263 @@
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
-Jarvis listens for a wake word, transcribes what you say, lets an LLM agent
-decide which tools to call, and answers out loud while you can still interrupt
-it. Everything that has to be fast (audio capture, voice activity detection,
-wake word, playback, Win32 hooks, local inference) is C++20 behind pybind11.
-Everything that has to be flexible (agent loop, tools, memory, integrations)
-is Python 3.12.
+Say "Hey Jarvis", ask for something, and Jarvis transcribes you, lets an LLM
+agent pick from 62 tool plugins, and answers out loud, sentence by sentence,
+while you can still talk over it. It runs on a free local model (Ollama
+`qwen2.5:7b`) by default, can switch to Claude, and has a fully offline mode.
 
-<!-- Demo GIF placeholder: docs/media/demo.gif (recorded in step 14) -->
-![Demo placeholder](https://via.placeholder.com/800x400?text=Demo+GIF+coming+in+step+14)
+Everything with a real-time budget is C++20 behind pybind11: microphone
+capture, a lock-free ring buffer, Silero VAD and openWakeWord on ONNX
+Runtime, playback with native barge-in, the Win32 layer, whisper.cpp and
+llama.cpp wrappers, and a Dear ImGui overlay. Everything that has to be
+flexible is Python 3.12: the agent loop, tools, memory, integrations,
+scheduling. No native thread ever takes the GIL.
+
 ![Status overlay: boot sequence, then idle, listening, thinking and speaking](docs/media/overlay-boot.gif)
 
-## Status
+> **Demo GIF: not recorded yet.** It needs a person at a microphone; the exact
+> steps are in [`scripts/record_demo.md`](scripts/record_demo.md). The
+> screenshot below is the real dashboard.
 
-| Step | Scope | State |
-| --- | --- | --- |
-| 1 | Plan | done |
-| 2 | Scaffold, tooling, CI | done |
-| 3 | C++ audio engine | done |
-| 4 | C++ Windows integration | done |
-| 5 | STT / TTS / LLM cloud providers | done |
-| 6 | Agent core, text-only loop | done |
-| 7 | Voice pipeline with barge-in | done |
-| 8 | Phase 1 + 2 tools | providers and web/document helpers done, tools pending |
-| 9 | Memory | done |
-| 10 | Proactive and routines | done |
-| 11 | Vision | done |
-| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | C++ wrappers done, Python LOCAL mode pending |
-| 13 | Overlay and dashboard | done |
-| 14 | Docs, ADRs, benchmark | planned |
+![The Jarvis dashboard: live state, transcript, tool calls, stage timings and the memory inspector](docs/media/dashboard.png)
+
+## What it does today
+
+- **Voice in, voice out.** Wake word ("Hey Jarvis") or a global hotkey,
+  VAD-segmented capture with pre-roll, streaming STT, and answers spoken
+  sentence by sentence while the next sentence is still being synthesised.
+- **Barge-in.** Talk over Jarvis and the C++ engine silences playback on
+  the VAD's speech onset, without a round trip through Python; the agent
+  turn is cancelled and what you are saying becomes the next request.
+- **An agent with 62 tools.** Plugins discovered from `src/jarvis/tools/`:
+  computer control (apps, windows, volume, brightness, screenshots, lock,
+  typing at the cursor, clipboard), sandboxed shell commands, files and
+  documents, dev mode (git, tests, stack traces, VS Code, dev servers),
+  notes/todos/reminders, system monitoring, web search and articles,
+  YouTube summaries, email, calendar, chat, Spotify, smart home, screen
+  understanding. Anything that changes the world asks for spoken
+  confirmation first. Full list: [docs/tools.md](docs/tools.md).
+- **Multi-step chaining** with a tool-call budget, parallel calls and one
+  spoken summary; per-turn tool selection keeps 7B models on track.
+- **Memory between sessions.** SQLite (FTS5) for conversations, notes,
+  reminders, todos and facts; ChromaDB for recall by meaning.
+- **Proactive.** Meeting, reminder, low-battery and long-running-command
+  triggers, plus YAML routines such as a weekday morning briefing.
+- **Three runtime configurations.** Ollama (default), Claude, or fully
+  offline with whisper.cpp + llama.cpp + Piper.
+- **Status overlay, tray icon and dashboard** that stay in sync through one
+  event bus.
+- **A desktop app.** Shortcuts on the desktop, in the Start menu and in
+  autostart launch a windowless, single-instance Jarvis whose tray icon is
+  the app; it starts Ollama when needed and logs to a rotating file.
+- **Honest degradation.** No audio build, models or microphone: text mode,
+  with the reason. No wake-word models: hotkey only. TTS failing: printed
+  answers. No CUDA libraries: CPU speech recognition. No credentials:
+  clearly named `Stub*` providers.
+
+Integrations (Gmail, Outlook, Google Calendar, Slack, Discord, Teams,
+Spotify, Home Assistant) are implemented against their real APIs and need
+your own credentials; without them the stub providers answer.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph native["C++20 (pybind11)"]
-        MIC[Mic capture] --> RB[Ring buffer]
-        RB --> WW[Wake word]
-        RB --> VAD[VAD]
-        PB[Playback + barge-in]
-        OS[Win32 integration]
-        INF[whisper.cpp / llama.cpp]
-        OV[Dear ImGui overlay]
+    subgraph native["C++20 via pybind11"]
+        MIC[Mic capture<br/>miniaudio] --> RB[SPSC ring buffer]
+        RB --> PIPE[AudioPipeline<br/>Silero VAD + segmenter<br/>openWakeWord, pre-roll]
+        PIPE -- SpeechStarted --> PB[Playback<br/>native barge-in stop]
+        OSN[jarvis_os<br/>hotkeys, windows, input,<br/>notifications, screenshots]
+        INF[jarvis_inference<br/>whisper.cpp, llama.cpp]
+        OV[jarvis_overlay<br/>Dear ImGui + D3D11]
     end
 
-    subgraph python["Python 3.12"]
-        WW --> SM{State machine}
-        VAD --> SM
-        SM --> STT[STT]
-        STT --> AG[Agent loop]
-        AG <--> LLM[LLM client]
-        AG <--> TOOLS[Tool plugins]
-        TOOLS --> OS
-        AG --> TTS[TTS]
+    subgraph python["Python 3.12 (asyncio)"]
+        TRIG[voice_triggers<br/>wake word or hotkey] --> VIN[VoiceInput]
+        PIPE -. polled events .-> VIN
+        OSN -. polled hotkeys .-> TRIG
+        VIN --> STT[stt: faster-whisper<br/>or whisper.cpp]
+        STT --> ORCH{{Orchestrator +<br/>state machine}}
+        ORCH --> AG[agent.loop + chaining<br/>tool_selection, confirmation]
+        AG <--> LLM[llm: Ollama, Claude<br/>or llama.cpp]
+        AG <--> TOOLS[tools/*<br/>62 plugins]
+        TOOLS --> PLAT[os_integration.Platform]
+        PLAT --> OSN
+        TOOLS --> INTEG[integrations<br/>email, calendar, chat,<br/>music, smart home, web]
+        AG <--> MEM[(memory<br/>SQLite + ChromaDB)]
+        AG --> VOUT[VoiceOutput<br/>sentence pipelining]
+        VOUT --> TTS[tts: edge-tts or Piper]
         TTS --> PB
-        MEM[(SQLite + Chroma)] <--> AG
-        BUS((Event bus)) --- SM
-        BUS --- OV
-        BUS --- TRAY[Tray / dashboard]
+        VOUT --> BI[BargeInController]
+        BI -. arms .-> PIPE
+        LLM --> INF
+        STT --> INF
+        BUS((EventBus))
+        ORCH --- BUS
+        BUS --- BRIDGE[overlay_bridge] --> OV
+        BUS --- UI[tray + dashboard]
+        BUS --- PRO[proactive<br/>scheduler, triggers, routines]
     end
 ```
 
-State machine: `IDLE → LISTENING → THINKING → SPEAKING → IDLE`, with barge-in
-jumping from `SPEAKING` straight back to `LISTENING`.
+State machine: `IDLE -> LISTENING -> THINKING -> SPEAKING -> IDLE`, with
+barge-in jumping from `SPEAKING` straight back to `LISTENING`. Every
+transition is an event, which is how the overlay, tray, dashboard and logs
+stay in sync without the orchestrator knowing about them.
 
-Two runtime modes:
-
-| Mode | LLM | STT | TTS | Network |
+| Configuration | LLM | STT | TTS | Network |
 | --- | --- | --- | --- | --- |
-| `cloud` (default) | Ollama `qwen2.5:7b` (local HTTP API, free) | faster-whisper | edge-tts | TTS only |
-| `cloud` + `JARVIS_LLM_PROVIDER=anthropic` | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
-| `local` (`uv sync --extra local`, `download_models.py --local`) | llama.cpp (in process) | whisper.cpp | Piper | none |
+| `cloud` mode (default) | Ollama `qwen2.5:7b` (local HTTP API, free) | faster-whisper | edge-tts | TTS only |
+| `cloud` + `JARVIS_LLM_PROVIDER=anthropic` | Claude via the Anthropic SDK | faster-whisper | edge-tts | required |
+| `local` mode (`--mode local`) | llama.cpp, in process | whisper.cpp | Piper | none |
 
-Measured latency, quality, privacy and cost of each mode: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
-Small local models get a short, relevant tool list per request instead of all
-of them, and never get to claim success for a tool that failed:
-[ADR-0020](docs/adr/0020-tool-selection-for-small-models.md).
+Trade-offs of each: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
+Small local models get a short, relevant tool list per request and never
+get to claim success for a tool that failed:
+[ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). Full design,
+threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
+decision with its reasons: [the ADRs](docs/adr/README.md).
 
-Full design, threading model and trade-offs: [ARCHITECTURE.md](ARCHITECTURE.md)
-and the [ADRs](docs/adr/README.md).
+## Latency
+
+Measured end to end by [`scripts/benchmark_latency.py`](scripts/benchmark_latency.py)
+on 2026-10-22, without a human: fixed prompts, synthesised once with
+edge-tts, are replayed into the real C++ audio engine in place of the
+microphone (real Silero VAD, segmenter, wake-word model and native
+barge-in), then go through the real STT, the agent with all 62 tools,
+memory and TTS. Median / p90 in milliseconds, 3 runs per prompt after one
+warm-up (3 English prompts, 2 Swedish, 3 scripted barge-ins):
+
+| Stage | cloud mode, English | cloud mode, Swedish | local mode, English |
+| --- | ---: | ---: | ---: |
+| Hotkey -> listening (incl. 80 ms earcon) | 89 / 94 | 95 / 96 | 96 / 112 |
+| End of speech -> transcript | 4414 / 4712 | 2551 / 2833 | 576 / 977 |
+| Transcript -> first LLM token | 2848 / 3370 | 2821 / 2969 | 5807 / 7246 |
+| First sentence -> first audio | 1066 / 1865 | 974 / 3054 | 244 / 270 |
+| **End of speech -> first audio (what you wait for)** | **9193 / 10193** | **7466 / 9375** | **6806 / 12158** |
+| Last word -> first audio (adds the 700 ms VAD hangover) | 9938 / 10958 | 8251 / 10070 | 7530 / 12930 |
+| Barge-in: speech onset -> playback stopped (native) | 450 / 450 | not run | 450 / 458 |
+| Barge-in: playback stopped -> LISTENING (Python) | 30 / 38 | not run | 16 / 37 |
+| Measured turns (of which called a tool) | 9 (5) | 6 (5) | 8 (5) |
+
+Machine: AMD Ryzen AI 9 HX 370 (12 cores / 24 threads), 31 GB RAM, NVIDIA
+RTX 4070 Laptop GPU, Windows 11. Cloud mode = faster-whisper `small` on the
+**CPU** (int8; the CUDA cuBLAS library is not installed here), Ollama
+`qwen2.5:7b` on the GPU, edge-tts. Local mode = whisper.cpp `tiny`,
+llama.cpp Qwen2.5 0.5B on the CPU, Piper. Raw runs: `data/bench/results.json`.
+
+How to read it:
+
+- **Speech recognition on the CPU dominates cloud mode.** The same stage
+  measured 2.1 s (median, 9 turns) in a run 20 minutes earlier on the same
+  machine; the CPU was shared with other build jobs during the published
+  run, and CPU inference is the most load-sensitive stage. With cuBLAS
+  installed it runs on the GPU instead.
+- **The small models reach for tools often**: `web_search` even for "What
+  is the capital of Australia?". "First LLM token" counts the tool call
+  itself; the extra round it causes shows up in the total. In this run it
+  did not dominate: cloud-mode English turns with a tool had a median
+  total of 9.2 s, those without 9.4 s.
+- **Barge-in onset -> stop is 450 ms by design**: the segmenter waits for
+  250 ms of continuous speech before it believes you, and Silero needs a
+  few 32 ms frames to rise above its threshold. The cut itself is native.
+- **Playback ran into a null sink**, so nothing was played aloud: every
+  stage up to "first audio chunk handed to the device" is measured as in
+  real use; a real device adds one period of its buffer (about 10 ms)
+  before the sound is audible. With the null sink the barge-in stop is
+  done by Python at its next 10 ms poll instead of natively, and the
+  stopped -> LISTENING figure is anchored on the engine's sample clock, so
+  it carries about +-10 ms of error (one run read -1 ms).
+- Not measured: Claude (no API key on this machine), GPU speech
+  recognition (no cuBLAS), Swedish in local mode (only an English Piper
+  voice is downloaded), and Swedish barge-in.
+- One local-mode run crashed the application: after a `current_time` tool
+  round, the llama.cpp prompt rendering raised a pybind11 cast error that
+  is not translated into `LLMError`. The benchmark records the crash in the
+  JSON, restarts the assistant and continues; the fix belongs to the LLM
+  provider and is tracked separately.
 
 ## Setup (Windows 11)
 
-Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), CMake ≥ 3.28,
-Ninja, Visual Studio 2022/2026 with the "Desktop development with C++"
-workload, LLVM (for clang-format / clang-tidy), and
-[Ollama](https://ollama.com/download) for the default, free, local LLM.
+Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), CMake 3.28 or
+newer, Ninja, Visual Studio 2022/2026 with the "Desktop development with
+C++" workload, LLVM (clang-tidy), and [Ollama](https://ollama.com/download).
 
 ```powershell
+# 1. The default LLM: free and local. Ollama must be running.
+winget install Ollama.Ollama
+ollama pull qwen2.5:7b
+
+# 2. Code and Python dependencies
 git clone --recurse-submodules https://github.com/b1-loop/jarvis-desktop.git
-cd jarvis
-ollama pull qwen2.5:7b   # the default model; Ollama must be running
+cd jarvis-desktop
 uv sync --all-extras
-uv run python scripts/build_native.py
-uv run python scripts/download_models.py
-copy .env.example .env   # no key needed for the Ollama default
-uv run jarvis --text-only
+
+# 3. Native modules (C++ audio engine, Win32 layer, inference, overlay)
+uv run python scripts/build_native.py           # add --skip-tests to skip Catch2
+
+# 4. Models: VAD + wake word; --local adds whisper.cpp, llama.cpp and Piper (630 MB)
+uv run python scripts/download_models.py --local
+
+# 5. Configuration
+copy .env.example .env                          # no key needed for the Ollama default
+uv run jarvis
 ```
+
+The first voice start downloads the faster-whisper `small` model (about
+500 MB). Without the NVIDIA CUDA libraries (cuBLAS, cuDNN) speech
+recognition falls back to the CPU with one warning; set
+`JARVIS_STT_DEVICE=cpu` to skip the attempt.
 
 Optional cloud upgrade: Claude answers better and faster on long tool
 chains. Set `JARVIS_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in
 `.env`; everything else stays the same.
 
-macOS and Linux: the OS layer is behind a `Platform` interface and not yet
-implemented for those systems. Text-only mode runs anywhere.
+macOS and Linux: the OS layer sits behind the `Platform` interface but only
+the Windows backend exists, and the native audio build currently fetches
+the Windows ONNX Runtime. `--text-only` runs anywhere.
 
-## Usage
+## Using Jarvis
 
 ```powershell
-uv run jarvis                       # default mode (Ollama LLM), wake word "hey jarvis"
-uv run jarvis --mode local          # fully offline
-uv run jarvis --no-wakeword         # push-to-talk with the global hotkey only
-uv run jarvis --text-only           # type instead of talk, for development
+uv run jarvis                  # voice, default configuration, wake word "hey jarvis"
+uv run jarvis --no-wakeword    # hotkey only (push to talk)
+uv run jarvis --mode local     # fully offline: whisper.cpp + llama.cpp + Piper
+uv run jarvis --text-only      # type instead of talk; no audio devices or native build needed
+uv run jarvis --background     # desktop app: no console, tray icon only, one instance, log file
 ```
 
-### Using Jarvis
-
 - **Wake word.** Say "Hey Jarvis", wait for the short beep, then speak.
-  Jarvis listens until you pause, answers aloud and prints the exchange in
-  the terminal (`you> ...`, `Jarvis> ...`).
-- **Hotkey.** Press `Ctrl+Alt+J` (`JARVIS_HOTKEY`) instead of the wake word.
-  With `--no-wakeword`, or when the wake-word models are missing, the hotkey
-  is the only trigger and Jarvis says so when it starts.
-- **Barge-in.** Just talk over Jarvis: it stops speaking at once and treats
-  what you say as the next request. Speech in the first 400 ms of an answer
-  is ignored so Jarvis does not interrupt itself (`JARVIS_BARGE_IN_ECHO_GUARD_MS`).
-- **Text mode.** `--text-only` types instead of talks and needs no audio
-  devices or native build. Voice mode falls back to it, with the reason,
-  when the audio build, the models or a microphone are missing.
-- **Headphones.** There is no acoustic echo cancellation: with loud
-  speakers Jarvis can hear itself and stop mid-sentence. Use headphones or
-  turn the volume down (or raise `JARVIS_VAD_MIN_SPEECH_MS`).
+  Jarvis listens until you pause (700 ms of silence), answers aloud and
+  prints the exchange in the terminal (`you> ...`, `Jarvis> ...`).
+- **Hotkey.** `Ctrl+Alt+J` (`JARVIS_HOTKEY`) does the same as the wake
+  word. With `--no-wakeword`, or when the wake-word models are missing, it
+  is the only trigger and Jarvis says so at start-up.
+- **Barge-in.** Talk over Jarvis: it stops at once and treats what you say
+  as the next request. Speech in the first 400 ms of an answer is ignored so
+  Jarvis does not interrupt itself (`JARVIS_BARGE_IN_ECHO_GUARD_MS`).
+- **Confirmation.** Before sending, deleting, spending or changing the
+  system, Jarvis asks; answer "yes" or "no". `JARVIS_CONFIRM_DESTRUCTIVE=false`
+  is trusted mode.
+- **Text mode.** `--text-only` types instead of talks. Voice mode falls
+  back to it, with the reason, when the audio build, the models or a
+  microphone are missing.
+- **Swedish and other languages.** Pick a voice and tell the recogniser
+  the language, e.g. in `.env`:
+  `JARVIS_TTS_VOICE=sv-SE-MattiasNeural` and `JARVIS_STT_LANGUAGE=sv`.
+  The persona answers in the voice's language. The wake word stays the
+  English "Hey Jarvis"; in local mode use a Piper voice of that language
+  (`JARVIS_LOCAL_TTS_MODEL`) and a multilingual ggml whisper model.
+- **Local mode.** `--mode local` needs `download_models.py --local` and
+  sends nothing off the machine. The bundled Qwen2.5 0.5B is the smallest
+  model that exercises the code path; point `JARVIS_LOCAL_LLM_MODEL` at a
+  bigger GGUF for better answers.
+- **Overlay, tray and dashboard.** The overlay shows state, waveform and
+  transcript in a screen corner; the tray menu shows the dashboard, toggles
+  the overlay and mutes the microphone.
+- **Headphones.** There is no acoustic echo cancellation yet: with loud
+  speakers Jarvis can hear itself after the echo guard and stop
+  mid-sentence. Use headphones or a lower volume.
 - **Leaving.** Say "goodbye", choose Quit in the tray menu, or press Ctrl+C.
 
 ### Install as an app
@@ -171,62 +297,106 @@ If Ollama is the LLM and is not running, Jarvis starts it, hidden.
   tray menu exits.
 
 The shortcuts point at the checkout, so run the script again if you move
-it. ADR-0021 explains why this is a shortcut to `uvw` rather than a frozen
-`.exe`.
+it. [ADR-0021](docs/adr/0021-desktop-launcher.md) explains why this is a
+shortcut to `uvw` rather than a frozen `.exe`.
 
-## Features
+## Status
 
-Phase 1 (core): wake word and hotkey, streaming voice answers with barge-in,
-text-only mode, persistent memory, computer control, sandboxed shell commands
-with spoken confirmation, status overlay and tray icon.
-
-Phase 2 (integrations): email, calendar, web search and article reading,
-YouTube summaries, file search and document summaries, screen understanding,
-dev mode, Slack/Discord/Teams, Spotify, notes and todo, system monitoring,
-smart home.
-
-Phase 3 (wow): proactive notifications, YAML routines, multi-step task
-chaining, document production, configurable persona, fully offline mode,
-dashboard, latency benchmark.
-
-The feature list is tracked step by step in the Status table above.
-Every tool, whether it asks for confirmation and the service it uses is listed in the [tool catalogue](docs/tools.md).
-
-## Latency
-
-Measured by `scripts/benchmark_latency.py`; results table lands in step 14.
+| Step | Scope | State |
+| --- | --- | --- |
+| 1 | Plan | done |
+| 2 | Scaffold, tooling, CI | done |
+| 3 | C++ audio engine | done |
+| 4 | C++ Windows integration | done |
+| 5 | STT / TTS / LLM providers | done |
+| 6 | Agent core, text-only loop | done |
+| 7 | Voice pipeline with barge-in | done |
+| 8 | Phase 1 + 2 tools and integrations | done |
+| 9 | Memory | done |
+| 10 | Proactive behaviour and routines | done |
+| 11 | Screen understanding | done |
+| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | done |
+| 13 | Overlay, tray and dashboard | done |
+| 14 | Docs, ADRs, latency benchmark | done |
 
 ## Roadmap
 
-Steps 3 through 14 in the Status table, then macOS and Linux `Platform`
-backends.
+- **A signed, frozen installer** instead of shortcuts to `uvw` once a build
+  pipeline bundles the native modules and models (ADR-0021).
+- **macOS and Linux `Platform` backends** (and the matching ONNX Runtime
+  download): the interface exists, only `WindowsPlatform` implements it.
+- **Acoustic echo cancellation** (WebRTC APM) so barge-in works on
+  speakers, not only headphones (ADR-0019).
+- **A Swedish wake word**: openWakeWord needs a trained classifier per
+  phrase; today only "Hey Jarvis" ships.
+- **GPU speech recognition out of the box**: faster-whisper runs on CUDA
+  when cuBLAS/cuDNN are installed; bundling or detecting them targets the
+  largest stage in the table above (2-4.5 s on this CPU; the GPU figure
+  has not been measured yet).
+- **Constrained decoding for small models**: grammar-constrained JSON for
+  llama.cpp tool calls instead of parsing free text (considered in ADR-0013).
 
 ## What was hard
 
-Written as the project progresses.
-
-- **Keeping the audio callback real-time safe while Python consumes the
-  data.** The callback only pushes into a lock-free SPSC ring buffer; a
-  worker thread runs the models and Python polls. No native thread ever
-  takes the GIL. Dropped samples are counted and reported instead of
-  silently lost.
-- **Barge-in that feels instant.** The playback queue is drained under a
-  `try_lock` so the device thread never blocks, and the worker stops playback
-  directly when speech starts. Python finds out afterwards through a stop
-  counter rather than being on the critical path.
-- **Reproducing openWakeWord's streaming maths in C++.** Each 80 ms chunk
-  yields 8 mel frames only if three hops of context from the previous chunk
-  are prepended; 76 mel frames make one embedding; 16 embeddings make one
-  score. Getting the window bookkeeping right was the bulk of the work.
-- **Making the native build optional** so text-only development and the
-  Linux CI lane need no compiler (ADR-0002).
+- **Real-time audio without the GIL.** The device callback only pushes
+  into a lock-free SPSC ring buffer; a native worker runs the VAD and the
+  wake-word model; Python polls every 10 ms. Native threads never call into
+  Python, so a slow tool or a garbage-collection pause cannot glitch the
+  microphone, and dropped samples are counted and reported instead of lost
+  silently ([ADR-0003](docs/adr/0003-cpp-audio-hot-path.md)).
+- **Barge-in that feels instant.** The engine stops playback itself on
+  the VAD's speech onset, inside one device period; Python finds out
+  afterwards from a stop counter and only cleans up (drop queued
+  sentences, cancel the turn, start capturing). That cleanup took 23 ms in
+  the step-7 check and 16-30 ms (median) in the benchmark. The hard part
+  was the echo: without AEC, an echo guard arms barge-in only 400 ms after
+  playback starts, and speech must last 250 ms before it counts
+  ([ADR-0019](docs/adr/0019-voice-pipeline-and-barge-in.md)).
+- **openWakeWord's streaming maths in C++.** Each 80 ms chunk yields 8 mel
+  frames only if three hops of context from the previous chunk are
+  prepended; 76 mel frames make one embedding; 16 embeddings make one
+  score. Getting that window bookkeeping identical to the Python reference
+  was the bulk of the audio work.
+- **Parallel agents, colliding ADR numbers.** Steps were built on parallel
+  branches, and four of them independently wrote "ADR-0008". The fix was
+  process, not heroics: branches that share files land through an
+  integration branch (`integration/wave-1`, `-2`, `-3`) where the ADRs were
+  renumbered (0008-0011), cross-references fixed, and the whole suite run
+  once on the combined code before anything reached `main`.
+- **pybind11 global exception translators.** Each extension module bound
+  its own `NativeError` to the same C++ base class. Translators were
+  global, so whichever module was imported last translated everyone's
+  errors: a `jarvis_audio.AudioDeviceError` surfaced as
+  `jarvis_overlay.NativeError` and the voice front end's `except` missed
+  it, depending on import order. Registering them module-locally fixed it.
+- **Tool overload in 7B models.** With all 62 tool schemas in the prompt,
+  `qwen2.5:7b` answered "what time is it?" by running `date` in the shell,
+  and once claimed a declined command had printed output. Per-turn tool
+  selection (at most 12 tools ranked by relevance plus a core set) and a
+  grounding guard fixed both; it also made LOCAL mode usable, because the
+  full schema list alone overflowed the 0.5B model's 4096-token context
+  ([ADR-0020](docs/adr/0020-tool-selection-for-small-models.md)).
+- **Windows-only test quirks.** A locked workstation keeps the desktop
+  alive but denies clipboard and window calls, and `OpenInputDesktop`
+  alone does not reveal it, so the OS tests probe the session lock state
+  and skip; CI runners may have no audio endpoint, so volume tests skip
+  too; and under load Tcl sometimes fails to read `init.tcl` once, so the
+  dashboard retries that one error. Everything that needs a real desktop or
+  device skips with a reason instead of failing at random.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The one-liner:
+See [CONTRIBUTING.md](CONTRIBUTING.md). The GitHub Actions workflow
+(`.github/workflows/ci.yml`) documents the full pipeline (lint, types,
+Python tests on Linux, the Windows native build with Catch2 and
+native-marked tests, sharded clang-tidy, a secrets scan), but it is
+currently switched off in the repository settings to save Actions minutes;
+the same checks run locally through the pre-commit hooks and these
+commands:
 
 ```powershell
-uv run ruff check . ; uv run ruff format --check . ; uv run mypy ; uv run pytest
+uv run ruff check . ; uv run ruff format --check . ; uv run mypy ; uv run pytest -m "not hardware"
+uv run python scripts/build_native.py --tidy    # native build, Catch2 tests, clang-tidy
 ```
 
 ## License

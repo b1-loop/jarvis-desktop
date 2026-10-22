@@ -158,7 +158,7 @@ class ToolServices:
     """What tools reach through ``ToolContext``, built once per process.
 
     Grouped so the composition root passes one value instead of a growing
-    argument list as later steps add services.
+    argument list as services are added.
     """
 
     platform: Platform

@@ -9,6 +9,7 @@ playback with barge-in. Exposed to Python as `jarvis_audio`.
 | --- | --- | --- |
 | `ring_buffer.hpp` | `SpscRingBuffer` | lock-free hand-off from the device callback to the worker; counts drops |
 | `audio_source.hpp` / `microphone.hpp` | `AudioSource`, `MiniaudioMicrophone` | 16 kHz mono float32 capture |
+| `replay_source.hpp` | `ReplayFeed`, `ReplaySource` | virtual microphone: replays queued samples (silence in between) at the real-time rate, for `scripts/benchmark_latency.py` |
 | `audio_sink.hpp` / `speaker.hpp` | `AudioSink`, `MiniaudioSpeaker` | pull-based playback device |
 | `onnx_session.hpp` | `OnnxSession` | minimal RAII wrapper over ONNX Runtime with name-based tensor access |
 | `vad.hpp` / `silero_vad.hpp` | `VoiceActivityDetector`, `SileroVad`, `SpeechSegmenter` | speech probability per 32 ms frame, hysteresis into start/end |
@@ -45,4 +46,6 @@ thread takes the GIL.
 `native/tests/audio/` covers every class. Tests that need model files skip
 themselves when the files are absent; nothing in the suite opens a real
 device. The hardware path is verified by `scripts/record_test_audio.py` and
-the `hardware`-marked Python tests.
+the `hardware`-marked Python tests; the full engine on recorded speech
+(real VAD, segmenter and barge-in, no microphone) is exercised by
+`scripts/benchmark_latency.py` through `ReplaySource`.

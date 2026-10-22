@@ -7,6 +7,12 @@ agent asks before running it, and which service it goes through. The LLM sees
 each tool's `description` and input schema; the descriptions in the code are
 the authoritative wording.
 
+Claude is offered every tool on every request. Ollama and llama.cpp get at
+most `JARVIS_MAX_TOOLS_PER_TURN` (default 12) per round: the core set
+(`JARVIS_CORE_TOOLS`, default `current_time` and `web_search`), the tools
+already used in the turn, and the best matches for the request
+([ADR-0020](adr/0020-tool-selection-for-small-models.md)).
+
 **Confirmation** column: *yes* means the central `ConfirmationPolicy` asks the
 user every time; *per call* means only some argument combinations ask (stated
 in the row); *no* means the call is read-only or a reversible change the user
@@ -78,6 +84,19 @@ root (`JARVIS_SHELL_WORKING_ROOT`), scrubbed environment, timeout, output cap.
 | `system_monitor` | CPU, memory, disk, battery and the heaviest processes | no | psutil probe |
 | `battery_status` | Battery level, charging state and time remaining | no | psutil probe |
 | `current_time` | Current date, time and zone, optionally converted | no | `Clock` |
+
+## Screen understanding
+
+Captures happen only inside one of these calls; each says aloud when the
+screenshot went to a cloud provider ([ADR-0016](adr/0016-screen-understanding.md)).
+They need a vision-capable model: Claude, or Ollama with
+`JARVIS_OLLAMA_VISION_MODEL`; with llama.cpp they say they are unavailable.
+
+| Tool | What it does | Confirmation | Service |
+| --- | --- | --- | --- |
+| `describe_screen` | Describe what is on the screen, optionally one aspect of it | no | `ToolContext.vision` (`ScreenReader`) |
+| `explain_screen_error` | Read the error on screen and explain it with a likely fix | no | `ToolContext.vision` |
+| `ask_about_screen` | Answer the user's own question about the screen | no | `ToolContext.vision` |
 
 ## Why these confirmation choices
 

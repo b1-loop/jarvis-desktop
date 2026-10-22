@@ -481,8 +481,8 @@ def _runner_callback(runner: RoutineRunner, routine: Routine) -> JobCallback:
 #   missing weather tool should produce "skipping it" out loud, not a
 #   traceback in the morning. Per-step timeouts nest inside the routine
 #   budget; asyncio.timeout handles the nesting correctly.
-# - ToolInvoker/Speaker are deliberately tiny so the agent (step 6) and the
-#   orchestrator (step 7) can satisfy them with a two-line adapter and the
+# - ToolInvoker/Speaker are deliberately tiny so the agent and the
+#   orchestrator can satisfy them with a two-line adapter and the
 #   tests here need no agent at all.
 # - Assumption: a step without "speak" is intentionally silent (side-effect
 #   tools such as "set volume"); the runner does not read raw tool output.

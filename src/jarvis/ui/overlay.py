@@ -12,8 +12,9 @@ setters and never receives callbacks.
 The native window is injected through the :class:`NativeOverlay` Protocol
 so the facade is unit-tested with fakes, and :class:`StubOverlay` stands in
 for it in text-only mode or when the native build is missing. The
-orchestrator is the only intended caller of the state setters; the
-launcher calls :meth:`Overlay.play_boot` when Jarvis starts.
+overlay bridge (``core/overlay_bridge.py``) is the only caller of the
+setters and the launcher calls :meth:`Overlay.play_boot` when Jarvis
+starts; the tray icon and dashboard read the same state from the event bus.
 """
 
 from __future__ import annotations

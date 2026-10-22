@@ -107,3 +107,31 @@ def test_playback_opens_and_stops(jarvis_audio: ModuleType) -> None:
 
     assert not playback.is_playing()
     assert playback.stop_count() == 0
+
+
+def test_replay_feed_queues_samples_until_delivered(jarvis_audio: ModuleType) -> None:
+    feed = jarvis_audio.ReplayFeed()
+
+    feed.push(np.zeros(1600, dtype=np.float32))
+
+    assert feed.pending() == 1600
+    assert feed.delivered() == 0
+
+
+def test_engine_replays_the_feed_instead_of_the_microphone(
+    jarvis_audio: ModuleType, model_paths: AudioModelPaths
+) -> None:
+    feed = jarvis_audio.ReplayFeed()
+    engine = jarvis_audio.AudioEngine(model_paths.vad, None, replay=feed)
+    feed.push(np.zeros(3200, dtype=np.float32))  # 200 ms of a quiet room
+
+    engine.start()
+    deadline = time.monotonic() + 5.0
+    while feed.pending() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    engine.stop()
+
+    assert feed.pending() == 0
+    assert feed.delivered() >= 3200
+    assert engine.samples_processed() > 0
+    assert [event.type.name for event in engine.poll_events()] == []

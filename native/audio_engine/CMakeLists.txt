@@ -63,6 +63,7 @@ add_library(jarvis_audio_engine STATIC
     src/onnx_session.cpp
     src/open_wake_word.cpp
     src/pipeline.cpp
+    src/replay_source.cpp
     src/playback.cpp
     src/segmenter.cpp
     src/silero_vad.cpp
