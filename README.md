@@ -17,6 +17,7 @@ is Python 3.12.
 
 <!-- Demo GIF placeholder: docs/media/demo.gif (recorded in step 14) -->
 ![Demo placeholder](https://via.placeholder.com/800x400?text=Demo+GIF+coming+in+step+14)
+![Status overlay: boot sequence, then idle, listening, thinking and speaking](docs/media/overlay-boot.gif)
 
 ## Status
 
