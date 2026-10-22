@@ -25,6 +25,7 @@ from jarvis.core.voice_bootstrap import (
 )
 from jarvis.core.voice_io import VoiceInput
 from jarvis.memory.vector_store import InMemoryVectorStore
+from jarvis.os_integration.base import OutputEndpoint
 from jarvis.os_integration.errors import PlatformError
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.ui.overlay import Overlay, StubOverlay
@@ -67,6 +68,8 @@ def factories(
         tts=lambda _settings: ScriptedTTS(),
         overlay=lambda _settings: Overlay(StubOverlay()),
         autostart=lambda _settings: None,
+        output_endpoint=lambda: OutputEndpoint("Headphones (USB)", "headphones"),
+        microphone_name=lambda: None,
         poll_interval=0.001,
     )
 
@@ -361,3 +364,35 @@ def test_boot_readout_names_the_model_of_each_mode(
     assert claude["MIC"] == "system default"
     assert local["MODE"] == "LOCAL"
     assert local["MODEL"].endswith(".gguf")
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "hint"),
+    [
+        (
+            OutputEndpoint("Speakers (Realtek(R) Audio)", "speakers"),
+            "Say 'Hey Jarvis' to interrupt me",
+        ),
+        (OutputEndpoint("Headphones (USB)", "headphones"), "Talk over me to interrupt"),
+        (None, "Say 'Hey Jarvis' to interrupt me"),
+    ],
+)
+async def test_auto_barge_in_follows_the_output_device(
+    make_settings: MakeSettings, endpoint: OutputEndpoint | None, hint: str
+) -> None:
+    probe = replace(factories(), output_endpoint=lambda: endpoint)
+    builder = VoiceFrontEndBuilder(factories=probe, write=lambda _text: None)
+    async with AsyncExitStack() as stack:
+        front = await builder(request(make_settings(), stack))
+
+        assert hint in front.greeting
+
+
+async def test_barge_in_off_tells_the_user_to_press_the_hotkey(
+    make_settings: MakeSettings,
+) -> None:
+    builder = VoiceFrontEndBuilder(factories=factories(), write=lambda _text: None)
+    async with AsyncExitStack() as stack:
+        front = await builder(request(make_settings(barge_in_mode="off"), stack))
+
+        assert "Press ctrl+alt+j to interrupt me" in front.greeting

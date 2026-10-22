@@ -17,7 +17,7 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Final, Protocol
+from typing import Final, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -32,7 +32,7 @@ from jarvis.core.voice_latency import (
     TurnTimeline,
     publish_sample,
 )
-from jarvis.core.voice_triggers import TurnTrigger
+from jarvis.core.voice_triggers import TriggerHit, TurnTrigger
 from jarvis.stt.base import STT, TranscriptionError
 from jarvis.tts.base import TTS, SynthesisError
 from jarvis.utils.logging import get_logger
@@ -173,6 +173,7 @@ class VoiceInput:
         self._min_chars = min_chars
         self._echo = echo
         self._barge_in = False
+        self._triggered: TriggerHit | None = None
         self.muted = False
         """While True, triggers are ignored (the tray's "Mute microphone")."""
 
@@ -192,6 +193,16 @@ class VoiceInput:
         self._engine.set_listening(True)
         self._barge_in = True
 
+    def begin_triggered_capture(self, hit: TriggerHit) -> None:
+        """The wake word or hotkey interrupted Jarvis: the next request starts with the earcon.
+
+        Unlike :meth:`begin_barge_in_capture` nothing is retained yet: the
+        user said the wake phrase (or pressed the key) and will speak the
+        request after it, exactly as when starting a turn from idle.
+        """
+        self._engine.discard_pending_events()
+        self._triggered = hit
+
     async def listen_for_answer(self) -> str:
         """Capture one short reply without a trigger (confirmation questions)."""
         self._engine.discard_pending_events()
@@ -200,7 +211,10 @@ class VoiceInput:
 
     async def _next_request(self) -> str | None:
         barge_in, self._barge_in = self._barge_in, False
-        if not barge_in:
+        triggered, self._triggered = self._triggered, None
+        if triggered is not None:
+            await self._acknowledge(triggered, enter_listening=False)
+        elif not barge_in:
             await self._wait_for_trigger()
         utterance = await self._engine.record_utterance(
             start_timeout=None if barge_in else self._listen_timeout,
@@ -221,11 +235,16 @@ class VoiceInput:
         self._engine.discard_pending_events()
         while (hit := await self._trigger.wait()) and self.muted:
             log.info("voice.trigger.ignored_while_muted", source=hit.source)
+        await self._acknowledge(hit, enter_listening=True)
+
+    async def _acknowledge(self, hit: TriggerHit, *, enter_listening: bool) -> None:
+        """Earcon and LISTENING; after a barge-in the controller already entered LISTENING."""
         watch = Stopwatch(self._clock)
         log.info("voice.triggered", source=hit.source, score=round(hit.score, 3))
         self._bus.publish(WakeWordHeard(score=hit.score))
         await self._earcon()
-        self._state.transition(AssistantState.LISTENING, hit.source)
+        if enter_listening:
+            self._state.transition(AssistantState.LISTENING, hit.source)
         publish_sample(self._bus, WAKE_TO_LISTENING, watch.elapsed_ms)
 
     async def _transcribe(self, utterance: Utterance) -> str:
@@ -257,6 +276,14 @@ class PlaybackObserver(Protocol):
 
     def playback_interrupted(self) -> None:
         """Playback was stopped under the speaker."""
+
+
+@runtime_checkable
+class SentenceObserver(Protocol):
+    """Optionally told the text of each sentence as it starts (the self-wake guard)."""
+
+    def sentence_started(self, text: str) -> None:
+        """``text`` is about to be heard."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,6 +449,9 @@ class VoiceOutput:
         await self._terminal.say(sentence.text)
         if self._on_sentence is not None:
             self._on_sentence(sentence.text)
+        observer: object = self._observer  # the sentence hook is optional
+        if isinstance(observer, SentenceObserver):
+            observer.sentence_started(sentence.text)
         stops_before = self._speaker.stop_count
         completed = await self._speaker.play(self._chunks(sentence, stops_before))
         if sentence.error is not None:

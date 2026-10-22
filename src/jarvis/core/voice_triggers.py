@@ -118,6 +118,12 @@ class HotkeyTrigger:
         await self._platform.unregister_hotkey(self._hotkey_id)
         self._hotkey_id = None
 
+    def pressed(self) -> bool:
+        """True when the hotkey was pressed since the previous poll (barge-in while speaking)."""
+        if self._hotkey_id is None:
+            return False
+        return self._ours(self._platform.poll_hotkeys())
+
     async def wait(self) -> TriggerHit:
         """Wait for a fresh press; presses made while Jarvis was busy are dropped."""
         if self._hotkey_id is None:
@@ -160,7 +166,8 @@ class AnyTrigger:
 #   never takes the GIL (ADR-0004). One poll every 50 ms costs nothing.
 # - HotkeyTrigger.wait() drops presses made while Jarvis was thinking or
 #   speaking. Acting on them later would start a turn the user may no
-#   longer want; interrupting Jarvis is what barge-in (speaking) is for.
+#   longer want; interrupting Jarvis is what barge-in (speaking) is for,
+#   and while it speaks the barge-in controller polls ``pressed()``.
 # - AnyTrigger cancels the losing waiters instead of keeping them alive
 #   across turns: asyncio.Queue.get is cancellation-safe, so a wake-word
 #   waiter that lost the race never swallows an event.
