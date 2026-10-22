@@ -56,7 +56,7 @@ from jarvis.core.voice_triggers import AnyTrigger, HotkeyTrigger, TurnTrigger, W
 from jarvis.os_integration.errors import PlatformError
 from jarvis.stt.base import STT
 from jarvis.tts.base import TTS
-from jarvis.ui.overlay import Overlay, create_overlay
+from jarvis.ui.overlay import Overlay, OverlayConfig, OverlayTheme, create_overlay
 from jarvis.utils.errors import ConfigError, JarvisError, NativeUnavailableError
 from jarvis.utils.logging import get_logger
 
@@ -131,8 +131,18 @@ def build_tts(settings: Settings) -> TTS:
 
 
 def build_overlay(settings: Settings) -> Overlay:
-    """The native overlay when enabled and available, otherwise the stub."""
-    return create_overlay(enabled=settings.overlay_enabled)
+    """The native overlay when enabled and available, otherwise the stub.
+
+    Starts the boot sequence right away; ``play_boot`` is idempotent, so a
+    launcher that also asks for it at startup changes nothing.
+    """
+    config = OverlayConfig(
+        theme=OverlayTheme(settings.overlay_theme),
+        boot_animation=settings.overlay_boot_animation,
+    )
+    overlay = create_overlay(config, enabled=settings.overlay_enabled)
+    overlay.play_boot()
+    return overlay
 
 
 def _stdout_write(text: str) -> None:

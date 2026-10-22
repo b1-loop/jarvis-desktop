@@ -27,3 +27,4 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | [0019](0019-voice-pipeline-and-barge-in.md) | Voice pipeline: sentence pipelining, native-first barge-in, honest degradation | Accepted |
 | [0020](0020-tool-selection-for-small-models.md) | Per-turn tool selection and a grounding guard for small local models | Accepted |
 | [0021](0021-desktop-launcher.md) | Desktop launcher: uvw and shortcuts, not a frozen executable (yet) | Accepted |
+| [0022](0022-overlay-animations-and-transparency.md) | Overlay animations and per-pixel transparency | Accepted |

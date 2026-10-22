@@ -65,6 +65,10 @@ struct OverlaySnapshot {
     bool visible{true};
     /// 1 right after the wake word was heard, decaying linearly to 0.
     float wakeFlash{0.0F};
+    /// When the boot sequence was requested; unset until playBoot().
+    std::optional<std::chrono::steady_clock::time_point> bootStartedAt;
+    /// When the boot sequence was skipped, if it was.
+    std::optional<std::chrono::steady_clock::time_point> bootSkippedAt;
     /// Incremented by every mutation; lets the renderer slow down when idle.
     std::uint64_t revision{0};
 };
@@ -92,13 +96,24 @@ public:
     explicit OverlayModel(ModelLimits limits = {});
 
     /// Entering Idle also clears the level history so the waveform settles
-    /// immediately instead of showing the last utterance's tail.
-    void setState(AssistantState state);
+    /// immediately instead of showing the last utterance's tail. Leaving
+    /// Idle while the boot sequence plays skips it: the user is talking to
+    /// Jarvis, so the panel should be in its corner, not mid-intro.
+    void setState(AssistantState state, Clock::time_point now = Clock::now());
     void pushLevel(float level);
     void setTranscript(std::string_view utf8);
     void setResponse(std::string_view utf8);
     void setVisible(bool visible);
     void flashWakeWord(Clock::time_point now = Clock::now());
+
+    /// Start the boot sequence at @p now. Idempotent: only the first call
+    /// in the model's lifetime starts it.
+    /// @return true if this call started it.
+    bool playBoot(Clock::time_point now = Clock::now());
+
+    /// Skip the boot sequence at @p now (it still eases into the corner).
+    /// @return true if a started, not yet skipped boot was skipped.
+    bool skipBoot(Clock::time_point now = Clock::now());
 
     [[nodiscard]] OverlaySnapshot snapshot(Clock::time_point now = Clock::now()) const;
     [[nodiscard]] AssistantState state() const;
@@ -124,6 +139,8 @@ private:
     std::string response_;
     bool visible_{true};
     std::optional<Clock::time_point> wakeFlashAt_;
+    std::optional<Clock::time_point> bootStartedAt_;
+    std::optional<Clock::time_point> bootSkippedAt_;
     std::atomic<std::uint64_t> revision_{0};
 };
 

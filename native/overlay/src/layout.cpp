@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -18,11 +19,60 @@ constexpr std::string_view kEllipsis = "…";
 constexpr unsigned char kContinuationMask = 0xC0;
 constexpr unsigned char kContinuationBits = 0x80;
 
+// Boot canvas proportions, as fractions of its side.
+constexpr float kBootRingCentre = 0.40F;
+constexpr float kBootRingRadius = 0.16F;
+constexpr float kBootTextTop = 0.66F;
+constexpr float kBootTextHeight = 0.22F;
+/// The panel ring leaves a little of the padding as room for its glow.
+constexpr float kPanelRingInset = 0.8F;
+
 bool isContinuationByte(char byte) noexcept {
     return (static_cast<unsigned char>(byte) & kContinuationMask) == kContinuationBits;
 }
 
+float mix(float from, float to, float t) noexcept {
+    return from + ((to - from) * t);
+}
+
+constexpr Rgba rgba(float r, float g, float b, float a = 1.0F) noexcept {
+    return Rgba{.r = r, .g = g, .b = b, .a = a};
+}
+
+/// The cyan HUD in warm light: same structure, amber hues.
+Theme amberTheme() noexcept {
+    Theme theme;
+    theme.background = rgba(0.08F, 0.04F, 0.01F);
+    theme.text = rgba(1.00F, 0.95F, 0.85F);
+    theme.mutedText = rgba(0.85F, 0.65F, 0.40F);
+    theme.idle = rgba(0.80F, 0.50F, 0.18F);
+    theme.listening = rgba(1.00F, 0.78F, 0.30F);
+    theme.thinking = rgba(1.00F, 0.62F, 0.35F);
+    theme.speaking = rgba(1.00F, 0.88F, 0.45F);
+    theme.wakeFlash = rgba(1.00F, 0.97F, 0.85F);
+    theme.accent = rgba(1.00F, 0.68F, 0.22F);
+    theme.plate = rgba(0.10F, 0.05F, 0.01F, 0.55F);
+    return theme;
+}
+
 }  // namespace
+
+Theme themeFor(ThemeName name) noexcept {
+    return name == ThemeName::Amber ? amberTheme() : Theme{};
+}
+
+std::string_view toString(ThemeName name) noexcept {
+    return name == ThemeName::Amber ? "amber" : "cyan";
+}
+
+std::optional<ThemeName> parseThemeName(std::string_view name) noexcept {
+    for (const ThemeName candidate : {ThemeName::Cyan, ThemeName::Amber}) {
+        if (toString(candidate) == name) {
+            return candidate;
+        }
+    }
+    return std::nullopt;
+}
 
 Rgba stateColour(const Theme& theme, AssistantState state) noexcept {
     switch (state) {
@@ -50,6 +100,20 @@ std::string_view stateLabel(AssistantState state) noexcept {
             break;
     }
     return "Idle";
+}
+
+std::string_view hudLabel(AssistantState state) noexcept {
+    switch (state) {
+        case AssistantState::Listening:
+            return "LISTENING";
+        case AssistantState::Thinking:
+            return "PROCESSING";
+        case AssistantState::Speaking:
+            return "SPEAKING";
+        case AssistantState::Idle:
+            break;
+    }
+    return "STANDBY";
 }
 
 Rgba withAlpha(Rgba colour, float factor) noexcept {
@@ -107,6 +171,90 @@ Placement anchorToCorner(Corner corner, PixelRect workArea, int width, int heigh
     };
 }
 
+RectF toRectF(Placement placement) noexcept {
+    return RectF{.x = static_cast<float>(placement.x),
+                 .y = static_cast<float>(placement.y),
+                 .width = static_cast<float>(placement.width),
+                 .height = static_cast<float>(placement.height)};
+}
+
+RectF lerpRect(RectF from, RectF to, float t) noexcept {
+    return RectF{.x = mix(from.x, to.x, t),
+                 .y = mix(from.y, to.y, t),
+                 .width = mix(from.width, to.width, t),
+                 .height = mix(from.height, to.height, t)};
+}
+
+Placement centredIn(PixelRect workArea, int width, int height) noexcept {
+    return Placement{.x = workArea.left + ((workArea.right - workArea.left - width) / 2),
+                     .y = workArea.top + ((workArea.bottom - workArea.top - height) / 2),
+                     .width = width,
+                     .height = height};
+}
+
+RectF translated(RectF rect, float dx, float dy) noexcept {
+    rect.x += dx;
+    rect.y += dy;
+    return rect;
+}
+
+Placement inflated(Placement placement, int amount) noexcept {
+    return Placement{.x = placement.x - amount,
+                     .y = placement.y - amount,
+                     .width = placement.width + (2 * amount),
+                     .height = placement.height + (2 * amount)};
+}
+
+Placement enclosingPlacement(RectF rect) noexcept {
+    const auto left = static_cast<int>(std::floor(rect.x));
+    const auto top = static_cast<int>(std::floor(rect.y));
+    const auto right = static_cast<int>(std::ceil(rect.right()));
+    const auto bottom = static_cast<int>(std::ceil(rect.bottom()));
+    return Placement{.x = left, .y = top, .width = right - left, .height = bottom - top};
+}
+
+HudGeometry panelGeometry(RectF panel, float padding) noexcept {
+    const float radius = std::max((panel.height * 0.5F) - (padding * kPanelRingInset), 0.0F);
+    const float centreX = panel.x + padding + radius;
+    const float textLeft = centreX + radius + padding;
+    return HudGeometry{
+        .centreX = centreX,
+        .centreY = panel.y + (panel.height * 0.5F),
+        .radius = radius,
+        .text = RectF{.x = textLeft,
+                      .y = panel.y + padding,
+                      .width = std::max(panel.right() - padding - textLeft, 0.0F),
+                      .height = std::max(panel.height - (2.0F * padding), 0.0F)},
+    };
+}
+
+HudGeometry bootGeometry(RectF canvas) noexcept {
+    const float side = std::min(canvas.width, canvas.height);
+    return HudGeometry{
+        .centreX = canvas.x + (canvas.width * 0.5F),
+        .centreY = canvas.y + (side * kBootRingCentre),
+        .radius = side * kBootRingRadius,
+        .text = RectF{.x = canvas.x,
+                      .y = canvas.y + (side * kBootTextTop),
+                      .width = canvas.width,
+                      .height = side * kBootTextHeight},
+    };
+}
+
+HudGeometry translated(const HudGeometry& geometry, float dx, float dy) noexcept {
+    return HudGeometry{.centreX = geometry.centreX + dx,
+                       .centreY = geometry.centreY + dy,
+                       .radius = geometry.radius,
+                       .text = translated(geometry.text, dx, dy)};
+}
+
+HudGeometry lerpGeometry(const HudGeometry& from, const HudGeometry& to, float t) noexcept {
+    return HudGeometry{.centreX = mix(from.centreX, to.centreX, t),
+                       .centreY = mix(from.centreY, to.centreY, t),
+                       .radius = mix(from.radius, to.radius, t),
+                       .text = lerpRect(from.text, to.text, t)};
+}
+
 std::vector<float> waveformBars(std::span<const float> levels, std::size_t barCount, float floor) {
     std::vector<float> bars(barCount, std::clamp(floor, 0.0F, 1.0F));
     if (levels.empty() || barCount == 0) {
@@ -127,6 +275,9 @@ std::vector<float> waveformBars(std::span<const float> levels, std::size_t barCo
 }  // namespace jarvis::overlay
 
 // Design notes:
+// - Geometry is float until the very end (enclosingPlacement) so the boot
+//   handoff interpolates smoothly; only the Win32 window rectangle is
+//   rounded, outwards, so nothing drawn is ever clipped by a pixel.
 // - Truncation counts code points, not bytes and not grapheme clusters: a
 //   byte count would split characters, while grapheme segmentation needs
 //   Unicode tables for a benefit nobody sees on a one-line panel.

@@ -12,15 +12,30 @@
 using Catch::Matchers::WithinAbs;
 using jarvis::overlay::anchorToCorner;
 using jarvis::overlay::AssistantState;
+using jarvis::overlay::bootGeometry;
+using jarvis::overlay::centredIn;
 using jarvis::overlay::charactersPerLine;
 using jarvis::overlay::Corner;
+using jarvis::overlay::enclosingPlacement;
+using jarvis::overlay::HudGeometry;
+using jarvis::overlay::hudLabel;
+using jarvis::overlay::inflated;
+using jarvis::overlay::lerpGeometry;
+using jarvis::overlay::lerpRect;
+using jarvis::overlay::panelGeometry;
+using jarvis::overlay::parseThemeName;
 using jarvis::overlay::PixelRect;
 using jarvis::overlay::Placement;
+using jarvis::overlay::RectF;
 using jarvis::overlay::Rgba;
 using jarvis::overlay::scaled;
 using jarvis::overlay::stateColour;
 using jarvis::overlay::stateLabel;
 using jarvis::overlay::Theme;
+using jarvis::overlay::themeFor;
+using jarvis::overlay::ThemeName;
+using jarvis::overlay::toRectF;
+using jarvis::overlay::translated;
 using jarvis::overlay::truncateUtf8Tail;
 using jarvis::overlay::utf8Length;
 using jarvis::overlay::waveformBars;
@@ -142,4 +157,81 @@ TEST_CASE("placement respects a work area that does not start at the origin", "[
 
     REQUIRE(anchorToCorner(Corner::BottomRight, kSecondMonitor, 300, 100, 0) ==
             Placement{.x = 3540, .y = 980, .width = 300, .height = 100});
+}
+
+TEST_CASE("themes are selectable by name and differ in hue", "[overlay][layout]") {
+    REQUIRE(parseThemeName("cyan") == ThemeName::Cyan);
+    REQUIRE(parseThemeName("amber") == ThemeName::Amber);
+    REQUIRE_FALSE(parseThemeName("Amber").has_value());
+    REQUIRE_FALSE(parseThemeName("").has_value());
+    REQUIRE(themeFor(ThemeName::Cyan) == Theme{});
+
+    const Theme cyan = themeFor(ThemeName::Cyan);
+    const Theme amber = themeFor(ThemeName::Amber);
+    REQUIRE(cyan.accent.b > cyan.accent.r);    // blue light
+    REQUIRE(amber.accent.r > amber.accent.b);  // warm light
+    REQUIRE(amber.plate.a == cyan.plate.a);    // same readability either way
+}
+
+TEST_CASE("the HUD caption names every state", "[overlay][layout]") {
+    REQUIRE(hudLabel(AssistantState::Idle) == "STANDBY");
+    REQUIRE(hudLabel(AssistantState::Listening) == "LISTENING");
+    REQUIRE(hudLabel(AssistantState::Thinking) == "PROCESSING");
+    REQUIRE(hudLabel(AssistantState::Speaking) == "SPEAKING");
+}
+
+TEST_CASE("rectangles interpolate, translate and round outwards", "[overlay][layout]") {
+    const RectF from{.x = 0.0F, .y = 0.0F, .width = 100.0F, .height = 50.0F};
+    const RectF to{.x = 200.0F, .y = 100.0F, .width = 10.0F, .height = 10.0F};
+    REQUIRE(lerpRect(from, to, 0.0F) == from);
+    REQUIRE(lerpRect(from, to, 1.0F) == to);
+    REQUIRE(lerpRect(from, to, 0.5F) ==
+            RectF{.x = 100.0F, .y = 50.0F, .width = 55.0F, .height = 30.0F});
+    REQUIRE(translated(to, -200.0F, -100.0F) ==
+            RectF{.x = 0.0F, .y = 0.0F, .width = 10.0F, .height = 10.0F});
+
+    const Placement rounded =
+        enclosingPlacement(RectF{.x = 10.4F, .y = 20.6F, .width = 5.2F, .height = 4.0F});
+    REQUIRE(rounded == Placement{.x = 10, .y = 20, .width = 6, .height = 5});
+    REQUIRE(toRectF(rounded) == RectF{.x = 10.0F, .y = 20.0F, .width = 6.0F, .height = 5.0F});
+    REQUIRE(inflated(rounded, 3) == Placement{.x = 7, .y = 17, .width = 12, .height = 11});
+}
+
+TEST_CASE("the boot canvas is centred in the work area", "[overlay][layout]") {
+    REQUIRE(centredIn(kWorkArea, 440, 440) ==
+            Placement{.x = 740, .y = 300, .width = 440, .height = 440});
+}
+
+TEST_CASE("the panel ring sits left of the text column, inside the panel", "[overlay][layout]") {
+    const RectF panel{.x = 1000.0F, .y = 800.0F, .width = 380.0F, .height = 132.0F};
+    const HudGeometry hud = panelGeometry(panel, 14.0F);
+    REQUIRE(hud.centreY == 866.0F);
+    REQUIRE(hud.centreX - hud.radius >= panel.x);
+    REQUIRE(hud.centreY - hud.radius >= panel.y);
+    REQUIRE(hud.centreY + hud.radius <= panel.bottom());
+    REQUIRE(hud.text.x > hud.centreX + hud.radius);
+    REQUIRE(hud.text.right() <= panel.right());
+    REQUIRE(hud.text.width > 200.0F);
+}
+
+TEST_CASE("the boot ring is centred above its title", "[overlay][layout]") {
+    const RectF canvas{.x = 100.0F, .y = 100.0F, .width = 440.0F, .height = 440.0F};
+    const HudGeometry hud = bootGeometry(canvas);
+    REQUIRE(hud.centreX == 320.0F);
+    REQUIRE(hud.text.y > hud.centreY + hud.radius);
+    REQUIRE(hud.text.bottom() <= canvas.bottom());
+}
+
+TEST_CASE("geometry interpolates for the handoff", "[overlay][layout]") {
+    const HudGeometry boot =
+        bootGeometry(RectF{.x = 0.0F, .y = 0.0F, .width = 400.0F, .height = 400.0F});
+    const HudGeometry panel =
+        panelGeometry(RectF{.x = 800.0F, .y = 600.0F, .width = 380.0F, .height = 132.0F}, 14.0F);
+    REQUIRE(lerpGeometry(boot, panel, 0.0F) == boot);
+    REQUIRE(lerpGeometry(boot, panel, 1.0F) == panel);
+    const HudGeometry middle = lerpGeometry(boot, panel, 0.5F);
+    REQUIRE_THAT(middle.radius, WithinAbs((boot.radius + panel.radius) * 0.5F, 1e-4));
+    const HudGeometry moved = translated(panel, -800.0F, -600.0F);
+    REQUIRE(moved.radius == panel.radius);
+    REQUIRE(moved.text.x == panel.text.x - 800.0F);
 }

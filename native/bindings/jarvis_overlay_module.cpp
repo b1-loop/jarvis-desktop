@@ -7,6 +7,7 @@
 /// that thread.
 
 #include "jarvis/common/errors.hpp"
+#include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/errors.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
@@ -47,6 +48,10 @@ void defineEnums(const py::module_& module) {
         .value("TOP_RIGHT", Corner::TopRight)
         .value("BOTTOM_LEFT", Corner::BottomLeft)
         .value("BOTTOM_RIGHT", Corner::BottomRight);
+
+    py::enum_<ThemeName>(module, "Theme", "Palette of the HUD.")
+        .value("CYAN", ThemeName::Cyan)
+        .value("AMBER", ThemeName::Amber);
 }
 
 void defineConfig(const py::module_& module) {
@@ -69,6 +74,9 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("opacity", &OverlayConfig::opacity)
         .def_readwrite("active_fps", &OverlayConfig::activeFps)
         .def_readwrite("idle_fps", &OverlayConfig::idleFps)
+        .def_readwrite("transparent", &OverlayConfig::transparent,
+                       "Prefer per-pixel transparency (DirectComposition).")
+        .def_readwrite("theme", &OverlayConfig::theme)
         .def_readwrite("title", &OverlayConfig::title)
         .def_readwrite("limits", &OverlayConfig::limits);
 }
@@ -82,7 +90,21 @@ void defineSnapshot(const py::module_& module) {
         .def_readonly("response", &OverlaySnapshot::response)
         .def_readonly("visible", &OverlaySnapshot::visible)
         .def_readonly("wake_flash", &OverlaySnapshot::wakeFlash)
+        .def_property_readonly(
+            "boot_started",
+            [](const OverlaySnapshot& snapshot) { return snapshot.bootStartedAt.has_value(); })
+        .def_property_readonly(
+            "boot_skipped",
+            [](const OverlaySnapshot& snapshot) { return snapshot.bootSkippedAt.has_value(); })
         .def_readonly("revision", &OverlaySnapshot::revision);
+
+    py::class_<anim::FrameStats>(module, "FrameStats",
+                                 "Smoothed frame timings measured on the UI thread.")
+        .def_readonly("frames", &anim::FrameStats::frames)
+        .def_readonly("render_ms", &anim::FrameStats::renderMs,
+                      "CPU time to build and submit one frame, milliseconds.")
+        .def_readonly("interval_ms", &anim::FrameStats::intervalMs,
+                      "Time between consecutive frames, milliseconds.");
 }
 
 void setStateByName(OverlayWindow& window, std::string_view name) {
@@ -94,9 +116,30 @@ void setStateByName(OverlayWindow& window, std::string_view name) {
     window.setState(*state);
 }
 
+using WindowClass = py::class_<OverlayWindow>;
+
+void defineWindowAnimation(WindowClass& window) {
+    window
+        .def("wake_pulse", &OverlayWindow::flashWakeWord,
+             "Pulse a ripple outwards from the ring to acknowledge the wake word.")
+        .def("flash_wake_word", &OverlayWindow::flashWakeWord, "Alias of wake_pulse().")
+        .def("play_boot", &OverlayWindow::playBoot,
+             "Start the boot sequence; non-blocking, idempotent. True if this call started it.")
+        .def("skip_boot", &OverlayWindow::skipBoot,
+             "Cut the boot sequence short; it still glides into the corner.")
+        .def("transparent", &OverlayWindow::transparent,
+             "True when the window has per-pixel transparency.")
+        .def("fallback_reason", &OverlayWindow::fallbackReason,
+             "Why the whole-window-alpha fallback is used; empty when transparent.")
+        .def("frame_stats", &OverlayWindow::frameStats)
+        .def("reset_frame_stats", &OverlayWindow::resetFrameStats);
+}
+
 void defineWindow(const py::module_& module) {
-    py::class_<OverlayWindow>(module, "OverlayWindow",
-                              "Always-on-top status panel rendered on a native UI thread.")
+    WindowClass window(module, "OverlayWindow",
+                       "Always-on-top status panel rendered on a native UI thread.");
+    defineWindowAnimation(window);
+    window
         .def(py::init<OverlayConfig>(), py::arg("config") = OverlayConfig{},
              py::call_guard<py::gil_scoped_release>(),
              "Create the window and wait until it is on screen. Raises OverlayError.")
@@ -109,7 +152,6 @@ void defineWindow(const py::module_& module) {
         .def("set_transcript", &OverlayWindow::setTranscript, py::arg("text"))
         .def("set_response", &OverlayWindow::setResponse, py::arg("text"))
         .def("set_visible", &OverlayWindow::setVisible, py::arg("visible"))
-        .def("flash_wake_word", &OverlayWindow::flashWakeWord)
         .def("visible", &OverlayWindow::visible)
         .def("state", &OverlayWindow::state)
         .def("running", &OverlayWindow::running)
@@ -135,6 +177,8 @@ PYBIND11_MODULE(jarvis_overlay, module) {
         "Status overlay: always-on-top Dear ImGui window with waveform, state "
         "indicator and transcript. See native/overlay/README.md.";
     jarvis::bindings::defineModuleInfo(module, "implemented in step 13");
+
+    module.attr("BOOT_DURATION_SECONDS") = anim::BootTimeline{}.duration();
 
     defineExceptions(module);
     defineEnums(module);

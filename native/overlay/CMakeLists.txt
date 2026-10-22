@@ -39,19 +39,23 @@ target_link_libraries(jarvis_imgui PUBLIC d3d11 dxgi d3dcompiler)
 
 # --- The overlay -----------------------------------------------------------
 add_library(jarvis_overlay_ui STATIC
+    src/animation.cpp
+    src/hud.cpp
+    src/hud_draw.cpp
     src/layout.cpp
     src/model.cpp
-    src/panel.cpp
+    src/surface.cpp
     src/window.cpp)
 add_library(jarvis::overlay ALIAS jarvis_overlay_ui)
 
 target_include_directories(jarvis_overlay_ui PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # Public headers never include ImGui or Win32; both stay behind the pimpl in
-# window.cpp and the private panel.hpp, hence the PRIVATE link.
+# window.cpp and the private hud/surface headers, hence the PRIVATE link.
+# dcomp provides DirectComposition for the per-pixel transparent surface.
 target_link_libraries(jarvis_overlay_ui
     PUBLIC jarvis::common
-    PRIVATE jarvis_imgui)
+    PRIVATE jarvis_imgui dcomp)
 # Keep <windows.h> from defining min/max macros and from dragging in the
 # legacy APIs; this only affects our translation units, not ImGui's.
 target_compile_definitions(jarvis_overlay_ui PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

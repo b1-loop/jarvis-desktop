@@ -131,3 +131,42 @@ TEST_CASE("a hidden window keeps accepting updates and can be shown again", "[ov
     REQUIRE(window->visible());
     REQUIRE(window->snapshot().transcript == "still listening");
 }
+
+TEST_CASE("the window reports which surface it chose", "[overlay][window]") {
+    const auto window = openWindowOrSkip();
+    // Either per-pixel transparency works, or the reason it does not is known.
+    REQUIRE(window->transparent() == window->fallbackReason().empty());
+}
+
+TEST_CASE("the layered fallback can be forced and still renders", "[overlay][window]") {
+    OverlayConfig config = testConfig();
+    config.transparent = false;
+    std::unique_ptr<OverlayWindow> window;
+    try {
+        window = std::make_unique<OverlayWindow>(config);
+    } catch (const OverlayError& error) {
+        SKIP("overlay window unavailable here: " << error.what());
+    }
+    REQUIRE_FALSE(window->transparent());
+    REQUIRE_FALSE(window->fallbackReason().empty());
+    window->playBoot();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    REQUIRE(window->running());
+    REQUIRE(window->frameStats().frames > 0);
+}
+
+TEST_CASE("the boot plays once and frames are measured while it runs", "[overlay][window]") {
+    const auto window = openWindowOrSkip();
+    window->resetFrameStats();
+    REQUIRE(window->playBoot());
+    REQUIRE_FALSE(window->playBoot());  // idempotent
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    const auto stats = window->frameStats();
+    REQUIRE(stats.frames > 3);
+    REQUIRE(stats.renderMs > 0.0);
+    REQUIRE(stats.intervalMs > 0.0);
+    REQUIRE(window->snapshot().bootStartedAt.has_value());
+    REQUIRE(window->skipBoot());
+    REQUIRE_FALSE(window->skipBoot());
+}

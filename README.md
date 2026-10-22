@@ -20,6 +20,8 @@ llama.cpp wrappers, and a Dear ImGui overlay. Everything that has to be
 flexible is Python 3.12: the agent loop, tools, memory, integrations,
 scheduling. No native thread ever takes the GIL.
 
+![Status overlay: boot sequence, then idle, listening, thinking and speaking](docs/media/overlay-boot.gif)
+
 > **Demo GIF: not recorded yet.** It needs a person at a microphone; the exact
 > steps are in [`scripts/record_demo.md`](scripts/record_demo.md). The
 > screenshot below is the real dashboard.

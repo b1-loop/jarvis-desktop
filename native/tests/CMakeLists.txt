@@ -60,6 +60,7 @@ jarvis_copy_onnxruntime_dll(jarvis_tests)
 
 if(JARVIS_BUILD_OVERLAY)
     target_sources(jarvis_tests PRIVATE
+        overlay/animation_test.cpp
         overlay/layout_test.cpp
         overlay/model_test.cpp
         overlay/window_test.cpp)
