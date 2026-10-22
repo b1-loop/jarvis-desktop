@@ -86,15 +86,53 @@ bool inUnitRange(Rgba colour) {
     return unit(colour.r) && unit(colour.g) && unit(colour.b) && unit(colour.a);
 }
 
+/// The smallest pairwise distance between the accents of the presets
+/// (Custom is left out: it defaults to the cyan accent).
+float closestPresetAccents() {
+    std::vector<Rgba> accents;
+    for (const ThemeName name : allThemeNames()) {
+        if (name != ThemeName::Custom) {
+            accents.push_back(themeFor(name).accent);
+        }
+    }
+    float closest = 1.0F;
+    for (std::size_t i = 0; i < accents.size(); ++i) {
+        for (std::size_t j = i + 1; j < accents.size(); ++j) {
+            closest = std::min(closest, perceptualDistance(accents.at(i), accents.at(j)));
+        }
+    }
+    return closest;
+}
+
+/// Every colour of @p theme lies in [0, 1].
+bool allInUnitRange(const Theme& theme) {
+    const std::array colours{theme.accent,     theme.idle,      theme.listening, theme.thinking,
+                             theme.speaking,   theme.wakeFlash, theme.text,      theme.mutedText,
+                             theme.background, theme.plate,     theme.warning};
+    return std::ranges::all_of(colours, inUnitRange);
+}
+
+/// The lowest contrast of @p role against the plate over every theme under test.
+template <class Role>
+float worstContrast(Role role) {
+    float worst = 21.0F;
+    for (const Theme& theme : themesUnderTest()) {
+        worst = std::min(worst, contrastRatio(role(theme), theme.plate));
+    }
+    return worst;
+}
+
 }  // namespace
 
 TEST_CASE("every theme is selectable by its settings spelling", "[overlay][palette]") {
-    for (const ThemeName name : allThemeNames()) {
-        REQUIRE(parseThemeName(toString(name)) == name);
-    }
     REQUIRE(allThemeNames().size() == 8);
+    REQUIRE(std::ranges::all_of(
+        allThemeNames(), [](ThemeName name) { return parseThemeName(toString(name)) == name; }));
     REQUIRE(parseThemeName("red") == ThemeName::Red);
     REQUIRE(parseThemeName("custom") == ThemeName::Custom);
+}
+
+TEST_CASE("theme names are exact", "[overlay][palette]") {
     REQUIRE_FALSE(parseThemeName("Amber").has_value());
     REQUIRE_FALSE(parseThemeName("purple").has_value());
     REQUIRE_FALSE(parseThemeName("").has_value());
@@ -108,16 +146,7 @@ TEST_CASE("cyan and amber keep their hand-tuned palettes", "[overlay][palette]")
 }
 
 TEST_CASE("presets are distinct colours and custom follows its accent", "[overlay][palette]") {
-    const auto names = allThemeNames();
-    for (std::size_t i = 0; i < names.size(); ++i) {
-        for (std::size_t j = i + 1; j < names.size(); ++j) {
-            if (names[i] == ThemeName::Custom || names[j] == ThemeName::Custom) {
-                continue;  // Custom defaults to the cyan accent
-            }
-            REQUIRE(perceptualDistance(themeFor(names[i]).accent, themeFor(names[j]).accent) >
-                    kMinPresetDistance);
-        }
-    }
+    REQUIRE(closestPresetAccents() > kMinPresetDistance);
     const Rgba orange = rgb(1.0F, 0.5F, 0.0F);
     REQUIRE(themeFor(ThemeName::Custom, orange) == deriveTheme(orange));
     REQUIRE(themeFor(ThemeName::Red).accent.r > themeFor(ThemeName::Red).accent.g);
@@ -125,14 +154,11 @@ TEST_CASE("presets are distinct colours and custom follows its accent", "[overla
 }
 
 TEST_CASE("text stays legible on the plate for any accent", "[overlay][palette]") {
-    for (const Theme& theme : themesUnderTest()) {
-        // The plate's own colour (contrast ignores alpha): the worst case is
-        // a dark desktop behind it, which the plate then matches.
-        CAPTURE(toHex(theme.accent));
-        REQUIRE(contrastRatio(theme.text, theme.plate) >= kMinTextContrast);
-        REQUIRE(contrastRatio(theme.mutedText, theme.plate) >= kMinSecondaryContrast);
-        REQUIRE(contrastRatio(theme.warning, theme.plate) >= kMinSecondaryContrast);
-    }
+    // Against the plate's own colour (contrast ignores alpha): the worst case
+    // is a dark desktop behind it, which the plate then matches.
+    REQUIRE(worstContrast([](const Theme& t) { return t.text; }) >= kMinTextContrast);
+    REQUIRE(worstContrast([](const Theme& t) { return t.mutedText; }) >= kMinSecondaryContrast);
+    REQUIRE(worstContrast([](const Theme& t) { return t.warning; }) >= kMinSecondaryContrast);
 }
 
 TEST_CASE("the four states stay distinguishable for any accent", "[overlay][palette]") {
@@ -152,11 +178,8 @@ TEST_CASE("derived colours are clamped into a band that glows", "[overlay][palet
     REQUIRE(white.chroma >= 0.05F);  // a tint, so states can swing in hue
     REQUIRE(blue.chroma <= 0.19F + kTolerance);
     for (const Theme& theme : themesUnderTest()) {
-        for (const Rgba colour : {theme.accent, theme.idle, theme.listening, theme.thinking,
-                                  theme.speaking, theme.wakeFlash, theme.text, theme.mutedText,
-                                  theme.background, theme.plate, theme.warning}) {
-            REQUIRE(inUnitRange(colour));
-        }
+        CAPTURE(toHex(theme.accent));
+        REQUIRE(allInUnitRange(theme));
     }
 }
 
@@ -170,16 +193,16 @@ TEST_CASE("pale accents bloom less so white does not blow out", "[overlay][palet
     }
 }
 
-TEST_CASE("OKLCH conversion round-trips and maps out-of-gamut colours", "[overlay][palette]") {
+TEST_CASE("OKLCH conversion round-trips sRGB colours", "[overlay][palette]") {
     for (const Rgba colour : {kDefaultAccent, rgb(1.0F, 0.231F, 0.188F), rgb(0.2F, 0.4F, 0.6F)}) {
-        const Rgba back = fromOklch(toOklch(colour));
-        REQUIRE_THAT(back.r, WithinAbs(colour.r, kTolerance));
-        REQUIRE_THAT(back.g, WithinAbs(colour.g, kTolerance));
-        REQUIRE_THAT(back.b, WithinAbs(colour.b, kTolerance));
+        CAPTURE(toHex(colour));
+        REQUIRE(perceptualDistance(fromOklch(toOklch(colour)), colour) < kTolerance);
     }
     REQUIRE_THAT(toOklch(kWhite).lightness, WithinAbs(1.0F, kTolerance));
     REQUIRE_THAT(toOklch(kWhite).chroma, WithinAbs(0.0F, kTolerance));
+}
 
+TEST_CASE("out-of-gamut colours keep lightness and hue", "[overlay][palette]") {
     const Oklch tooVivid{.lightness = 0.9F, .chroma = 0.4F, .hue = 264.0F};
     const Rgba mapped = fromOklch(tooVivid);
     REQUIRE(inUnitRange(mapped));
@@ -189,14 +212,16 @@ TEST_CASE("OKLCH conversion round-trips and maps out-of-gamut colours", "[overla
 }
 
 TEST_CASE("accents are read and written as #rrggbb", "[overlay][palette]") {
-    const std::optional<Rgba> red = parseHexColour("#ff3b30");
-    REQUIRE(red.has_value());
-    REQUIRE_THAT(red->r, WithinAbs(1.0F, kTolerance));
-    REQUIRE_THAT(red->g, WithinAbs(59.0F / 255.0F, kTolerance));
-    REQUIRE_THAT(red->b, WithinAbs(48.0F / 255.0F, kTolerance));
+    const Rgba red = parseHexColour("#ff3b30").value_or(kBlack);
+    REQUIRE_THAT(red.r, WithinAbs(1.0F, kTolerance));
+    REQUIRE_THAT(red.g, WithinAbs(59.0F / 255.0F, kTolerance));
+    REQUIRE_THAT(red.b, WithinAbs(48.0F / 255.0F, kTolerance));
     REQUIRE(parseHexColour("FF3B30") == red);
-    REQUIRE(toHex(*red) == "#ff3b30");
+    REQUIRE(toHex(red) == "#ff3b30");
     REQUIRE(toHex(rgb(2.0F, -1.0F, 0.5F)) == "#ff0080");
+}
+
+TEST_CASE("anything but six hex digits is not an accent", "[overlay][palette]") {
     for (const char* bad : {"", "#", "#ff3b3", "#ff3b300", "#gg0000", "ff 3b30", "#-f3b30"}) {
         CAPTURE(std::string{bad});
         REQUIRE_FALSE(parseHexColour(bad).has_value());

@@ -180,7 +180,7 @@ void HudInteraction::drawColour(SettingItem& item) {
     const Rgba current = parseHexColour(item.value).value_or(kDefaultAccent);
     std::array<float, 3> rgb{current.r, current.g, current.b};
     if (ImGui::ColorEdit3("##colour", rgb.data(), kColourFlags)) {
-        item.value = toHex(Rgba{.r = rgb[0], .g = rgb[1], .b = rgb[2], .a = 1.0F});
+        item.value = toHex(Rgba{.r = rgb.at(0), .g = rgb.at(1), .b = rgb.at(2), .a = 1.0F});
         colourDirty_ = true;
     }
     ImGui::SameLine();

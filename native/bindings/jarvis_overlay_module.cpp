@@ -128,6 +128,15 @@ void defineMinimizeConfig(py::class_<OverlayConfig>& config) {
                        "Hide while a full-screen application is in front on the HUD's monitor.");
 }
 
+/// The palette options of OverlayConfig (ADR-0028).
+void defineAppearanceConfig(py::class_<OverlayConfig>& config) {
+    config.def_readwrite("theme", &OverlayConfig::theme)
+        .def_property(
+            "accent", [](const OverlayConfig& self) { return toHex(self.accent); },
+            [](OverlayConfig& self, std::string_view hex) { self.accent = accentFrom(hex); },
+            "Accent of the CUSTOM theme as '#rrggbb'.");
+}
+
 void defineConfig(const py::module_& module) {
     py::class_<ModelLimits>(module, "ModelLimits",
                             "Bounds that keep the overlay's memory independent of its input.")
@@ -152,11 +161,6 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("idle_fps", &OverlayConfig::idleFps)
         .def_readwrite("transparent", &OverlayConfig::transparent,
                        "Prefer per-pixel transparency (DirectComposition).")
-        .def_readwrite("theme", &OverlayConfig::theme)
-        .def_property(
-            "accent", [](const OverlayConfig& self) { return toHex(self.accent); },
-            [](OverlayConfig& self, std::string_view hex) { self.accent = accentFrom(hex); },
-            "Accent of the CUSTOM theme as '#rrggbb'.")
         .def_readwrite("intensity", &OverlayConfig::intensity)
         .def_readwrite("bloom", &OverlayConfig::bloom,
                        "Run the GPU bloom pipeline (falls back to plain additive light).")
@@ -169,6 +173,7 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("expanded_bounds", &OverlayConfig::expandedBounds,
                        "Remembered expanded-panel position and size (SavedPlacement) or None.");
     defineMinimizeConfig(config);
+    defineAppearanceConfig(config);
 }
 
 void definePlacement(const py::module_& module) {

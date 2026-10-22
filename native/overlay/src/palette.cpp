@@ -30,18 +30,18 @@ struct Vec3 {
 
 using Matrix = std::array<Vec3, 3>;
 
-constexpr Matrix kLinearToLms{{{0.4122214708F, 0.5363325363F, 0.0514459929F},
-                               {0.2119034982F, 0.6806995451F, 0.1073969566F},
-                               {0.0883024619F, 0.2817188376F, 0.6299787005F}}};
-constexpr Matrix kLmsToLab{{{0.2104542553F, 0.7936177850F, -0.0040720468F},
-                            {1.9779984951F, -2.4285922050F, 0.4505937099F},
-                            {0.0259040371F, 0.7827717662F, -0.8086757660F}}};
-constexpr Matrix kLabToLms{{{1.0F, 0.3963377774F, 0.2158037573F},
-                            {1.0F, -0.1055613458F, -0.0638541728F},
-                            {1.0F, -0.0894841775F, -1.2914855480F}}};
-constexpr Matrix kLmsToLinear{{{4.0767416621F, -3.3077115913F, 0.2309699292F},
-                               {-1.2684380046F, 2.6097574011F, -0.3413193965F},
-                               {-0.0041960863F, -0.7034186147F, 1.7076373010F}}};
+constexpr Matrix kLinearToLms{{{.x = 0.4122214708F, .y = 0.5363325363F, .z = 0.0514459929F},
+                               {.x = 0.2119034982F, .y = 0.6806995451F, .z = 0.1073969566F},
+                               {.x = 0.0883024619F, .y = 0.2817188376F, .z = 0.6299787005F}}};
+constexpr Matrix kLmsToLab{{{.x = 0.2104542553F, .y = 0.7936177850F, .z = -0.0040720468F},
+                            {.x = 1.9779984951F, .y = -2.4285922050F, .z = 0.4505937099F},
+                            {.x = 0.0259040371F, .y = 0.7827717662F, .z = -0.8086757660F}}};
+constexpr Matrix kLabToLms{{{.x = 1.0F, .y = 0.3963377774F, .z = 0.2158037573F},
+                            {.x = 1.0F, .y = -0.1055613458F, .z = -0.0638541728F},
+                            {.x = 1.0F, .y = -0.0894841775F, .z = -1.2914855480F}}};
+constexpr Matrix kLmsToLinear{{{.x = 4.0767416621F, .y = -3.3077115913F, .z = 0.2309699292F},
+                               {.x = -1.2684380046F, .y = 2.6097574011F, .z = -0.3413193965F},
+                               {.x = -0.0041960863F, .y = -0.7034186147F, .z = 1.7076373010F}}};
 
 // sRGB transfer function (IEC 61966-2-1).
 constexpr float kSrgbLinearLimit = 0.04045F;
@@ -51,7 +51,7 @@ constexpr float kSrgbOffset = 0.055F;
 constexpr float kSrgbScale = 1.055F;
 constexpr float kSrgbGamma = 2.4F;
 // WCAG relative luminance weights and flare term.
-constexpr Vec3 kLuminance{0.2126F, 0.7152F, 0.0722F};
+constexpr Vec3 kLuminance{.x = 0.2126F, .y = 0.7152F, .z = 0.0722F};
 constexpr float kContrastFlare = 0.05F;
 
 constexpr float kFullTurn = 360.0F;
@@ -60,7 +60,7 @@ constexpr int kGamutSearchSteps = 20;
 
 Vec3 multiply(const Matrix& m, Vec3 v) noexcept {
     const auto row = [&](const Vec3& r) { return (r.x * v.x) + (r.y * v.y) + (r.z * v.z); };
-    return Vec3{row(m.at(0)), row(m.at(1)), row(m.at(2))};
+    return Vec3{.x = row(m.at(0)), .y = row(m.at(1)), .z = row(m.at(2))};
 }
 
 float toLinear(float channel) noexcept {
@@ -78,12 +78,13 @@ float toSrgb(float linear) noexcept {
 }
 
 Vec3 linearOf(Rgba colour) noexcept {
-    return Vec3{toLinear(colour.r), toLinear(colour.g), toLinear(colour.b)};
+    return Vec3{.x = toLinear(colour.r), .y = toLinear(colour.g), .z = toLinear(colour.b)};
 }
 
 Vec3 labOf(Rgba colour) noexcept {
     const Vec3 lms = multiply(kLinearToLms, linearOf(colour));
-    return multiply(kLmsToLab, Vec3{std::cbrt(lms.x), std::cbrt(lms.y), std::cbrt(lms.z)});
+    return multiply(kLmsToLab,
+                    Vec3{.x = std::cbrt(lms.x), .y = std::cbrt(lms.y), .z = std::cbrt(lms.z)});
 }
 
 float radians(float degrees) noexcept {
@@ -92,10 +93,13 @@ float radians(float degrees) noexcept {
 
 Vec3 linearOf(Oklch colour) noexcept {
     const float hue = radians(colour.hue);
-    const Vec3 lab{colour.lightness, colour.chroma * std::cos(hue), colour.chroma * std::sin(hue)};
+    const Vec3 lab{.x = colour.lightness,
+                   .y = colour.chroma * std::cos(hue),
+                   .z = colour.chroma * std::sin(hue)};
     const Vec3 root = multiply(kLabToLms, lab);
-    return multiply(kLmsToLinear, Vec3{root.x * root.x * root.x, root.y * root.y * root.y,
-                                       root.z * root.z * root.z});
+    return multiply(kLmsToLinear, Vec3{.x = root.x * root.x * root.x,
+                                       .y = root.y * root.y * root.y,
+                                       .z = root.z * root.z * root.z});
 }
 
 bool inGamut(Vec3 linear) noexcept {
