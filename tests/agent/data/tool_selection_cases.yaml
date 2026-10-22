@@ -1,0 +1,78 @@
+# Labelled requests for the per-turn tool selection (ADR-0020).
+#
+# Each case is something a user says and the tool(s) that can answer it;
+# a case is a hit when any expected tool is among the selected ones.
+# Phrasing deliberately avoids the tool's own name where people would
+# (nobody says "current time tool"). Add a case whenever a real session
+# shows the selector hiding the right tool.
+cases:
+  - request: what time is it?
+    expected: [current_time]
+  - request: what's today's date?
+    expected: [current_time]
+  - request: how much RAM am I using?
+    expected: [system_monitor]
+  - request: is my CPU busy right now?
+    expected: [system_monitor]
+  - request: how much battery do I have left?
+    expected: [battery_status, system_monitor]
+  - request: turn the volume up a bit
+    expected: [set_volume]
+  - request: make the screen dimmer
+    expected: [set_brightness]
+  - request: open Spotify
+    expected: [open_app]
+  - request: play some jazz
+    expected: [play_music]
+  - request: skip this song
+    expected: [music_control]
+  - request: what song is this?
+    expected: [now_playing]
+  - request: do I have any new emails?
+    expected: [list_unread_email, summarize_inbox]
+  - request: remind me to call mom at six
+    expected: [add_reminder]
+  - request: add milk to my shopping list
+    expected: [add_todo]
+  - request: note that the wifi password is on the fridge
+    expected: [add_note]
+  - request: what's on my calendar today?
+    expected: [todays_agenda]
+  - request: schedule a meeting with Anna tomorrow at three
+    expected: [create_event]
+  - request: when am I free for an hour this week?
+    expected: [find_free_slot]
+  - request: what's the weather like in Sofia?
+    expected: [web_search]
+  - request: look up who won the match last night
+    expected: [web_search]
+  - request: lock my computer
+    expected: [lock_screen]
+  - request: grab a screenshot
+    expected: [take_screenshot]
+  - request: what am I looking at?
+    expected: [describe_screen, ask_about_screen]
+  - request: switch to Chrome
+    expected: [switch_window]
+  - request: minimize this window
+    expected: [window_action]
+  - request: what's the git status of my repo?
+    expected: [git_status]
+  - request: run the tests for this project
+    expected: [run_tests]
+  - request: turn off the living room lights
+    expected: [set_device]
+  - request: anything new on Slack?
+    expected: [read_messages]
+  - request: find my CV pdf
+    expected: [find_files]
+  - request: summarize this YouTube video
+    expected: [summarize_youtube]
+  - request: mute the sound
+    expected: [mute]
+  - request: close Notepad
+    expected: [close_app]
+  - request: copy this to the clipboard
+    expected: [clipboard_set]
+  - request: run dir in the terminal
+    expected: [shell_command]

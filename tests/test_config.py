@@ -78,6 +78,23 @@ def test_the_default_ollama_provider_needs_no_key(make_settings: Callable[..., S
     make_settings(mode=RuntimeMode.CLOUD).validate_for_mode()
 
 
+def test_tools_per_turn_defaults_by_provider_and_reads_env(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    assert make_settings().tools_per_turn() == 12
+    assert make_settings(llm_provider="anthropic").tools_per_turn() == 0
+    assert make_settings(llm_provider="anthropic", mode=RuntimeMode.LOCAL).tools_per_turn() == 12
+
+    monkeypatch.setenv("JARVIS_MAX_TOOLS_PER_TURN", "0")
+    monkeypatch.setenv("JARVIS_CORE_TOOLS", "current_time, system_monitor")
+    settings = make_settings()
+
+    assert settings.tools_per_turn() == 0
+    assert settings.core_tools == ["current_time", "system_monitor"]
+    with pytest.raises(ValidationError):
+        make_settings(max_tools_per_turn=-1)
+
+
 def test_local_mode_needs_no_credentials(make_settings: Callable[..., Settings]) -> None:
     make_settings(mode=RuntimeMode.LOCAL).validate_for_mode()
 

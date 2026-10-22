@@ -12,6 +12,7 @@ from jarvis.agent.loop import (
     SUMMARY_REQUEST,
     AgentLimits,
 )
+from jarvis.agent.tool_selection import RelevanceToolSelector
 from jarvis.config import Settings
 from jarvis.core.events import AssistantSaid, Event, EventBus, LatencySample
 from jarvis.llm.base import (
@@ -24,6 +25,7 @@ from jarvis.llm.base import (
 )
 from tests.agent.fakes import DestructiveTool, EchoTool, FakeConfirmation
 from tests.agent.llm_fakes import (
+    AddNoteTool,
     Block,
     FakeMemory,
     ScriptedLLM,
@@ -199,6 +201,41 @@ async def test_fallback_when_every_tool_failed(make_settings: MakeSettings) -> N
     await make_agent(make_settings(), llm).respond("do magic", sink)
 
     assert sink.sentences == [NOTHING_DONE]
+
+
+async def test_only_relevant_tools_are_offered_and_used_ones_stay(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(
+        rounds=[tool_round(call("t1", "destroy", target="x")), text_round("Deleted x.")]
+    )
+    agent = make_agent(
+        make_settings(),
+        llm,
+        EchoTool(),
+        DestructiveTool(),
+        AddNoteTool(),
+        selector=RelevanceToolSelector(max_tools=2),
+    )
+
+    await agent.respond("repeat after me", SentenceCollector())
+
+    assert [tool.name for tool in llm.tools_seen[0]] == ["echo"]
+    assert [tool.name for tool in llm.tools_seen[1]] == ["destroy", "echo"]
+
+
+async def test_default_selector_follows_the_settings_cap(make_settings: MakeSettings) -> None:
+    llm = ScriptedLLM(rounds=[text_round("Hello.")])
+    agent = make_agent(
+        make_settings(max_tools_per_turn=1, core_tools=[]),
+        llm,
+        EchoTool(),
+        AddNoteTool(),
+    )
+
+    await agent.respond("add a note", SentenceCollector())
+
+    assert [tool.name for tool in llm.tools_seen[0]] == ["add_note"]
 
 
 async def test_summary_round_tool_calls_are_ignored(make_settings: MakeSettings) -> None:

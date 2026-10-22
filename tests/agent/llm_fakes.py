@@ -14,6 +14,7 @@ from jarvis.agent.loop import Agent, AgentLimits
 from jarvis.agent.persona import Persona
 from jarvis.agent.registry import ToolRegistry
 from jarvis.agent.tool import Tool, ToolCategory, ToolContext, ToolInput, ToolResult
+from jarvis.agent.tool_selection import ToolSelector
 from jarvis.config import Settings
 from jarvis.core.events import EventBus
 from jarvis.llm.base import (
@@ -283,6 +284,7 @@ def make_agent(
     memory: FakeMemory | None = None,
     limits: AgentLimits | None = None,
     cloud_provider: bool = False,
+    selector: ToolSelector | None = None,
 ) -> Agent:
     """An ``Agent`` over fakes, with ``tools`` registered by hand."""
     registry = ToolRegistry()
@@ -297,6 +299,7 @@ def make_agent(
         memory=memory,
         limits=limits,
         cloud_provider=cloud_provider,
+        selector=selector,
     )
 
 

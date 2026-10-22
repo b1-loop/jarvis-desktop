@@ -8,7 +8,9 @@ model asks for tools, they run through :class:`~jarvis.agent.chaining.ToolChain`
 (and therefore through the central confirmation policy), their results go
 back to the model, and the loop repeats until the model stops or the
 tool-round limit is reached. A turn that used tools always ends with a
-spoken summary.
+spoken summary. A :class:`ToolSelector` trims the tool list each round to
+what the request needs, so small local models are not handed every schema
+(ADR-0020).
 
 The turn is plain ``async`` code with no shielding, so cancelling the task
 that runs it (barge-in, step 7) stops streaming and tool execution at the
@@ -17,7 +19,7 @@ next await.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass
 from typing import Final, Protocol
 
@@ -31,6 +33,7 @@ from jarvis.agent.confirmation import ConfirmationPolicy
 from jarvis.agent.persona import Persona
 from jarvis.agent.registry import ToolRegistry
 from jarvis.agent.tool import ToolContext
+from jarvis.agent.tool_selection import RelevanceToolSelector, ToolSelector
 from jarvis.core.events import AssistantSaid, LatencySample
 from jarvis.llm.base import (
     AssistantMessage,
@@ -122,6 +125,8 @@ class Agent:
         limits: Tool-round, tool-call and parallelism bounds.
         cloud_provider: Whether ``llm`` is a hosted service, which decides
             if a failure apology suggests switching to local mode.
+        selector: Which tools each request offers the model; defaults to
+            ``RelevanceToolSelector.from_settings(context.settings)``.
     """
 
     def __init__(
@@ -135,6 +140,7 @@ class Agent:
         memory: ConversationMemory | None = None,
         limits: AgentLimits | None = None,
         cloud_provider: bool = False,
+        selector: ToolSelector | None = None,
     ) -> None:
         self.llm = llm
         self.registry = registry
@@ -144,6 +150,7 @@ class Agent:
         self.memory = memory
         self.limits = limits or AgentLimits()
         self.cloud_provider = cloud_provider
+        self.selector = selector or RelevanceToolSelector.from_settings(context.settings)
 
     async def respond(self, user_text: str, sink: SentenceSink) -> TurnReport:
         """Answer ``user_text``, streaming sentences into ``sink``.
@@ -154,11 +161,16 @@ class Agent:
         """
         return await _Turn(self, user_text, sink).run()
 
-    def tool_definitions(self) -> list[ToolDefinition]:
-        """The registry's tools in the provider-neutral shape."""
+    def tool_definitions(self, request: str, *, keep: Collection[str] = ()) -> list[ToolDefinition]:
+        """The tools offered for ``request`` in the provider-neutral shape.
+
+        Args:
+            request: The user's words, which the selector ranks tools against.
+            keep: Tools already used this turn; they stay offered.
+        """
+        tools = self.selector.select(request, self.registry.tools(), keep=keep)
         return [
-            ToolDefinition.from_model(tool.name, tool.description, tool.Input)
-            for tool in self.registry.tools()
+            ToolDefinition.from_model(tool.name, tool.description, tool.Input) for tool in tools
         ]
 
 
@@ -180,7 +192,6 @@ class _Turn:
             max_calls=agent.limits.max_tool_calls,
             max_parallel=agent.limits.max_parallel_tools,
         )
-        self.tools = agent.tool_definitions()
         self.messages: list[Message] = []
         self.spoken: list[str] = []
         self.spoken_since_tools = False
@@ -237,7 +248,7 @@ class _Turn:
         watch = Stopwatch(self.clock)
         splitter = SentenceSplitter()
         done: Done | None = None
-        stream = self.agent.llm.stream(self.messages, self.tools)
+        stream = self.agent.llm.stream(self.messages, self._offered_tools())
         try:
             async for event in stream:
                 done = await self._handle(event, splitter) or done
@@ -250,6 +261,13 @@ class _Turn:
             raise LLMError(f"{self.agent.llm.model} stream ended without a final event")
         self.messages.append(done.message)
         return done
+
+    def _offered_tools(self) -> list[ToolDefinition]:
+        """This round's tools: re-selected so tools used earlier stay offered."""
+        used = {record.name for record in self.chain.records}
+        tools = self.agent.tool_definitions(self.user_text, keep=used)
+        log.debug("agent.tools.offered", count=len(tools), tools=[tool.name for tool in tools])
+        return tools
 
     async def _handle(self, event: LLMEvent, splitter: SentenceSplitter) -> Done | None:
         if isinstance(event, TextDelta):
@@ -347,6 +365,8 @@ async def _close(stream: AsyncIterator[LLMEvent]) -> None:
 #   from the tools' own ``spoken`` sentences: "always end with a spoken
 #   summary" holds even when the model misbehaves, without inventing
 #   anything a tool did not report.
+# - The tool list is re-selected every round with the tools already used
+#   pinned, so a chain keeps its tools while each round stays short.
 # - Memory failures are logged with a traceback and the turn continues: a
 #   broken database must not make Jarvis mute (graceful degradation).
 #   LLM failures become an apology that includes the provider's own remedy
