@@ -4,6 +4,7 @@
 #pragma once
 
 #include "jarvis/overlay/animation.hpp"
+#include "jarvis/overlay/effects.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
 
@@ -18,8 +19,11 @@ namespace jarvis::overlay {
 /// pixels at 96 DPI; the window scales them by the monitor's DPI itself.
 struct OverlayConfig {
     Corner corner = Corner::BottomRight;
-    int width = 420;
-    int height = 132;
+    /// Preset dimensions of the corner HUD (and its text scale).
+    PanelSize size = PanelSize::Large;
+    /// Explicit panel width / height overriding the preset; 0 keeps it.
+    int width = 0;
+    int height = 0;
     /// Distance from the two edges of the chosen corner.
     int margin = 24;
     /// Let clicks fall through to whatever is underneath (WS_EX_TRANSPARENT).
@@ -37,6 +41,11 @@ struct OverlayConfig {
     bool transparent = true;
     /// Palette of the HUD.
     ThemeName theme = ThemeName::Cyan;
+    /// How rich the HUD is: particle count, bloom strength and motion.
+    anim::Intensity intensity = anim::Intensity::Normal;
+    /// Run the GPU bloom pipeline; false (or a pipeline that fails to start)
+    /// draws the light additively without post-processing.
+    bool bloom = true;
     /// Window title; never shown (frameless) but visible to window tools.
     std::string title = "Jarvis";
     ModelLimits limits;
@@ -76,9 +85,10 @@ public:
     /// Pulse the ring outwards to acknowledge the wake word.
     void flashWakeWord();
 
-    /// Play the boot sequence (about 2.5 s) once. Non-blocking and
-    /// idempotent: later calls return false and change nothing.
-    bool playBoot();
+    /// Play the boot sequence (about 4 s) once, with @p readout shown in
+    /// its systems check. Non-blocking and idempotent: later calls return
+    /// false and change nothing.
+    bool playBoot(BootReadout readout = {});
     /// Cut the boot sequence short; it still glides into the corner.
     bool skipBoot();
 
@@ -86,6 +96,11 @@ public:
     [[nodiscard]] bool transparent() const noexcept;
     /// Why the fallback was used; empty when transparent() is true.
     [[nodiscard]] std::string fallbackReason() const;
+
+    /// True while the GPU bloom pipeline renders the light layer.
+    [[nodiscard]] bool bloom() const noexcept;
+    /// Why there is no bloom; empty when bloom() is true.
+    [[nodiscard]] std::string bloomReason() const;
 
     /// Smoothed frame timings measured on the UI thread.
     [[nodiscard]] anim::FrameStats frameStats() const;

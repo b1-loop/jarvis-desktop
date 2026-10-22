@@ -2,6 +2,7 @@
 
 #include "jarvis/overlay/errors.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/system_info.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -169,4 +170,63 @@ TEST_CASE("the boot plays once and frames are measured while it runs", "[overlay
     REQUIRE(window->snapshot().bootStartedAt.has_value());
     REQUIRE(window->skipBoot());
     REQUIRE_FALSE(window->skipBoot());
+}
+
+TEST_CASE("the window reports whether bloom runs, and why not", "[overlay][window][bloom]") {
+    const auto window = openWindowOrSkip();
+    REQUIRE(window->bloom() == window->bloomReason().empty());
+
+    OverlayConfig config = testConfig();
+    config.bloom = false;
+    std::unique_ptr<OverlayWindow> plain;
+    window->close();  // Dear ImGui supports one context, so one window at a time
+    try {
+        plain = std::make_unique<OverlayWindow>(config);
+    } catch (const OverlayError& error) {
+        SKIP("overlay window unavailable here: " << error.what());
+    }
+    REQUIRE_FALSE(plain->bloom());
+    REQUIRE_FALSE(plain->bloomReason().empty());
+    plain->playBoot();
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    REQUIRE(plain->running());
+    REQUIRE(plain->frameStats().frames > 0);
+}
+
+TEST_CASE("the GPU time of frames is measured with timestamp queries", "[overlay][window][bloom]") {
+    const auto window = openWindowOrSkip();
+    window->resetFrameStats();
+    REQUIRE(window->playBoot({{.label = "MODEL", .value = "test"}}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    const auto stats = window->frameStats();
+    REQUIRE(stats.gpuFrames > 0);
+    REQUIRE(stats.gpuMs > 0.0);
+    REQUIRE(window->snapshot().bootReadout->front().label == "MODEL");
+}
+
+TEST_CASE("every intensity renders", "[overlay][window]") {
+    for (const auto intensity :
+         {jarvis::overlay::anim::Intensity::Calm, jarvis::overlay::anim::Intensity::Max}) {
+        OverlayConfig config = testConfig();
+        config.intensity = intensity;
+        std::unique_ptr<OverlayWindow> window;
+        try {
+            window = std::make_unique<OverlayWindow>(config);
+        } catch (const OverlayError& error) {
+            SKIP("overlay window unavailable here: " << error.what());
+        }
+        window->setState(AssistantState::Speaking);
+        window->pushLevel(0.8F);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        REQUIRE(window->running());
+        REQUIRE(window->frameStats().frames > 0);
+    }
+}
+
+TEST_CASE("the default microphone has a name or none at all", "[overlay][system]") {
+    const auto name = jarvis::overlay::defaultMicrophoneName();
+    if (!name.has_value()) {
+        SKIP("no default capture device in this session");
+    }
+    REQUIRE_FALSE(name.value_or(std::string{}).empty());
 }

@@ -1,6 +1,7 @@
 #include "jarvis/overlay/window.hpp"
 
 #include "jarvis/overlay/animation.hpp"
+#include "jarvis/overlay/animator.hpp"
 #include "jarvis/overlay/errors.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
@@ -10,8 +11,10 @@
 #include <imgui_impl_win32.h>
 
 #include "hud.hpp"
+#include "postfx.hpp"
 #include "surface.hpp"
 #include <d3d11.h>
+#include <dxgi.h>
 #include <windows.h>
 #include <wrl/client.h>
 
@@ -19,8 +22,10 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <future>
@@ -32,6 +37,7 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 // The backend keeps this declaration behind '#if 0' in its header so the
 // header stays free of <windows.h>; applications declare it themselves.
@@ -54,10 +60,17 @@ constexpr std::uint64_t kWordMask = 0xFFFF;
 constexpr int kMaxOpacity = 255;
 constexpr unsigned kWordBits = 16;
 /// Side of the square boot canvas, 96-DPI pixels.
-constexpr int kBootCanvas = 440;
-/// Transparent margin around the panel so glows and the wake ripple are not
-/// clipped; only on the transparent surface, where it is invisible.
-constexpr int kBleed = 20;
+constexpr int kBootCanvas = 520;
+/// Transparent margin around the panel so glows, the wake ripple and the
+/// particle field are not clipped; only on the transparent surface, where
+/// it is invisible (and click-through like the rest of the window).
+constexpr int kBleed = 44;
+/// Length of the whip-pan streak at the fastest point of the hand-off,
+/// 96-DPI pixels.
+constexpr float kWhipLength = 70.0F;
+constexpr std::size_t kAdapterNameChars = 30;
+/// Light reaches this share of the canvas side beyond the boot canvas.
+constexpr float kRegionMargin = 0.2F;
 /// Panel padding, 96-DPI pixels.
 constexpr float kPanelPadding = 14.0F;
 /// How long after the last mutation the renderer keeps the active frame rate.
@@ -188,7 +201,32 @@ struct FrameLayout {
     RectF panel;
     RectF panelText;
     RectF canvas;
+    /// Direction of the hand-off (boot centre to panel centre), unit length.
+    float handoffX{0.0F};
+    float handoffY{0.0F};
 };
+
+/// The wall clock for the idle readout, formatted once per frame.
+hud::HudClock localClock() {
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    if (localtime_s(&local, &now) != 0) {
+        return {};
+    }
+    return hud::HudClock{.time = formatClock(local), .date = formatDate(local)};
+}
+
+/// The GPU's name as DXGI reports it, e.g. "NVIDIA GeForce RTX 4070".
+std::string adapterName(ID3D11Device& device) {
+    ComPtr<IDXGIDevice> dxgiDevice;
+    ComPtr<IDXGIAdapter> adapter;
+    DXGI_ADAPTER_DESC desc{};
+    if (FAILED(device.QueryInterface(IID_PPV_ARGS(&dxgiDevice))) ||
+        FAILED(dxgiDevice->GetAdapter(&adapter)) || FAILED(adapter->GetDesc(&desc))) {
+        return "Direct3D 11";
+    }
+    return toUtf8(std::wstring_view{static_cast<const wchar_t*>(desc.Description)});
+}
 
 }  // namespace
 
@@ -207,6 +245,8 @@ struct OverlayWindow::Impl {
     void close();
 
     OverlayConfig config;
+    /// The panel's size preset with any explicit width/height applied.
+    PanelMetrics metrics;
     OverlayModel model;
     std::atomic<bool> running{false};
     std::atomic<HWND> hwnd{nullptr};
@@ -222,7 +262,12 @@ struct OverlayWindow::Impl {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> context;
     std::unique_ptr<RenderSurface> surface;
-    anim::OverlayAnimator animator{Clock::now()};
+    anim::OverlayAnimator animator;
+    std::unique_ptr<PostProcessor> post;
+    std::unique_ptr<GpuTimer> gpuTimer;
+    std::string bloomReason;  // guarded by statsMutex once the thread runs
+    std::atomic<bool> bloomActive{false};
+    std::vector<ReadoutLine> systemReadout;
     std::unique_ptr<hud::HudRenderer> hud;
     hud::HudFonts fonts;
     UniqueHandle frameTimer;
@@ -246,6 +291,8 @@ private:
     void destroyWindow();
     void createDevice();
     void createSurface();
+    void createPostProcessing();
+    void describeSystem();
     void initImGui();
     void messageLoop();
     void pumpMessages();
@@ -254,11 +301,18 @@ private:
     void renderFrame(const OverlaySnapshot& snapshot, Clock::time_point now);
     void drawFrame(const OverlaySnapshot& snapshot, const anim::AnimationFrame& frame,
                    const FrameLayout& layout);
+    void submitFrame();
+    void placeBoot(FrameLayout& layout, const anim::BootFrame& boot,
+                   const HudGeometry& panelHud) const;
     [[nodiscard]] FrameLayout layoutFor(const anim::AnimationFrame& frame) const;
     void applyPlacement(const Placement& target);
     void setClickThrough(bool on) const;
     void syncBootClickThrough(bool booting);
     void recordFrame(Clock::time_point start, Clock::time_point end);
+    void collectGpuTime();
+    void retirePostProcessing();
+    [[nodiscard]] PostSettings postSettings(const anim::AnimationFrame& frame,
+                                            const FrameLayout& layout) const noexcept;
     [[nodiscard]] std::chrono::microseconds framePeriodFor(const OverlaySnapshot& snapshot);
     void shutdown();
 
@@ -269,7 +323,10 @@ private:
 // --- lifecycle (caller thread) -----------------------------------------------
 
 OverlayWindow::Impl::Impl(OverlayConfig initial)
-    : config(std::move(initial)), model(config.limits) {
+    : config(std::move(initial)),
+      metrics(withOverride(panelMetrics(config.size), config.width, config.height)),
+      model(config.limits),
+      animator(Clock::now(), anim::AnimatorConfig{.intensity = config.intensity}) {
     std::future<void> started = ready.get_future();
     uiThread = std::jthread([this] { threadMain(); });
     started.get();  // rethrows OverlayError from the UI thread
@@ -301,7 +358,10 @@ void OverlayWindow::Impl::threadMain() {
         createDevice();
         createSurface();
         initImGui();
-        hud = std::make_unique<hud::HudRenderer>(*device.Get(), themeFor(config.theme), animator);
+        createPostProcessing();
+        describeSystem();
+        hud = std::make_unique<hud::HudRenderer>(*device.Get(), themeFor(config.theme), animator,
+                                                 post.get());
         frameTimer = createFrameTimer();
         workArea = primaryWorkArea();
         applyPlacement(layoutFor(animator.frame()).window);
@@ -335,13 +395,13 @@ void OverlayWindow::Impl::registerClass() {
 void OverlayWindow::Impl::createWindow(DWORD exStyle) {
     const std::wstring title = toWide(config.title);
     auto* const window =
-        CreateWindowExW(exStyle, className.c_str(), title.c_str(), WS_POPUP, 0, 0, config.width,
-                        config.height, nullptr, nullptr, instance, this);
+        CreateWindowExW(exStyle, className.c_str(), title.c_str(), WS_POPUP, 0, 0, metrics.width,
+                        metrics.height, nullptr, nullptr, instance, this);
     if (window == nullptr) {
         throw OverlayError("overlay window creation failed: " + lastErrorText());
     }
     hwnd.store(window);
-    placement = Placement{.x = 0, .y = 0, .width = config.width, .height = config.height};
+    placement = Placement{.x = 0, .y = 0, .width = metrics.width, .height = metrics.height};
     dpiScale = static_cast<float>(GetDpiForWindow(window)) / kBaseDpi;
 }
 
@@ -390,6 +450,35 @@ void OverlayWindow::Impl::createSurface() {
     createWindow(layeredWindowStyle());
     setClickThrough(config.clickThrough);
     surface = createLayeredSurface(hwnd.load(), *device.Get(), config.opacity);
+}
+
+void OverlayWindow::Impl::createPostProcessing() {
+    gpuTimer = std::make_unique<GpuTimer>(*device.Get());
+    if (!config.bloom) {
+        bloomReason = "bloom disabled in the configuration";
+        return;
+    }
+    try {
+        post = std::make_unique<PostProcessor>(*device.Get());
+        bloomActive.store(true);
+    } catch (const OverlayError& error) {
+        // Not swallowed: the reason is reported through bloomReason() and
+        // logged by the Python facade; the HUD then draws its light
+        // additively without post-processing (the ADR-0022 look).
+        bloomReason = error.what();
+    }
+}
+
+void OverlayWindow::Impl::describeSystem() {
+    const std::string gpu = truncateUtf8Head(adapterName(*device.Get()), kAdapterNameChars);
+    const std::string surfaceName = transparent.load() ? "DIRECTCOMPOSITION" : "LAYERED WINDOW";
+    const std::string bloomName =
+        post != nullptr ? std::to_string(animator.scale().bloomLevels) + "-LEVEL BLOOM" : "OFF";
+    systemReadout = {
+        ReadoutLine{.label = "GPU", .value = gpu},
+        ReadoutLine{.label = "SURFACE", .value = surfaceName},
+        ReadoutLine{.label = "POST FX", .value = bloomName},
+    };
 }
 
 void OverlayWindow::Impl::initImGui() {
@@ -475,6 +564,7 @@ void OverlayWindow::Impl::renderFrame(const OverlaySnapshot& snapshot, Clock::ti
     applyPlacement(layout.window);
     drawFrame(snapshot, frame, layout);
     recordFrame(now, Clock::now());
+    collectGpuTime();
 }
 
 void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
@@ -493,17 +583,31 @@ void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
                               .panelText = layout.panelText,
                               .canvas = layout.canvas,
                               .scale = dpiScale,
-                              .opacity = opacity};
+                              .opacity = opacity,
+                              .textScale = metrics.textScale,
+                              .systemReadout = systemReadout,
+                              .clock = localClock()};
+    if (post != nullptr) {
+        post->setFrame(postSettings(frame, layout));
+    }
     hud->draw(*ImGui::GetBackgroundDrawList(), scene, fonts);
     ImGui::Render();
+    submitFrame();
+}
 
+void OverlayWindow::Impl::submitFrame() {
     const Rgba& background = hud->theme().background;
     const std::array<float, 4> clear =
         clearColourFor(*surface, {background.r, background.g, background.b, background.a});
     ID3D11RenderTargetView* const target = surface->target();
+    gpuTimer->begin(*context.Get());
     context->OMSetRenderTargets(1, &target, nullptr);
     context->ClearRenderTargetView(target, clear.data());
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+    gpuTimer->end(*context.Get());
+    if (post != nullptr && !post->failure().empty()) {
+        retirePostProcessing();
+    }
 
     const HRESULT presented = surface->present();
     if (presented == DXGI_ERROR_DEVICE_REMOVED || presented == DXGI_ERROR_DEVICE_RESET) {
@@ -514,29 +618,61 @@ void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
     }
 }
 
+PostSettings OverlayWindow::Impl::postSettings(const anim::AnimationFrame& frame,
+                                               const FrameLayout& layout) const noexcept {
+    const float whip = frame.boot.has_value() ? frame.boot->whip * kWhipLength * dpiScale : 0.0F;
+    RECT region{.left = 0, .top = 0, .right = 0, .bottom = 0};
+    if (frame.boot.has_value()) {
+        // The boot's light stays near its canvas (particles, shock ring and
+        // the whip trail reach a little beyond it).
+        const RectF& c = layout.canvas;
+        const float margin = (std::min(c.width, c.height) * kRegionMargin) + whip;
+        region = RECT{.left = static_cast<LONG>(c.x - margin),
+                      .top = static_cast<LONG>(c.y - margin),
+                      .right = static_cast<LONG>(c.right() + margin),
+                      .bottom = static_cast<LONG>(c.bottom() + margin)};
+    }
+    return PostSettings{.bloomStrength = frame.bloom,
+                        .glitch = frame.glitch,
+                        .time = frame.time,
+                        .whipX = layout.handoffX * whip,
+                        .whipY = layout.handoffY * whip,
+                        .bloomLevels = animator.scale().bloomLevels,
+                        .region = region};
+}
+
+void OverlayWindow::Impl::retirePostProcessing() {
+    // The light targets could not be (re)created mid-run, e.g. out of video
+    // memory after a resize. Keep the overlay and drop the bloom.
+    {
+        const std::scoped_lock lock(statsMutex);
+        bloomReason = post->failure();
+    }
+    bloomActive.store(false);
+    hud = std::make_unique<hud::HudRenderer>(*device.Get(), hud->theme(), animator, nullptr);
+    post.reset();
+}
+
+void OverlayWindow::Impl::collectGpuTime() {
+    if (const std::optional<double> gpu = gpuTimer->collect(*context.Get()); gpu.has_value()) {
+        const std::scoped_lock lock(statsMutex);
+        stats.recordGpu(*gpu);
+    }
+}
+
 FrameLayout OverlayWindow::Impl::layoutFor(const anim::AnimationFrame& frame) const {
     const Placement panelPx =
-        anchorToCorner(config.corner, workArea, scaled(config.width, dpiScale),
-                       scaled(config.height, dpiScale), scaled(config.margin, dpiScale));
+        anchorToCorner(config.corner, workArea, scaled(metrics.width, dpiScale),
+                       scaled(metrics.height, dpiScale), scaled(config.margin, dpiScale));
     const RectF panel = toRectF(panelPx);
-    const HudGeometry panelHud = panelGeometry(panel, kPanelPadding * dpiScale);
+    const HudGeometry panelHud = panelGeometry(panel, kPanelPadding * metrics.textScale * dpiScale);
     FrameLayout layout{.window = panelPx,
                        .geometry = panelHud,
                        .panel = panel,
                        .panelText = panelHud.text,
                        .canvas = panel};
     if (frame.boot.has_value()) {
-        const int side = scaled(kBootCanvas, dpiScale);
-        const RectF boot = toRectF(centredIn(workArea, side, side));
-        layout.canvas = lerpRect(boot, panel, frame.boot->handoff);
-        layout.geometry = lerpGeometry(bootGeometry(boot), panelHud, frame.boot->handoff);
-        // Transparent: one work-area-sized window, so the move is pure drawing.
-        // Fallback: the opaque window itself follows the canvas.
-        layout.window = transparent.load() ? Placement{.x = workArea.left,
-                                                       .y = workArea.top,
-                                                       .width = workArea.right - workArea.left,
-                                                       .height = workArea.bottom - workArea.top}
-                                           : enclosingPlacement(layout.canvas);
+        placeBoot(layout, *frame.boot, panelHud);
     } else if (transparent.load()) {
         layout.window = inflated(panelPx, scaled(kBleed, dpiScale));
     }
@@ -547,6 +683,29 @@ FrameLayout OverlayWindow::Impl::layoutFor(const anim::AnimationFrame& frame) co
     layout.panelText = translated(layout.panelText, dx, dy);
     layout.canvas = translated(layout.canvas, dx, dy);
     return layout;
+}
+
+void OverlayWindow::Impl::placeBoot(FrameLayout& layout, const anim::BootFrame& boot,
+                                    const HudGeometry& panelHud) const {
+    const int side = scaled(kBootCanvas, dpiScale);
+    const RectF canvas = toRectF(centredIn(workArea, side, side));
+    const HudGeometry bootHud = bootGeometry(canvas);
+    layout.canvas = lerpRect(canvas, layout.panel, boot.handoff);
+    layout.geometry = lerpGeometry(bootHud, panelHud, boot.handoff);
+    const float dx = panelHud.centreX - bootHud.centreX;
+    const float dy = panelHud.centreY - bootHud.centreY;
+    const float distance = std::hypot(dx, dy);
+    if (distance > 0.0F) {
+        layout.handoffX = dx / distance;
+        layout.handoffY = dy / distance;
+    }
+    // Transparent: one work-area-sized window, so the move is pure drawing.
+    // Fallback: the opaque window itself follows the canvas.
+    layout.window = transparent.load() ? Placement{.x = workArea.left,
+                                                   .y = workArea.top,
+                                                   .width = workArea.right - workArea.left,
+                                                   .height = workArea.bottom - workArea.top}
+                                       : enclosingPlacement(layout.canvas);
 }
 
 void OverlayWindow::Impl::applyPlacement(const Placement& target) {
@@ -625,6 +784,8 @@ void OverlayWindow::Impl::shutdown() {
         ImGui::DestroyContext();
     }
     hud.reset();
+    post.reset();
+    gpuTimer.reset();
     surface.reset();
     context.Reset();
     device.Reset();
@@ -725,8 +886,8 @@ void OverlayWindow::flashWakeWord() {
     impl_->model.flashWakeWord();
 }
 
-bool OverlayWindow::playBoot() {
-    return impl_->model.playBoot();
+bool OverlayWindow::playBoot(BootReadout readout) {
+    return impl_->model.playBoot(std::move(readout));
 }
 
 bool OverlayWindow::skipBoot() {
@@ -755,6 +916,15 @@ bool OverlayWindow::transparent() const noexcept {
 
 std::string OverlayWindow::fallbackReason() const {
     return impl_->fallbackReason;
+}
+
+bool OverlayWindow::bloom() const noexcept {
+    return impl_->bloomActive.load();
+}
+
+std::string OverlayWindow::bloomReason() const {
+    const std::scoped_lock lock(impl_->statsMutex);
+    return impl_->bloomReason;
 }
 
 anim::FrameStats OverlayWindow::frameStats() const {
@@ -790,6 +960,12 @@ const OverlayConfig& OverlayWindow::config() const noexcept {
 //   swap-chain resize per frame for under half a second.
 // - Dear ImGui keeps one global context per process, so one OverlayWindow at
 //   a time is supported; the Python side only ever creates one.
+// - The bloom pipeline is optional at every step: it can be switched off,
+//   it may fail to compile or allocate at creation, and it may fail later
+//   (light targets on a resize); each case leaves a reason in bloomReason()
+//   and the HUD carries on drawing its light without post-processing.
+// - GPU time comes from timestamp queries read back a few frames late
+//   without flushing, so measuring it never stalls the UI thread.
 // - Frames are paced by a high-resolution waitable timer, not by vsync:
 //   Present(0) never blocks, the flip-model swap chain is shown by DWM on
 //   the next vblank anyway, and a hidden or idle panel costs a few wakeups
