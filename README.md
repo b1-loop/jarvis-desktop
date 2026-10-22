@@ -127,7 +127,10 @@ Trade-offs of each: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
 Small local models get a short, relevant tool list per request, ranked by
 keywords and by a multilingual embedding model so Swedish requests find
 English tool descriptions, and never get to claim success for a tool that
-failed: [ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). Full design,
+failed: [ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). They are
+told the current time every turn, can set "in five minutes" reminders without
+date arithmetic, and never see an old tool answer in memory, so live data is
+always fetched again: [ADR-0027](docs/adr/0027-grounding-time-and-live-data.md). Full design,
 threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
 decision with its reasons: [the ADRs](docs/adr/README.md).
 
