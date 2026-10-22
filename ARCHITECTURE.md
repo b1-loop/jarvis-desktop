@@ -24,7 +24,7 @@ jarvis-desktop/
     audio_engine/           capture, ring buffer, VAD, wake word, playback, barge-in, MP3 decoding, replay source
     os_integration/         Win32: hotkeys, windows, processes, text injection, notifications, system controls, screenshots, clipboard
     inference/              whisper.cpp and llama.cpp wrappers
-    overlay/                Dear ImGui status window on Direct3D 11
+    overlay/                Dear ImGui holographic HUD on Direct3D 11 with GPU bloom (ADR-0023)
     bindings/               pybind11 modules: jarvis_audio, jarvis_os, jarvis_inference, jarvis_overlay
     tests/                  Catch2, one executable
     third_party/            whisper.cpp, llama.cpp (git submodules)
@@ -205,7 +205,7 @@ moment it is published, such as the latency benchmark.
 | Notifier loop | `BalloonNotifier` (C++) | owns the hidden window and tray icon `Shell_NotifyIcon` needs | task queue mutex |
 | Generation | `GenerationStream` (C++) | llama.cpp decode loop; pushes pieces into a queue that Python pulls with the GIL released | stream mutex, cancellation token |
 | ggml / CTranslate2 pools | whisper.cpp, llama.cpp, faster-whisper | intra-op worker threads inside one inference call | owned by the library |
-| Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11, DPI changes | overlay model mutex (read) |
+| Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11 with the bloom pass, DPI changes | overlay model mutex (read) |
 | Tray thread | `TrayIcon` (Python, pystray) | notification-area icon and menu; clicks go back with `call_soon_threadsafe` | pre-rendered icon images (read-only) |
 | Dashboard thread | `Dashboard` (Python, tkinter) | owns the Tk interpreter; drains a queue of immutable snapshots every 100 ms | snapshot queue |
 | Replay source | `ReplaySource` (C++, benchmark only) | delivers queued samples in 10 ms frames at the real-time rate instead of a microphone | replay feed mutex |
