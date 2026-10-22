@@ -145,6 +145,37 @@ when there is text and stay up for 8 s after Jarvis returns to Idle.
 - **Hooks for tests and demos:** `injectUiEvent()` and `setDemo()` show
   interactive states without moving the mouse or taking focus.
 
+## Minimized: the orb (ADR-0024, update)
+
+![Minimizing the HUD to its orb and restoring it](../../docs/media/overlay-minimize.gif)
+
+| Header / file | Type | Role |
+| --- | --- | --- |
+| `orb.hpp` | `dockOrb`, `nearestEdge`, `orbSide`, `orbMorphAt`, `OrbMorph`, `orbLook`, `OrbLook` | where the 48-logical-px orb docks (nearest edge, or the HUD's corner; DPI-scaled, clamped), the HUD/orb morph curves, the per-state look |
+| `minimize_policy.hpp` | `AutoMinimizer`, `ForegroundWindow`, `isFullscreen`, `hidesHud` | auto-minimize state machine (fake-clock tested) and the full-screen check |
+| `src/window_orb.cpp` | `OverlayWindow::Impl` members | private: minimize/restore, auto-minimize, the full-screen poll, the fallback's circular window region |
+| `src/hud_orb.cpp` | `HudRenderer` members | private: the orb's halo, body, rim, thinking orbit and wake ripple |
+
+- **Minimize** comes from the hover control (`Minimized{automatic=false}`
+  is queued), from Python (`setMinimized`, not echoed) or from
+  auto-minimize (`automatic=true`). An expanded panel collapses first; the
+  orb waits for the boot's hand-off.
+- **Morph** (0.5 s, one curve played forwards or backwards): the text
+  column is gone in the first third, the ring flies and shrinks into the
+  orb while the scene fades, the orb fades in as the ring arrives. The
+  transparent window spans HUD and orb for the morph; the layered fallback
+  follows the shrinking ring's square, cut to a circle with `SetWindowRgn`.
+- **The orb's window** is the orb plus a 30-px bleed; its hit map is the
+  disc only. A press that stays inside the system drag rectangle is a
+  click (restore); beyond it the orb drags with the HUD's snap rules and
+  reports `PlacementChanged{orb=true}`. Dragging the HUD forgets a dragged
+  orb so it docks next to the HUD again.
+- **Full screen:** twice a second the foreground window's rectangle is
+  compared with its monitor's; a captionless window covering the HUD's
+  monitor (not the desktop itself) hides the HUD or the orb until it goes.
+- **Cost:** the minimized frame draws only the orb (a few dozen vertices,
+  a bloom pass over a ~160 px window) and stays at the idle rate.
+
 ## Threads and pacing
 
 | Thread | Does | Shares |
@@ -186,6 +217,12 @@ includes `Present`, which costs about 1 ms here even for an empty frame
 ADR-0022 overlay measured 1.6-2.0 ms idle and 1.2-2.1 ms active under
 the same conditions.
 
+The minimized orb (`scripts/demo_overlay.py --minimize`, normal intensity,
+medians of four runs): idle orb 1.25 ms CPU / 0.12 ms GPU at 15 fps;
+listening, thinking and speaking on the orb 0.9-2.9 ms CPU / 0.1-0.8 ms GPU
+at 60 fps (the spread is the machine's load). The idle orb's CPU time is
+mostly the fixed `Present` cost.
+
 Active frames and the boot are within budget at every intensity; the idle
 frame (about 3.1-3.6 ms, of which about 1 ms is the fixed `Present` cost)
 is over its 2 ms budget, and the last frames of the hand-off spike once
@@ -213,7 +250,12 @@ clamp, monitors, unplugged monitor, DPI round trip, drag anchor, resize),
 `hud_data_test.cpp`, `text_entry_test.cpp` (headless ImGui: Swedish letters
 and a surrogate pair through `AddInputCharacterUTF16`, Enter, Escape) and
 `interactive_window_test.cpp` (inject and poll, no focus stolen, live
-appearance, expand/collapse, unknown monitor).
+appearance, expand/collapse, unknown monitor). Minimize: `orb_test.cpp`
+(nearest edge, corner docking, DPI, negative-coordinate monitor, unplugged
+monitor, morph curves, per-state look), `minimize_policy_test.cpp`
+(auto-minimize with a fake clock around turns, manual orbs, full-screen
+maths) and `minimize_window_test.cpp` (real window shrinks and grows,
+starts minimized, auto-minimize around a turn, idle orb at the idle rate).
 
 Build with `-DJARVIS_BUILD_OVERLAY=OFF` to leave the whole component (and
 its Python module) out.

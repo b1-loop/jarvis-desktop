@@ -265,13 +265,14 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
   screen corner (GPU bloom, wireframe globe, particles that follow the
   microphone and the voice; `JARVIS_OVERLAY_SIZE` and
   `JARVIS_OVERLAY_INTENSITY` tune it, ADR-0023); the tray menu shows the
-  dashboard, toggles the overlay and mutes the microphone.
+  dashboard, toggles the overlay, minimizes or restores the HUD and mutes
+  the microphone.
 - **The HUD is interactive** (ADR-0024). Its transparent parts stay
   click-through; its own shapes are not:
   - **Hover controls** fade in over the HUD: keyboard (type a request),
     microphone (mute), power (quit, asks "QUIT JARVIS?" first), gear
-    (settings), arrows (expand / collapse) and cross (hide; the tray's
-    "Toggle overlay" brings it back). With the HUD focused, Tab moves
+    (settings), arrows (expand / collapse), bar-and-orb (minimize) and
+    cross (hide; the tray's "Toggle overlay" brings it back). With the HUD focused, Tab moves
     between them and Enter or Space activates.
   - **Typing.** Click the keyboard control or the text field, type, press
     Enter. The request goes to the same conversation as voice; typing while
@@ -295,7 +296,30 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
     is marked "applies after restart" with a Restart button (windowless
     app).
 
+  - **Minimize.** When the HUD is in the way, the minimize control (next
+    to the cross), the tray's "Minimize HUD" or `Ctrl+Alt+H`
+    (`JARVIS_HUD_TOGGLE_HOTKEY`; skipped and logged if it equals the voice
+    hotkey or another program owns it) shrink it into a small glowing orb
+    at the nearest screen edge, or in the corner it sat in. The orb still
+    shows what Jarvis does: a slow breath when idle, a bright pulse that
+    follows your voice while listening, an orbit while thinking, a pulse
+    with Jarvis's voice while speaking, and a ripple on the wake word.
+    Everything around it is click-through and it never takes the keyboard.
+    Click (or double-click) the orb to restore the HUD, drag it to move it
+    (same snapping as the HUD). Whether you left it minimized, and where
+    you put the orb, is remembered for the next start.
+  - **Auto-minimize** (`JARVIS_HUD_AUTO_MINIMIZE_SECONDS`, or "Auto-minimize
+    to the orb" in the settings, default off): after that many idle seconds
+    with the cursor elsewhere the HUD shrinks by itself, pops back when the
+    wake word fires or a turn starts, and shrinks again after the turn plus
+    the delay. An orb you made yourself stays an orb.
+  - **Full screen.** While a full-screen game, video or slide show is in
+    front on the HUD's monitor, the HUD and the orb hide and come back when
+    you leave full screen (`JARVIS_HUD_HIDE_IN_FULLSCREEN`, default on).
+
   ![Interactive HUD: hover controls, typing a request, expanded view](docs/media/overlay-interactive.gif)
+
+  ![Minimizing the HUD to its orb, the orb's states, and restoring it](docs/media/overlay-minimize.gif)
 - **Headphones.** There is no acoustic echo cancellation yet: with loud
   speakers Jarvis can hear itself after the echo guard and stop
   mid-sentence. Use headphones or a lower volume.

@@ -140,3 +140,85 @@ relaunches itself after releasing the single-instance lock.
 - Not done: the tray menu item is still "Toggle overlay" (it shows a hidden
   HUD again); the history keeps 500 lines per session; the IME candidate
   window follows ImGui's default positioning.
+
+## Update: minimize to an orb, auto-minimize, hiding in full screen
+
+Date: 2026-10-22
+
+**Context.** The HUD is large on purpose (ADR-0023), and users found it in
+the way: they want to get rid of it without quitting or losing the state
+at a glance.
+
+**Decision.**
+
+- **The orb.** A minimize control next to close (also the tray's
+  "Minimize HUD"/"Restore HUD" and the global hotkey `hud_toggle_hotkey`,
+  default Ctrl+Alt+H) shrinks the HUD into a glowing circle of 48 logical
+  pixels (DPI-scaled) docked at the work-area edge nearest the HUD,
+  centred on its ring, or in the corner when the HUD sat within 48 px of
+  two edges (the default corner placement counts). It is drawn in the
+  HUD's light section (same bloom, same state colour) and shows the state
+  by motion: a slow breath when idle, a pulse following the input level
+  while listening, an orbit while thinking, a pulse following the output
+  level and syllable onsets while speaking, the wake ripple. Its hit map is
+  its disc only; a press that stays inside the system drag rectangle is a
+  click and restores, beyond it the orb drags with the HUD's snap and clamp
+  rules. It never activates (the HUD's focus model is unchanged).
+- **The morph** is one 0.5 s curve (`orbMorphAt`) played forwards to
+  minimize and backwards to restore: the text column and scrims are gone in
+  the first third, the ring flies and shrinks into the orb's place while the
+  scene fades, the orb fades in as the ring reaches its size. Something
+  glows on every frame and no frame shows a panel or a flat rectangle,
+  consistent with ADR-0023's "no grey box". The transparent window spans
+  both rectangles for the morph (like the expand morph); the layered
+  fallback follows the shrinking ring's square cut to a circle
+  (`SetWindowRgn`). An expanded panel collapses before it shrinks.
+- **Events and persistence.** Minimizing from the control, a click on the
+  orb and auto-minimize queue `Minimized`/`Restored` with an `automatic`
+  flag; Python requests (tray, hotkey) are applied without an echo, like
+  `set_expanded`. Only the user's own choices are written to
+  `user_settings.json` (`hud_minimized`), so an orb made by auto-minimize
+  never makes the next start minimized; a dragged orb's position is saved
+  (`hud_orb_position`) and forgotten when the HUD itself is moved, so the
+  orb docks next to the HUD again.
+- **Auto-minimize** (`hud_auto_minimize_seconds`, 0 = off) is a pure state
+  machine on the UI thread (`AutoMinimizer`), fed once per frame with
+  "Jarvis is active" (not Idle, the wake flash, the boot) and "the user is
+  engaged" (hover, drag, typing, confirmation, expanded). After the delay of
+  quiet it minimizes; when Jarvis becomes active it restores an orb it made
+  itself, and the countdown starts again after the turn. An orb the user
+  asked for is never popped back: the orb shows the state anyway.
+- **Full screen** (`hud_hide_in_fullscreen`, default on): twice a second
+  the foreground window's rectangle is compared with its monitor's; a
+  window that covers the HUD's monitor, has no caption and is not the
+  desktop (Progman/WorkerW) hides the HUD or the orb until it leaves.
+  Polling rather than `SetWinEventHook`, because F11 changes full screen
+  without changing the foreground window.
+- **The hotkey** goes through the Platform hotkey API like the voice
+  hotkey. Because `poll_hotkeys` clears what it returns, both now read
+  through one `HotkeyRouter` (`core/hotkey_router.py`), each through its
+  own view. A combination equal to the voice hotkey (compared as key sets,
+  so "Alt+Ctrl+J" is "ctrl+alt+j") or owned by another program is skipped
+  and logged; the control and the tray still work.
+
+**Alternatives considered.**
+
+- *Minimize to the taskbar or tray only* - the state would be invisible,
+  which is the one thing a voice assistant's HUD must keep showing.
+- *A miniature of the whole HUD* - at 48 px the globe and rings are noise,
+  and the cost would stay near the full HUD's.
+- *Auto-minimize in Python* - Python does not see hover, drags or the
+  expanded panel without a new event stream; the native side already has
+  every input on the UI thread, and the policy is pure and unit-tested.
+
+**Consequences.**
+
+- Measured with `scripts/demo_overlay.py --minimize` (same machine as
+  above, normal intensity, medians of four runs): idle orb 1.25 ms CPU /
+  0.12 ms GPU per frame at 15 fps (the idle HUD costs about 2.8 ms /
+  0.6 ms); the orb's active states 0.9-2.9 ms CPU / 0.1-0.8 ms GPU at
+  60 fps. The idle orb's CPU time is mostly the fixed ~1 ms `Present`.
+- In full screen nothing is drawn, the wake word included; voice keeps
+  working and the HUD returns when full screen ends.
+- Not done: the orb has no tooltip (its window is too small); its hover
+  cue is a brighter rim and a hand cursor.
