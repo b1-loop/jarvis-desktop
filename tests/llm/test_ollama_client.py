@@ -316,7 +316,7 @@ def thinking_chunk(thought: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize(("think", "sent"), [(False, False), (True, True)])
 async def test_think_is_sent_as_configured(think: bool, sent: bool) -> None:
-    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk()))])
+    server = FakeServer([httpx.Response(200, content=ndjson(text_chunk("Hej."), done_chunk()))])
 
     await collect(make_client(server, think=think), [UserMessage("hi")])
 
@@ -385,7 +385,7 @@ async def test_think_on_a_model_without_thinking_names_the_setting() -> None:
 async def test_from_settings_passes_the_think_setting(
     make_settings: Callable[..., Any], overrides: dict[str, Any], expected: bool | None
 ) -> None:
-    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk()))])
+    server = FakeServer([httpx.Response(200, content=ndjson(text_chunk("Hej."), done_chunk()))])
     settings = make_settings(ollama_base_url="http://ollama.test:11434", **overrides)
     client = OllamaClient.from_settings(settings)
     await client.aclose()
@@ -397,3 +397,43 @@ async def test_from_settings_passes_the_think_setting(
 
     assert server.requests[0].get("think") is expected
     await client.aclose()
+
+
+async def test_an_empty_reply_with_thinking_off_is_asked_for_once_more() -> None:
+    empty = httpx.Response(200, content=ndjson(done_chunk()))
+    answer = httpx.Response(200, content=ndjson(text_chunk("Det blir 391."), done_chunk()))
+    server = FakeServer([empty, answer])
+
+    events = await collect(make_client(server, think=False), [UserMessage("17 gånger 23?")])
+
+    assert len(server.requests) == 2
+    assert [e for e in events if isinstance(e, TextDelta)] == [TextDelta("Det blir 391.")]
+    assert sum(isinstance(event, Done) for event in events) == 1
+
+
+async def test_a_second_empty_reply_is_passed_on() -> None:
+    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk())) for _ in range(2)])
+
+    events = await collect(make_client(server, think=False), [UserMessage("hi")])
+
+    assert len(server.requests) == 2
+    assert len(events) == 1
+    assert isinstance(events[0], Done)
+    assert events[0].message == AssistantMessage("")
+
+
+async def test_a_tool_call_without_text_is_not_an_empty_reply() -> None:
+    call_chunk = {
+        "model": "qwen3:8b",
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "open_app"}}],
+        },
+        "done": False,
+    }
+    server = FakeServer([httpx.Response(200, content=ndjson(call_chunk, done_chunk()))])
+
+    await collect(make_client(server, think=False), [UserMessage("öppna")], [TOOL])
+
+    assert len(server.requests) == 1

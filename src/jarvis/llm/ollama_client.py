@@ -17,8 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Sequence
-from contextlib import AsyncExitStack
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import AsyncExitStack, aclosing
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
@@ -53,6 +53,9 @@ DEFAULT_TIMEOUT: Final = httpx.Timeout(120.0, connect=5.0)
 _SERVER_ERROR_STATUS: Final = 500
 _NOT_FOUND_STATUS: Final = 404
 _BAD_REQUEST_STATUS: Final = 400
+
+EMPTY_REPLY_RETRIES: Final = 1
+"""Extra requests when the model stops before writing anything (seen with qwen3, think off)."""
 
 log = get_logger(__name__)
 
@@ -101,8 +104,25 @@ class OllamaClient(LLMClient):
     async def stream(
         self, messages: Sequence[Message], tools: Sequence[ToolDefinition] = ()
     ) -> AsyncIterator[LLMEvent]:
-        """Stream one turn; see :meth:`LLMClient.stream`."""
+        """Stream one turn; see :meth:`LLMClient.stream`.
+
+        A reply that ends at once with neither text nor tool calls is asked
+        for again, once (see the design notes); nothing was yielded before
+        its final event, so the retry is invisible to the caller.
+        """
         payload = self._payload(messages, tools)
+        retries = EMPTY_REPLY_RETRIES if self._think is False else 0
+        for attempt in range(retries + 1):
+            async with aclosing(self._stream_once(payload)) as events:
+                async for event in events:
+                    if isinstance(event, Done) and attempt < retries and _empty(event):
+                        log.warning("llm.empty_reply_retried", provider="ollama", model=self._model)
+                        break
+                    yield event
+                else:
+                    return
+
+    async def _stream_once(self, payload: dict[str, Any]) -> AsyncGenerator[LLMEvent]:
         translator = _ChunkTranslator()
         try:
             async with AsyncExitStack() as stack:
@@ -161,6 +181,11 @@ class OllamaClient(LLMClient):
             f"could not reach Ollama at {self._http.base_url}: {error}. "
             "Is it running? Start it with 'ollama serve' or fix JARVIS_OLLAMA_BASE_URL."
         )
+
+
+def _empty(done: Done) -> bool:
+    """A final event carrying no answer at all: no text and no tool call."""
+    return not done.message.text.strip() and not done.message.tool_calls
 
 
 def is_retryable(error: Exception) -> bool:
@@ -316,3 +341,11 @@ def _stop_reason(done_reason: object, *, has_tool_calls: bool) -> StopReason:
 #   text. ``think=False`` is accepted by non-thinking models too, so the
 #   default is safe for any model; ``think=True`` on one is a 400, reported
 #   with the setting that fixes it.
+# - Empty-reply retry: in a measured run qwen3:8b with think=false answered
+#   a plain question ("vad är 17 gånger 23?") three times out of four with a
+#   single final chunk (done_reason "stop", no content, no thinking, no
+#   tool call); the same request asked again answered correctly. Nothing
+#   was streamed before that final chunk, so one transparent retry is safe.
+#   It is bounded to one, logged as a warning, and a second empty reply is
+#   passed on so the agent's own fallback sentence still applies. It only
+#   applies with think=false, the one setting where it was observed.
