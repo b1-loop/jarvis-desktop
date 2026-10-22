@@ -40,6 +40,9 @@ _DISC_INSET_FRACTION: Final = 0.2
 START_TIMEOUT_S: Final = 5.0
 STOP_TIMEOUT_S: Final = 5.0
 _APP_NAME: Final = "jarvis"
+TOOLTIP_MAX_CHARS: Final = 127
+"""``NOTIFYICONDATAW.szTip`` holds 128 UTF-16 units including the terminator."""
+_ELLIPSIS: Final = "..."
 
 
 class TrayError(JarvisError):
@@ -165,6 +168,7 @@ class TrayIcon:
         self._icons = render_state_icons()
         self._state = AssistantState.IDLE
         self._muted = False
+        self._notice: str | None = None
         self._actions: Mapping[TrayAction, Callable[[], None]] = {
             TrayAction.SHOW_DASHBOARD: callbacks.show_dashboard,
             TrayAction.TOGGLE_OVERLAY: callbacks.toggle_overlay,
@@ -185,12 +189,21 @@ class TrayIcon:
     @property
     def tooltip(self) -> str:
         """The tooltip the icon currently shows."""
-        return tray_tooltip(self._state, microphone_muted=self._muted)
+        return with_notice(tray_tooltip(self._state, microphone_muted=self._muted), self._notice)
 
     @property
     def microphone_muted(self) -> bool:
         """Whether the menu shows the microphone as muted."""
         return self._muted
+
+    def set_notice(self, notice: str | None) -> None:
+        """Append a standing problem (voice unavailable, Ollama down) to the tooltip.
+
+        A windowless app has no terminal to print to, so the tooltip is
+        where the user sees why Jarvis is not listening. ``None`` clears it.
+        """
+        self._notice = notice
+        self._backend.set_tooltip(self.tooltip)
 
     @property
     def running(self) -> bool:
@@ -288,6 +301,7 @@ class StubTray:
         self._bus = bus
         self._state = AssistantState.IDLE
         self._muted = False
+        self._notice: str | None = None
         self._unsubscribe: Unsubscribe | None = None
 
     @property
@@ -298,7 +312,11 @@ class StubTray:
     @property
     def tooltip(self) -> str:
         """The tooltip the icon would show."""
-        return tray_tooltip(self._state, microphone_muted=self._muted)
+        return with_notice(tray_tooltip(self._state, microphone_muted=self._muted), self._notice)
+
+    def set_notice(self, notice: str | None) -> None:
+        """Record the notice the tooltip would carry."""
+        self._notice = notice
 
     @property
     def microphone_muted(self) -> bool:
@@ -349,6 +367,17 @@ class TraySurface(Protocol):
 
     def set_microphone_muted(self, muted: bool) -> None:
         """Reflect the microphone state."""
+
+    def set_notice(self, notice: str | None) -> None:
+        """Show a standing problem in the tooltip; ``None`` clears it."""
+
+
+def with_notice(tooltip: str, notice: str | None) -> str:
+    """``tooltip`` plus ``notice`` on a second line, cut to what Windows displays."""
+    text = tooltip if not notice else f"{tooltip}\n{notice}"
+    if len(text) <= TOOLTIP_MAX_CHARS:
+        return text
+    return text[: TOOLTIP_MAX_CHARS - len(_ELLIPSIS)] + _ELLIPSIS
 
 
 class _PystrayBackend:

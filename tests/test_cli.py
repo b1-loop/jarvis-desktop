@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from jarvis import __main__ as cli
 from jarvis import __version__, _native
 from jarvis.__main__ import (
     EXIT_STARTUP_FAILED,
@@ -107,6 +108,39 @@ def test_mode_flag_absent_keeps_environment_value() -> None:
     settings = load_settings(None)
 
     assert settings.mode is RuntimeMode.CLOUD
+
+
+def test_background_flag_runs_the_windowless_app(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[bool] = []
+
+    def windowless(settings: object, *, wake_word: bool) -> int:
+        calls.append(wake_word)
+        return 0
+
+    monkeypatch.setattr(cli, "run_windowless", windowless)
+
+    result = runner.invoke(
+        app, ["--background", "--no-wakeword"], env={"JARVIS_DATA_DIR": str(tmp_path)}
+    )
+
+    assert result.exit_code == 0
+    assert calls == [False]
+    assert result.output == ""  # nothing is printed without a console
+
+
+def test_missing_stdout_also_means_windowless(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "is_windowless", lambda **_kwargs: True)
+    monkeypatch.setattr(cli, "run_windowless", lambda _settings, **_kwargs: 2)
+
+    result = runner.invoke(app, [])
+
+    assert result.exit_code == 2
+
+
+def test_help_mentions_background() -> None:
+    assert "--background" in runner.invoke(app, ["--help"]).output
 
 
 def test_launch_options_are_immutable() -> None:
