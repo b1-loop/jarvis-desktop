@@ -380,6 +380,21 @@ class Settings(BaseSettings):
     user_settings_enabled: bool = True
     """Layer ``data_dir/user_settings.json`` (the HUD's choices) over ``.env``."""
 
+    # HUD minimize
+    hud_toggle_hotkey: str = "ctrl+alt+h"
+    """Global hotkey that minimizes the HUD to its orb and restores it; empty disables it.
+    Skipped (and logged) if it is the voice hotkey or another program owns it."""
+    hud_auto_minimize_seconds: float = Field(default=0.0, ge=0.0)
+    """Shrink the idle, untouched HUD to the orb after this many seconds; 0 is off.
+    A wake word or a turn pops it back, and it returns after the turn plus the delay."""
+    hud_hide_in_fullscreen: bool = True
+    """Hide the HUD and the orb while a full-screen application (game, video,
+    presentation) is in front on their monitor."""
+    hud_minimized: bool = False
+    """Whether the user left the HUD minimized; written by the HUD, restored at start."""
+    hud_orb_position: HudPosition | None = None
+    """Where the user dragged the orb; None docks it at the screen edge nearest the HUD."""
+
     @classmethod
     def settings_customise_sources(
         cls,

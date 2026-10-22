@@ -102,6 +102,9 @@ class RecordingCallbacks:
     def toggle_overlay(self) -> None:
         self._record("toggle_overlay")
 
+    def toggle_hud_minimized(self) -> None:
+        self._record("toggle_hud_minimized")
+
     def toggle_microphone(self) -> None:
         self._record("toggle_microphone")
 
@@ -156,13 +159,40 @@ def test_one_distinct_icon_per_state() -> None:
 # -- TrayIcon ------------------------------------------------------------------------------
 
 
-async def test_menu_lists_the_four_actions(bus: EventBus, callbacks: RecordingCallbacks) -> None:
+async def test_menu_lists_the_five_actions(bus: EventBus, callbacks: RecordingCallbacks) -> None:
     tray = TrayIcon(FakeBackend, bus, callbacks, FakeLoop())
 
     entries = _backend_of(tray).entries
 
     assert [entry.action for entry in entries] == list(TrayAction)
-    assert [entry.default for entry in entries] == [True, False, False, False]
+    assert [entry.default for entry in entries] == [True, False, False, False, False]
+
+
+async def test_the_minimize_entry_follows_the_hud(
+    bus: EventBus, callbacks: RecordingCallbacks
+) -> None:
+    tray = TrayIcon(FakeBackend, bus, callbacks, FakeLoop())
+    backend = _backend_of(tray)
+    entry = next(e for e in backend.entries if e.action is TrayAction.TOGGLE_HUD_MINIMIZED)
+    assert entry.text() == "Minimize HUD"
+
+    tray.set_hud_minimized(True)
+    assert entry.text() == "Restore HUD"
+    assert tray.hud_minimized
+    assert backend.menu_refreshes == 1
+
+    tray.set_hud_minimized(False)
+    assert entry.text() == "Minimize HUD"
+
+
+def test_entries_without_a_dynamic_label_show_their_action() -> None:
+    assert TrayMenuEntry(TrayAction.QUIT).text() == "Quit"
+
+
+def test_the_stub_tray_records_the_hud_state(bus: EventBus) -> None:
+    stub = StubTray(bus)
+    stub.set_hud_minimized(True)
+    assert stub.hud_minimized
 
 
 async def test_menu_actions_are_dispatched_to_the_loop(
@@ -177,7 +207,13 @@ async def test_menu_actions_are_dispatched_to_the_loop(
     assert callbacks.calls == []
     for scheduled in loop.scheduled:
         scheduled()
-    assert callbacks.calls == ["show_dashboard", "toggle_overlay", "toggle_microphone", "quit"]
+    assert callbacks.calls == [
+        "show_dashboard",
+        "toggle_overlay",
+        "toggle_hud_minimized",
+        "toggle_microphone",
+        "quit",
+    ]
 
 
 async def test_menu_click_on_the_tray_thread_runs_on_the_loop_thread(
@@ -232,7 +268,7 @@ async def test_mute_updates_tooltip_and_check_mark(
 ) -> None:
     tray = TrayIcon(FakeBackend, bus, callbacks, FakeLoop())
     backend = _backend_of(tray)
-    mute_entry = backend.entries[2]
+    mute_entry = next(e for e in backend.entries if e.action is TrayAction.TOGGLE_MICROPHONE)
     assert mute_entry.checked is not None
     assert not mute_entry.checked()
 
@@ -369,7 +405,9 @@ class FakePystrayIcon:
 
 
 class FakeMenuItem:
-    def __init__(self, text: str, action: Callable[..., None], **options: Any) -> None:
+    def __init__(
+        self, text: Callable[[Any], str], action: Callable[..., None], **options: Any
+    ) -> None:
         self.text, self.action, self.options = text, action, options
 
 
@@ -403,7 +441,7 @@ def test_pystray_adapter_builds_menu_and_forwards_calls() -> None:
     backend.refresh_menu()
     backend.stop()
 
-    assert [item.text for item in icon.menu] == ["Show dashboard", "Mute microphone"]
+    assert [item.text(item) for item in icon.menu] == ["Show dashboard", "Mute microphone"]
     assert show.options == {"checked": None, "default": True}
     assert mute.options["checked"](mute) is True
     assert clicked == [TrayAction.SHOW_DASHBOARD]

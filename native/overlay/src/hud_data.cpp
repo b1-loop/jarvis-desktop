@@ -67,6 +67,25 @@ void HudDataModel::requestExpanded(bool expanded) {
     ++data_.revision;
 }
 
+void HudDataModel::requestMinimized(bool minimized) {
+    const std::scoped_lock lock(mutex_);
+    data_.minimizeRequest = minimized;
+    ++data_.minimizeRequestId;
+    ++data_.revision;
+}
+
+void HudDataModel::setAutoMinimize(float seconds) {
+    const std::scoped_lock lock(mutex_);
+    data_.autoMinimizeSeconds = std::max(seconds, 0.0F);
+    ++data_.revision;
+}
+
+void HudDataModel::setHideInFullscreen(bool hide) {
+    const std::scoped_lock lock(mutex_);
+    data_.hideInFullscreen = hide;
+    ++data_.revision;
+}
+
 HudData HudDataModel::snapshot() const {
     const std::scoped_lock lock(mutex_);
     return data_;

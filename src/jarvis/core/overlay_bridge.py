@@ -34,10 +34,12 @@ from jarvis.core.state_machine import AssistantState
 from jarvis.ui.hud_protocol import (
     CloseRequested,
     HistoryRole,
+    Minimized,
     OpenLog,
     PlacementChanged,
     QuitRequested,
     RestartRequested,
+    Restored,
     SetExpanded,
     SettingChanged,
     SettingsOpened,
@@ -121,6 +123,12 @@ class HudHandlers(Protocol):
 
     async def placement_changed(self, event: PlacementChanged) -> None:
         """The HUD was moved or reset."""
+
+    async def minimized(self, automatic: bool) -> None:
+        """The HUD shrank to the orb (``automatic``: by auto-minimize)."""
+
+    async def restored(self, automatic: bool) -> None:
+        """The orb grew back into the HUD (``automatic``: by auto-minimize)."""
 
 
 class OverlayBridge:
@@ -271,6 +279,10 @@ async def _route(handlers: HudHandlers, event: UiEvent) -> None:
             handlers.restart()
         case PlacementChanged():
             await handlers.placement_changed(event)
+        case Minimized(automatic=automatic):
+            await handlers.minimized(automatic)
+        case Restored(automatic=automatic):
+            await handlers.restored(automatic)
 
 
 # Design notes:

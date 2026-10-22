@@ -82,16 +82,19 @@ class SettingsOpened:
 
 @dataclass(frozen=True, slots=True)
 class PlacementChanged:
-    """The user moved the HUD (or reset it to its corner with a double-click).
+    """The user moved the HUD, the expanded panel or the orb (or reset one).
 
     Attributes:
-        expanded: Which placement: the expanded panel or the corner HUD.
-        custom: False after a reset to the default corner.
+        expanded: The expanded panel's placement (else the corner HUD's or,
+            with ``orb``, the orb's).
+        custom: False after a reset: a double-click on the ring sends the HUD
+            back to its corner; moving the HUD sends the orb back next to it.
         monitor: Device name of the monitor it is on.
         x: Logical pixels from the monitor work area's left edge.
         y: Logical pixels from its top edge.
         width: Logical width (the expanded panel's size).
         height: Logical height.
+        orb: The minimized orb's placement.
     """
 
     expanded: bool
@@ -101,6 +104,30 @@ class PlacementChanged:
     y: float = 0.0
     width: float = 0.0
     height: float = 0.0
+    orb: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Minimized:
+    """The HUD shrank to the orb: its minimize control, or auto-minimize.
+
+    Attributes:
+        automatic: True when the auto-minimize policy did it; such an orb is
+            not the user's choice and is not remembered for the next start.
+    """
+
+    automatic: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class Restored:
+    """The orb grew back into the HUD: a click on it, or auto-minimize for a turn.
+
+    Attributes:
+        automatic: True when the auto-minimize policy did it.
+    """
+
+    automatic: bool = False
 
 
 UiEvent = (
@@ -114,6 +141,8 @@ UiEvent = (
     | RestartRequested
     | SettingsOpened
     | PlacementChanged
+    | Minimized
+    | Restored
 )
 """One thing the user did in the HUD."""
 
@@ -160,7 +189,12 @@ def _parse_payload(kind: str, raw: Mapping[str, object]) -> UiEvent:
             y=_number(raw, "y"),
             width=_number(raw, "width"),
             height=_number(raw, "height"),
+            orb=bool(raw.get("orb", False)),
         )
+    if kind == "minimize":
+        return Minimized(automatic=bool(raw["automatic"]))
+    if kind == "restore":
+        return Restored(automatic=bool(raw["automatic"]))
     raise HudProtocolError(f"unknown HUD event kind {kind!r}")
 
 
@@ -182,6 +216,10 @@ def event_to_native(event: UiEvent) -> dict[str, object]:
         return {"kind": "set_expanded", "expanded": event.expanded}
     if isinstance(event, SettingChanged):
         return {"kind": "setting_changed", "key": event.key, "value": event.value}
+    if isinstance(event, Minimized):
+        return {"kind": "minimize", "automatic": event.automatic}
+    if isinstance(event, Restored):
+        return {"kind": "restore", "automatic": event.automatic}
     raise HudProtocolError(f"{type(event).__name__} cannot be injected")
 
 

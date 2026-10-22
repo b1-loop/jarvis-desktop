@@ -77,6 +77,9 @@ struct HudScene {
     bool inputOpen{false};
     /// The quit confirmation covers the transcript rows of the corner HUD.
     bool confirming{false};
+    /// Linear HUD-to-orb morph progress (orb.hpp): 0 is the HUD, 1 the orb
+    /// alone; geometry is then the ring on its way into (or the) orb.
+    float orb{0.0F};
 };
 
 /// Stateless apart from fixed resources (blend callbacks, the globe
@@ -102,6 +105,7 @@ public:
 
 private:
     // hud.cpp: scrims, core, state layers, ripple, panel text.
+    void drawSceneLight(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts);
     void drawScrim(ImDrawList& draw, const HudScene& scene) const;
     void drawConnector(ImDrawList& draw, const HudScene& scene) const;
     void drawIdleReadout(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts,
@@ -124,6 +128,11 @@ private:
     void drawExpandedScrim(ImDrawList& draw, const HudScene& scene) const;
     void drawExpandedLight(ImDrawList& draw, const HudScene& scene) const;
     void drawExpandedCaption(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts) const;
+
+    // hud_orb.cpp: the minimized orb, alone or fading in during the morph.
+    void drawOrbFrame(ImDrawList& draw, const HudScene& scene) const;
+    void drawOrbScrim(ImDrawList& draw, const HudScene& scene, float alpha) const;
+    void drawOrbLight(ImDrawList& draw, const HudScene& scene, float alpha) const;
 
     // hud_scene.cpp: the holographic scene shared by boot and panel.
     void drawBackdropGlow(ImDrawList& draw, const HudScene& scene) const;
