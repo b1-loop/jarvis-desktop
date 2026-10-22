@@ -221,3 +221,67 @@ async def test_speaker_detects_native_barge_in_while_waiting() -> None:
 def test_create_native_engine_reports_missing_models(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match=r"silero_vad\.onnx"):
         create_native_engine(AudioModelPaths.in_directory(tmp_path))
+
+
+def test_create_native_engine_without_wake_word_only_needs_the_vad(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError) as caught:
+        create_native_engine(AudioModelPaths.in_directory(tmp_path), wake_word=False)
+
+    assert "silero_vad.onnx" in str(caught.value)
+    assert "hey_jarvis" not in str(caught.value)
+
+
+async def test_record_utterance_waits_for_start_then_end(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    native.captured = np.ones(320, dtype=np.float32)
+    native.script(native_event("SPEECH_STARTED"))
+    native.script(native_event("SPEECH_ENDED"))
+
+    async with engine:
+        utterance = await asyncio.wait_for(engine.record_utterance(start_timeout=WAIT), WAIT)
+
+    assert utterance.speech_detected
+    assert not utterance.truncated
+    assert utterance.samples.size == 320
+    assert native.listening_calls == [True, False]
+
+
+async def test_record_utterance_gives_up_when_nobody_speaks(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    async with engine:
+        utterance = await engine.record_utterance(start_timeout=0.02)
+
+    assert not utterance.speech_detected
+    assert native.listening_calls == [True, False]
+
+
+async def test_record_utterance_marks_truncated_speech(native: FakeNativeEngine) -> None:
+    native.script(native_event("SPEECH_STARTED"))
+    engine = AudioEngine(native, poll_interval=POLL, max_utterance_seconds=0.05)
+
+    async with engine:
+        utterance = await engine.record_utterance(start_timeout=WAIT)
+
+    assert utterance.speech_detected
+    assert utterance.truncated
+
+
+async def test_discard_pending_events_drops_stale_events(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    native.script(native_event("SPEECH_STARTED"), native_event("SPEECH_ENDED"))
+    async with engine:
+        await asyncio.sleep(POLL * 20)
+        assert engine.discard_pending_events() == 2
+        assert engine.discard_pending_events() == 0
+
+
+def test_speaker_exposes_output_level_and_stop_count() -> None:
+    playback = FakeNativePlayback(level=0.3)
+    speaker = Speaker(playback)
+    speaker.stop()
+
+    assert speaker.output_level == pytest.approx(0.3)
+    assert speaker.stop_count == 1

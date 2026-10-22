@@ -59,6 +59,7 @@ class ShellCommandTool(Tool[ShellCommandInput]):
     )
     Input = ShellCommandInput
     category = ToolCategory.DEVELOPER
+    keywords = ("terminal", "console", "command", "script")
 
     def needs_confirmation(self, params: ShellCommandInput, context: ToolContext) -> bool:
         """Ask when the policy says so: unknown binary or a risky-but-allowed pattern."""

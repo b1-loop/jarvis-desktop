@@ -27,14 +27,14 @@ is Python 3.12.
 | 3 | C++ audio engine | done |
 | 4 | C++ Windows integration | done |
 | 5 | STT / TTS / LLM cloud providers | done |
-| 6 | Agent core, text-only loop | framework done, agent loop pending |
-| 7 | Voice pipeline with barge-in | planned |
+| 6 | Agent core, text-only loop | done |
+| 7 | Voice pipeline with barge-in | done |
 | 8 | Phase 1 + 2 tools | providers and web/document helpers done, tools pending |
 | 9 | Memory | done |
 | 10 | Proactive and routines | done |
-| 11 | Vision | planned |
+| 11 | Vision | done |
 | 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | C++ wrappers done, Python LOCAL mode pending |
-| 13 | Overlay and dashboard | overlay done, tray and dashboard pending |
+| 13 | Overlay and dashboard | done |
 | 14 | Docs, ADRs, benchmark | planned |
 
 ## Architecture
@@ -75,9 +75,14 @@ Two runtime modes:
 
 | Mode | LLM | STT | TTS | Network |
 | --- | --- | --- | --- | --- |
-| `cloud` (default) | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
-| `cloud` + `JARVIS_LLM_PROVIDER=ollama` | Ollama (local HTTP API) | faster-whisper | edge-tts | TTS only |
-| `local` | llama.cpp | whisper.cpp | Piper | none |
+| `cloud` (default) | Ollama `qwen2.5:7b` (local HTTP API, free) | faster-whisper | edge-tts | TTS only |
+| `cloud` + `JARVIS_LLM_PROVIDER=anthropic` | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
+| `local` (`uv sync --extra local`, `download_models.py --local`) | llama.cpp (in process) | whisper.cpp | Piper | none |
+
+Measured latency, quality, privacy and cost of each mode: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
+Small local models get a short, relevant tool list per request instead of all
+of them, and never get to claim success for a tool that failed:
+[ADR-0020](docs/adr/0020-tool-selection-for-small-models.md).
 
 Full design, threading model and trade-offs: [ARCHITECTURE.md](ARCHITECTURE.md)
 and the [ADRs](docs/adr/README.md).
@@ -86,17 +91,23 @@ and the [ADRs](docs/adr/README.md).
 
 Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), CMake ≥ 3.28,
 Ninja, Visual Studio 2022/2026 with the "Desktop development with C++"
-workload, LLVM (for clang-format / clang-tidy).
+workload, LLVM (for clang-format / clang-tidy), and
+[Ollama](https://ollama.com/download) for the default, free, local LLM.
 
 ```powershell
 git clone --recurse-submodules https://github.com/b1-loop/jarvis-desktop.git
 cd jarvis
+ollama pull qwen2.5:7b   # the default model; Ollama must be running
 uv sync --all-extras
 uv run python scripts/build_native.py
 uv run python scripts/download_models.py
-copy .env.example .env   # add ANTHROPIC_API_KEY
+copy .env.example .env   # no key needed for the Ollama default
 uv run jarvis --text-only
 ```
+
+Optional cloud upgrade: Claude answers better and faster on long tool
+chains. Set `JARVIS_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in
+`.env`; everything else stays the same.
 
 macOS and Linux: the OS layer is behind a `Platform` interface and not yet
 implemented for those systems. Text-only mode runs anywhere.
@@ -104,11 +115,30 @@ implemented for those systems. Text-only mode runs anywhere.
 ## Usage
 
 ```powershell
-uv run jarvis                       # cloud mode, wake word "hey jarvis"
+uv run jarvis                       # default mode (Ollama LLM), wake word "hey jarvis"
 uv run jarvis --mode local          # fully offline
 uv run jarvis --no-wakeword         # push-to-talk with the global hotkey only
 uv run jarvis --text-only           # type instead of talk, for development
 ```
+
+### Using Jarvis
+
+- **Wake word.** Say "Hey Jarvis", wait for the short beep, then speak.
+  Jarvis listens until you pause, answers aloud and prints the exchange in
+  the terminal (`you> ...`, `Jarvis> ...`).
+- **Hotkey.** Press `Ctrl+Alt+J` (`JARVIS_HOTKEY`) instead of the wake word.
+  With `--no-wakeword`, or when the wake-word models are missing, the hotkey
+  is the only trigger and Jarvis says so when it starts.
+- **Barge-in.** Just talk over Jarvis: it stops speaking at once and treats
+  what you say as the next request. Speech in the first 400 ms of an answer
+  is ignored so Jarvis does not interrupt itself (`JARVIS_BARGE_IN_ECHO_GUARD_MS`).
+- **Text mode.** `--text-only` types instead of talks and needs no audio
+  devices or native build. Voice mode falls back to it, with the reason,
+  when the audio build, the models or a microphone are missing.
+- **Headphones.** There is no acoustic echo cancellation: with loud
+  speakers Jarvis can hear itself and stop mid-sentence. Use headphones or
+  turn the volume down (or raise `JARVIS_VAD_MIN_SPEECH_MS`).
+- **Leaving.** Say "goodbye", choose Quit in the tray menu, or press Ctrl+C.
 
 ## Features
 
@@ -126,6 +156,7 @@ chaining, document production, configurable persona, fully offline mode,
 dashboard, latency benchmark.
 
 The feature list is tracked step by step in the Status table above.
+Every tool, whether it asks for confirmation and the service it uses is listed in the [tool catalogue](docs/tools.md).
 
 ## Latency
 

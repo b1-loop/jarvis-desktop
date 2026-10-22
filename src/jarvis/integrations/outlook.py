@@ -3,7 +3,9 @@
 One class implements both :class:`EmailProvider` and :class:`CalendarProvider`
 because they share a token, a base URL and an error mapping; splitting them
 would only duplicate the plumbing. Scopes are the smallest set that covers
-the feature list: ``Mail.Read``, ``Mail.Send`` and ``Calendars.ReadWrite``.
+the feature list: ``Mail.ReadWrite``, ``Mail.Send`` and ``Calendars.ReadWrite``.
+``Mail.ReadWrite`` rather than ``Mail.Read`` because Graph's ``createReply``,
+which creates the reply draft the user approves, requires it.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from jarvis.integrations.microsoft_graph import GRAPH_BASE_URL, parse_graph_date
 from jarvis.integrations.rest import RestSession
 from jarvis.integrations.tokens import TokenSource
 
-OUTLOOK_SCOPES = ("Mail.Read", "Mail.Send", "Calendars.ReadWrite")
+OUTLOOK_SCOPES = ("Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite")
 
 _MESSAGE_FIELDS = "id,conversationId,from,toRecipients,subject,bodyPreview,receivedDateTime,isRead"
 _TEXT_BODY = {"Prefer": 'outlook.body-content-type="text"'}

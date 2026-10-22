@@ -44,7 +44,7 @@ def test_outlook_is_both_an_email_and_a_calendar_provider(provider: OutlookProvi
     assert (
         OutlookProvider.scopes
         == OUTLOOK_SCOPES
-        == ("Mail.Read", "Mail.Send", "Calendars.ReadWrite")
+        == ("Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite")
     )
 
 

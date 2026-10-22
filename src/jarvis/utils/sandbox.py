@@ -17,12 +17,12 @@ import re
 import shlex
 import shutil
 import time
-from asyncio.subprocess import DEVNULL, PIPE, Process
+from asyncio.subprocess import DEVNULL, PIPE, STDOUT, Process
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PureWindowsPath
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, BinaryIO, Final
 
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
@@ -339,14 +339,7 @@ async def run_sandboxed(
             working directory.
         CommandNotFoundError: If the binary is not on ``PATH``.
     """
-    check = check_command(command, policy)
-    if check.verdict is Verdict.REFUSED:
-        raise CommandRefusedError(command, check.reason)
-    workdir = resolve_working_directory(cwd, policy)
-    executable = shutil.which(check.argv[0])
-    if executable is None:
-        raise CommandNotFoundError(check.argv[0])
-    argv = (executable, *check.argv[1:])
+    check, argv, workdir = _prepare(command, policy, cwd)
     log.info("sandbox.run", binary=check.binary, cwd=str(workdir), verdict=check.verdict.value)
     started = time.perf_counter()
     process = await asyncio.create_subprocess_exec(
@@ -370,6 +363,62 @@ async def run_sandboxed(
     )
     log.info("sandbox.done", binary=check.binary, exit_code=result.exit_code, timed_out=timed_out)
     return result
+
+
+def _prepare(
+    command: str, policy: SandboxPolicy, cwd: Path | None
+) -> tuple[CommandCheck, tuple[str, ...], Path]:
+    """Apply the policy and resolve binary and directory, before anything spawns.
+
+    Raises:
+        CommandRefusedError: If the policy refuses the command or directory.
+        CommandNotFoundError: If the binary is not on ``PATH``.
+    """
+    check = check_command(command, policy)
+    if check.verdict is Verdict.REFUSED:
+        raise CommandRefusedError(command, check.reason)
+    workdir = resolve_working_directory(cwd, policy)
+    executable = shutil.which(check.argv[0])
+    if executable is None:
+        raise CommandNotFoundError(check.argv[0])
+    return check, (executable, *check.argv[1:]), workdir
+
+
+async def spawn_sandboxed(
+    command: str, policy: SandboxPolicy, *, log_path: Path, cwd: Path | None = None
+) -> Process:
+    """Start ``command`` under ``policy`` and return without waiting for it.
+
+    For processes that are meant to keep running, such as a dev server. The
+    same refusal, directory, binary and environment rules as
+    :func:`run_sandboxed` apply; the timeout does not, because outliving it
+    is the point. Both output streams go to ``log_path`` (appended), never to
+    an unread pipe that would eventually block the child.
+
+    Raises:
+        CommandRefusedError: If the policy refuses the command or directory.
+        CommandNotFoundError: If the binary is not on ``PATH``.
+    """
+    check, argv, workdir = _prepare(command, policy, cwd)
+    log_file = await asyncio.to_thread(_open_log, log_path)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=workdir,
+            env=scrub_environment(os.environ),
+            stdin=DEVNULL,
+            stdout=log_file,
+            stderr=STDOUT,
+        )
+    finally:
+        log_file.close()  # the child holds its own handle
+    log.info("sandbox.spawned", binary=check.binary, cwd=str(workdir), pid=process.pid)
+    return process
+
+
+def _open_log(path: Path) -> BinaryIO:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.open("ab")
 
 
 async def _collect(process: Process, policy: SandboxPolicy) -> tuple[_Capture, _Capture, bool]:
@@ -400,6 +449,10 @@ async def _collect(process: Process, policy: SandboxPolicy) -> tuple[_Capture, _
 # - Environment allowlist instead of a secret denylist: a new credential name
 #   is safe by default. Python children get UTF-8 forced so their output
 #   decodes on Windows.
+# - spawn_sandboxed shares _prepare with run_sandboxed so a background
+#   process can never take a path around the policy. Its output goes to a
+#   log file rather than a pipe: nobody reads a dev server's pipe, and a
+#   full pipe would freeze it.
 # - Output beyond the cap is drained and discarded rather than left in the
 #   pipe, otherwise a chatty child would block on a full pipe and hit the
 #   timeout instead of finishing.

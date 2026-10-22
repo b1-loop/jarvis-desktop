@@ -30,6 +30,7 @@ CMakeUserPresets.json
 # Models and data (downloaded by scripts/download_models.py)
 models/
 data/
+!tests/**/data/
 *.onnx
 *.gguf
 *.bin

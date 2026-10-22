@@ -30,11 +30,11 @@ jarvis/
     __main__.py           CLI entry point and composition root
     config.py             pydantic-settings, the only reader of environment variables
     _native/              shim that loads the compiled modules (git-ignored .pyd files)
-    core/                 event bus, state machine, orchestrator, interruption
+    core/                 event bus, state machine, orchestrator, voice I/O, barge-in, composition root
     audio/                asyncio facade over jarvis_audio
     os_integration/       Platform interface and Windows backend over jarvis_os
     stt/ tts/ llm/        interfaces + providers
-    agent/                loop, tool base, registry, confirmation, chaining
+    agent/                loop, tool base, registry, confirmation, chaining, tool selection
     tools/                one plugin per file, auto-discovered
     memory/               SQLite, Chroma, memory manager, user profile
     proactive/            scheduler, triggers, routines
@@ -57,9 +57,84 @@ Each stage is a class behind an abstract base in its package's `base.py`.
 Stages never call each other; the orchestrator moves data between them over
 `asyncio.Queue`s and publishes progress on the event bus.
 
+### Text path *(step 6)*
+
+```
+TerminalInput ─line─▶ Orchestrator ─text─▶ Agent ─messages─▶ LLMClient.stream
+  (daemon thread)       │  IDLE→LISTENING→THINKING   │  ◀── TextDelta / ToolCall / Done
+                        │                            ├─ SentenceSplitter ─sentence─▶ sink
+                        │                            └─ ToolChain ─▶ ConfirmationPolicy ─▶ Tool.execute
+                        ◀── sentences (THINKING→SPEAKING) ──┘
+TerminalOutput ◀─say─┘  SPEAKING→IDLE when the turn ends
+```
+
+`core/bootstrap.py` builds everything from `Settings` (event bus, memory,
+LLM, tool registry, platform, integrations, agent, orchestrator) and owns
+cleanup in one `AsyncExitStack`; `__main__` only calls it. The orchestrator
+speaks to two Protocols, `InputSource` and `OutputSink`, so the voice path
+(step 7) replaces the terminal with STT and TTS and keeps the rest,
+including `cancel_current_turn()` for barge-in. Typed input passes through
+LISTENING because the state table has no IDLE → THINKING edge, which keeps
+the state sequence identical in both modes. Confirmation questions are read
+from the same input source (`TerminalConfirmation`, y/n, unclear answers
+count as no). See ADR-0014.
+
+### Voice path *(step 7)*
+
+```
+              ┌──── AnyTrigger: WakeWordTrigger (engine event) | HotkeyTrigger (Platform) ────┐
+VoiceInput ◀──┘  earcon (80 ms tone) → IDLE→LISTENING → AudioEngine.record_utterance
+   │                                       (pre-roll + speech until SPEECH_ENDED)
+   │  STT.transcribe (worker thread) → TranscriptReady
+   ▼
+Orchestrator ─▶ Agent ─▶ FirstTokenProbe(LLMClient) ─▶ sentences ─▶ VoiceOutput.say (queue only)
+                                                                    │
+         synthesiser task: TTS.synthesize(sentence n+1) ──chunks──▶ │ bounded hand-off (2)
+         player task:      Speaker.play(sentence n) ──▶ native Playback ──▶ speakers
+                                                                    │ first chunk → BargeInController
+                                                                    │ arms engine after echo guard
+mic ─▶ native VAD: SpeechStarted ─▶ Playback::stop() (C++, no Python) │
+                                     └─▶ VoiceOutput sees the stop ─▶ drop queued sentences,
+                                         BargeInController: capture on, cancel turn,
+                                         SPEAKING→LISTENING ─▶ VoiceInput skips the trigger
+```
+
+`core/voice_bootstrap.py` assembles this front end (engine with the wake
+word if its models load, playback at the TTS rate, `core.providers` STT and
+TTS, hotkey, overlay bridge) and hands it to the shared bootstrap.
+`OutputSink.flush()` is awaited inside the turn task, so SPEAKING lasts as
+long as the audio does and a barge-in during the last sentence still
+cancels the turn. Missing pieces degrade instead of failing: no audio build,
+models or devices fall back to text mode with the reason; missing
+wake-word models fall back to the hotkey; a failing TTS prints. Echo is
+handled by `minSpeechMs` plus an echo guard that arms barge-in only 400 ms
+after playback starts; there is no AEC (ADR-0019).
+
+**Latency budget.** Each stage is published as a `LatencySample`
+(`core/voice_latency.py`) for the dashboard and the step-14 benchmark.
+Targets are for CLOUD mode with a GPU; the measured column is the step-7
+scripted check on the development machine (edge-tts speech fed into the
+real faster-whisper `small` running int8 on the CPU because cuBLAS is not
+installed, Ollama `qwen2.5:7b` on the GPU, edge-tts and the real speakers).
+The step-14 benchmark replaces it with percentiles.
+
+| Stage | Sample name | Target | Measured (3 turns) |
+| --- | --- | --- | --- |
+| Trigger → listening (earcon) | `voice.wake_to_listening` | < 150 ms | 77-87 ms |
+| VAD hangover after the last word | (segmenter `silenceEndMs`) | 700 ms | config |
+| End of speech → transcript | `voice.speech_end_to_transcript` | < 600 ms (GPU) | 1960-2200 ms (CPU) |
+| Transcript → first LLM event | `voice.transcript_to_first_token` | < 800 ms | 1290-1760 ms (Ollama) |
+| First sentence → first audio | `voice.first_sentence_to_audio` | < 500 ms | 550-2520 ms (edge-tts) |
+| Barge-in onset → silence | native `Playback::stop` | < 1 device period | native, no Python |
+| Barge-in onset → LISTENING | Python cleanup | < 50 ms | 23 ms |
+
+The two slow stages are outside the pipeline's control: STT is CPU-bound
+without CUDA libraries, and edge-tts pays a websocket handshake per
+sentence (the 550 ms sample was a one-word sentence).
+
 ### Providers *(step 5)*
 
-| Stage | Interface | CLOUD | Ollama option | LOCAL *(step 12)* |
+| Stage | Interface | CLOUD | Ollama option | LOCAL |
 | --- | --- | --- | --- | --- |
 | STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off-loop) | same | `WhisperCppSTT` |
 | TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | same | `PiperTTS` |
@@ -72,6 +147,18 @@ Streaming is sentence-by-sentence: `llm.streaming.SentenceSplitter` cuts
 text deltas into sentences, each sentence goes to `TTS.synthesize`, which
 yields PCM chunks while the rest downloads. Retries share one policy in
 `utils.retry`. See ADR-0005.
+
+**LOCAL mode.** `core.providers.build_stt` / `build_tts` / `build_llm` pick
+the stack from `Settings.mode` and raise `ConfigError` with the fix (extra,
+native build, model download) instead of falling back. `WhisperCppSTT` and
+`LocalLlamaClient` sit on `jarvis_inference` through Protocols; every
+native call runs in `asyncio.to_thread`, one hop per generated token, and
+cancelling the consumer cancels the native generation. The llama.cpp
+wrapper has no tool channel, so `llm.json_tool_protocol` renders the tool
+schemas into the system prompt, classifies the streamed reply as prose or
+one `{"tool", "arguments"}` object, validates it against the schema and
+falls back to text. `PiperTTS` streams one chunk per sentence from the
+`piper-tts` package. Trade-offs and measurements: ADR-0013.
 
 ## 4. State machine
 
@@ -106,6 +193,8 @@ the latency-critical voice path.
 | Event loop | Python asyncio | poll events every 10 ms, orchestrate STT/LLM/TTS, enqueue TTS chunks | engine mutex, playback mutex (brief) |
 | Executor threads | Python | STT and other CPU-bound Python work | none |
 | Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11 rendering, DPI changes | overlay model mutex (read) |
+| Tray thread | `TrayIcon` (Python, pystray) | Win32 message loop for the notification-area icon; menu clicks go back to the loop with `call_soon_threadsafe` | pre-rendered icon images (read-only) |
+| Dashboard thread | `Dashboard` (Python, tkinter) | owns the Tk interpreter and every widget; drains a `queue.Queue` of immutable snapshots every 100 ms; the refresh button hops back with `call_soon_threadsafe` | snapshot queue |
 | Generation | `GenerationStream` (C++) | llama.cpp decode loop; pushes text pieces into a queue that Python pulls from with the GIL released | stream mutex, cancellation token |
 
 Rules that keep this safe:
@@ -120,6 +209,10 @@ Rules that keep this safe:
 - The overlay never calls back into Python either: the event loop pushes
   state, levels and text through setters that take the model mutex for
   nanoseconds, and the UI thread draws a snapshot (ADR-0011).
+- The tray and dashboard threads never touch the event bus or the view
+  model: the loop pushes immutable snapshots (dashboard) or swaps a
+  pre-rendered image (tray), and user actions come back only through
+  `call_soon_threadsafe` (ADR-0015).
 - Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
   when a barge-in target is set, so it takes effect on the next device period
   without waiting for the event loop. Python learns about it afterwards via
@@ -163,7 +256,7 @@ clipboard) runs on the calling executor thread with per-call COM
 initialisation. ADR-0004 records the interface split and the notification
 and brightness choices.
 
-## 6. Agent and tools *(agent loop: step 6, pending)*
+## 6. Agent and tools *(step 6)*
 
 A tool is one module in `jarvis/tools/` defining a `Tool` subclass: `name`,
 `description`, a pydantic `Input` model, a `category`, a risk declaration
@@ -173,18 +266,49 @@ as `DiscoveryFailure`s instead of crashing, and produces the Anthropic-style
 `{name, description, input_schema}` definitions from the pydantic models.
 
 Tools receive services only through `ToolContext` (settings, event bus,
-clock, confirmation callback, OS and memory facades as Protocols) and return
+clock, confirmation callback, the `Platform` interface, a notes/todos/
+reminders Protocol that `MemoryManager` satisfies, and an optional
+background-job tracker) and return
 a `ToolResult` with `spoken` (for TTS), `detail` (for the LLM and dashboard)
 and `data` (JSON). Invalid arguments and tool failures become `ok=False`
 results, never exceptions in the agent loop.
+
+The computer-control, file, dev-mode, notes and system tools are listed with
+their confirmation flags in [docs/tools.md](docs/tools.md). Dev-mode tools
+run fixed command lines through the sandbox; `start_dev_server` uses
+`spawn_sandboxed` and `tools/_jobs.BackgroundJobs`, which also feeds the
+proactive `LongRunningCommandTrigger` (ADR-0017).
 
 `agent/confirmation.py` is the only place that decides whether to ask the
 user: the tool's declaration, a list of always-confirm categories and the
 `JARVIS_CONFIRM_DESTRUCTIVE` trusted-mode flag. Shell commands additionally
 pass through `utils/sandbox.py` (argv only, denylist, allowlist, working
-root, scrubbed environment, timeout, output cap). The agent loop that turns
-a transcript into tool calls and a spoken summary (`agent/loop.py`) depends
-on the LLM interface and lands with it. See ADR-0006.
+root, scrubbed environment, timeout, output cap). See ADR-0006.
+
+`agent/loop.py` runs one request: a system prompt from `agent/persona.py`
+(name, tone, language from the TTS voice, spoken-style rules) plus the
+`MemoryManager.recall` context, the user's words and the tool definitions
+chosen by `agent/tool_selection.py` go to `LLMClient.stream`; text deltas become sentences for the
+sink as they complete; requested tools run and their results go back to the
+model until it stops or `JARVIS_MAX_TOOL_ROUNDS` is reached. A turn with
+tools always ends with a spoken summary (asked for once if the model is
+silent, otherwise built from the tools' own `spoken` results). LLM failures
+are spoken as an apology with the provider's remedy and, for cloud
+providers, the LOCAL/Ollama hint. The turn is recorded in memory with its
+tool calls.
+
+`agent/tool_selection.py` keeps small models on track: for Ollama and
+llama.cpp each round offers at most `JARVIS_MAX_TOOLS_PER_TURN` (default 12)
+tools, ranked by word overlap with the request, plus a core set and every
+tool already used this turn; Claude gets all tools. When every tool call of
+a turn failed or was declined, the loop ends with the tools' own `spoken`
+sentences instead of the model's final text. See ADR-0020.
+
+`agent/chaining.py` makes the chain robust: one `ToolChain` per request
+with a tool-call budget, bounded parallel execution of the calls in one
+model message (confirmation prompts serialised behind a lock),
+de-duplication of identical calls, and a `TurnReport` (tools used, rounds,
+durations, failures, limits hit) for the dashboard. See ADR-0014.
 
 ## 7. Memory *(step 9)*
 
@@ -199,14 +323,30 @@ on the LLM interface and lands with it. See ADR-0006.
 facts + recent turns + semantic hits trimmed to a character budget. All data
 stays under `Settings.data_dir`. See ADR-0008.
 
+## 7b. Vision *(step 11)*
+
+`vision/ScreenReader` turns "what does this error mean?" into one request:
+capture through `Platform` (primary monitor, whole desktop, or only the
+focused window), a `Redactor` hook (no-op today), downscale to
+`vision_max_long_edge` and re-encode PNG, then JPEG, then smaller until the
+base64 fits `vision_max_image_bytes` (`vision/imaging.py`, in a worker
+thread), and one user message with the image and the question to a
+vision-capable `LLMClient`. `vision/factory.py` picks that client from the
+configured provider (Claude with `vision_model`, Ollama only with
+`ollama_vision_model`, none for llama.cpp). Tools reach it through
+`ToolContext.vision`; `describe_screen`, `explain_screen_error` and
+`ask_about_screen` share `tools/_screen.py` and say aloud when a screenshot
+went to a cloud provider. Captures happen only inside a tool call. See
+ADR-0016.
+
 ## 7a. Local inference *(step 12)*
 
 `native/inference` wraps whisper.cpp and llama.cpp (ADR-0010). Transcription
 is one blocking call with the GIL released. Generation runs on a native
 thread that fills a queue; Python pulls pieces from a `GenerationStream`
 and can cancel it, so the LLM path follows the same no-GIL-on-native-threads
-rule as the audio engine. The Python `STT` / `LLMClient` providers over this
-module are the second half of step 12.
+rule as the audio engine. The Python providers over this module
+(`WhisperCppSTT`, `LocalLlamaClient`) are described under Providers above.
 
 ## 8. Native build *(step 2)*
 

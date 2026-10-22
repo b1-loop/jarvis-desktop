@@ -1,11 +1,15 @@
 from pathlib import Path
 
 from jarvis.audio.models import AUDIO_MODELS
+from jarvis.config import Settings
 from jarvis.inference.models import (
     INFERENCE_MODELS,
+    PIPER_VOICE_EN_GB,
+    PIPER_VOICE_EN_GB_CONFIG,
     QWEN2_5_0_5B_INSTRUCT,
     WHISPER_TINY,
     InferenceModelPaths,
+    piper_config_path,
 )
 
 
@@ -27,10 +31,27 @@ def test_paths_follow_the_standard_layout(tmp_path: Path) -> None:
 
     assert paths.whisper == tmp_path / WHISPER_TINY.name
     assert paths.llama == tmp_path / QWEN2_5_0_5B_INSTRUCT.name
+    assert paths.piper_voice == tmp_path / PIPER_VOICE_EN_GB.name
+    assert paths.piper_config == tmp_path / PIPER_VOICE_EN_GB_CONFIG.name
 
 
 def test_missing_lists_only_absent_files(tmp_path: Path) -> None:
     paths = InferenceModelPaths.in_directory(tmp_path)
     paths.whisper.write_bytes(b"x")
+    paths.piper_voice.write_bytes(b"x")
 
-    assert paths.missing() == (paths.llama,)
+    assert paths.missing() == (paths.llama, paths.piper_config)
+
+
+def test_piper_config_sits_next_to_the_voice(tmp_path: Path) -> None:
+    assert piper_config_path(tmp_path / "v.onnx") == tmp_path / "v.onnx.json"
+    assert piper_config_path(PIPER_VOICE_EN_GB.path(tmp_path)).name == PIPER_VOICE_EN_GB_CONFIG.name
+
+
+def test_settings_defaults_point_at_the_pinned_manifest_files() -> None:
+    settings = Settings(_env_file=None)
+    expected = InferenceModelPaths.in_directory(settings.models_dir)
+
+    assert settings.local_stt_model == expected.whisper
+    assert settings.local_llm_model == expected.llama
+    assert settings.local_tts_model == expected.piper_voice

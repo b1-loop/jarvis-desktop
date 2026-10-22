@@ -89,6 +89,7 @@ class FakeNativePlayback:
     queued: int = 0
     end_marked: bool = False
     stops: int = 0
+    level: float = 0.0
 
     def enqueue(self, samples: Samples) -> None:
         self.chunks.append(samples)
@@ -112,6 +113,9 @@ class FakeNativePlayback:
 
     def stop_count(self) -> int:
         return self.stops
+
+    def output_level(self) -> float:
+        return self.level
 
     def sample_rate(self) -> int:
         return self.rate
