@@ -25,7 +25,7 @@ from jarvis.agent.confirmation import ConfirmationPolicy
 from jarvis.agent.loop import Agent, AgentLimits
 from jarvis.agent.persona import Persona
 from jarvis.agent.registry import ToolRegistry
-from jarvis.agent.tool import ConfirmationAsker, IntegrationProviders, ToolContext
+from jarvis.agent.tool import ConfirmationAsker, ToolContext
 from jarvis.config import Settings
 from jarvis.core.events import EventBus
 from jarvis.core.orchestrator import (
@@ -37,7 +37,7 @@ from jarvis.core.orchestrator import (
     TerminalOutput,
 )
 from jarvis.core.state_machine import StateMachine
-from jarvis.integrations.factory import IntegrationFactory
+from jarvis.integrations.services import IntegrationServices, build_integration_services
 from jarvis.llm.base import LLMClient
 from jarvis.llm.factory import create_llm_client
 from jarvis.memory import ChromaVectorStore, InMemoryVectorStore, MemoryManager, SqliteStore
@@ -214,18 +214,14 @@ def build_platform(stack: AsyncExitStack) -> Platform:
     return platform
 
 
-def build_integrations(settings: Settings, stack: AsyncExitStack) -> IntegrationProviders:
-    """Real providers where credentials exist, ``Stub*`` providers elsewhere."""
+def build_integrations(settings: Settings, stack: AsyncExitStack) -> IntegrationServices:
+    """External services for the tools: real providers or ``Stub*`` fallbacks.
+
+    Also carries web search and YouTube transcripts for the web tools.
+    """
     http = httpx.AsyncClient(timeout=INTEGRATIONS_TIMEOUT)
     stack.push_async_callback(http.aclose)
-    factory = IntegrationFactory(settings, http)
-    return IntegrationProviders(
-        email=tuple(factory.email()),
-        calendar=tuple(factory.calendar()),
-        music=tuple(factory.music()),
-        chat=tuple(factory.chat()),
-        smart_home=tuple(factory.smart_home()),
-    )
+    return build_integration_services(settings, http)
 
 
 def build_tool_context(
@@ -256,7 +252,7 @@ class ToolServices:
 
     platform: Platform
     memory: MemoryManager
-    integrations: IntegrationProviders
+    integrations: IntegrationServices
     jobs: BackgroundJobs
 
 

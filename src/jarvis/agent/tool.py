@@ -24,13 +24,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from jarvis.config import Settings
 from jarvis.core.events import EventBus, ToolCallFinished, ToolCallStarted
-from jarvis.integrations.base import (
-    CalendarProvider,
-    ChatProvider,
-    EmailProvider,
-    MusicProvider,
-    SmartHomeProvider,
-)
+from jarvis.integrations.services import IntegrationServices
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 from jarvis.utils.timing import Clock, SystemClock
@@ -182,20 +176,10 @@ class BackgroundJobTracker(Protocol):
 ConfirmationAsker = Callable[[str], Awaitable[bool]]
 """Asks the user a yes/no question (spoken or typed) and returns their answer."""
 
-
-@dataclass(frozen=True, slots=True)
-class IntegrationProviders:
-    """The external-service providers chosen at startup (real or ``Stub*``).
-
-    Built once by the composition root from ``IntegrationFactory``; tools
-    see only the provider interfaces, never which implementation it is.
-    """
-
-    email: tuple[EmailProvider, ...] = ()
-    calendar: tuple[CalendarProvider, ...] = ()
-    music: tuple[MusicProvider, ...] = ()
-    chat: tuple[ChatProvider, ...] = ()
-    smart_home: tuple[SmartHomeProvider, ...] = ()
+IntegrationProviders = IntegrationServices
+"""Alias kept for the composition root (``core/bootstrap.py``), which builds the
+bundle under this name; ``IntegrationServices`` has the same five provider
+fields plus web search, transcripts, the web client and the draft book."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,8 +194,9 @@ class ToolContext:
         clock: Time source; a fake in tests.
         platform: OS facade, ``None`` in text-only runs without a backend.
         memory: Notes, todos and reminders, ``None`` when memory is disabled.
-        integrations: Email, calendar, music, chat and smart-home
-            providers; ``None`` in tests that do not need them.
+        integrations: External services (email, calendar, web ...), ``None``
+            when the composition root wired none; integration tools then
+            answer "not configured" instead of failing.
         vision: Screen understanding, ``None`` when it is not wired in.
         jobs: Tracker for detached processes such as dev servers, ``None``
             when nothing consumes their completion.
@@ -223,7 +208,7 @@ class ToolContext:
     clock: Clock = field(default_factory=SystemClock)
     platform: Platform | None = None
     memory: MemoryFacade | None = None
-    integrations: IntegrationProviders | None = None
+    integrations: IntegrationServices | None = None
     vision: ScreenReaderProtocol | None = None
     jobs: BackgroundJobTracker | None = None
 
