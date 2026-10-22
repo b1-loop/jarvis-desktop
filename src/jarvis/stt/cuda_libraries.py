@@ -27,6 +27,8 @@ NVIDIA_LIBRARY_PACKAGES: Final = ("nvidia.cublas", "nvidia.cudnn")
 """The wheels of the ``gpu`` extra, as importable (namespace) packages."""
 
 WINDOWS_DLL_SUBDIR: Final = "bin"
+_WINDOWS_PATH_SEPARATOR: Final = ";"
+"""PATH entries on Windows; ``os.pathsep`` would be wrong when tests run elsewhere."""
 
 DllDirectoryAdder = Callable[[str], object]
 """``os.add_dll_directory``; injected so tests run on any OS."""
@@ -91,7 +93,7 @@ def register_cuda_libraries(
     for path in added:
         if adder is not None:
             _handles.append(adder(str(path)))
-        env["PATH"] = os.pathsep.join([str(path), env.get("PATH", "")])
+        env["PATH"] = _WINDOWS_PATH_SEPARATOR.join([str(path), env.get("PATH", "")])
         _registered.add(path)
     if added:
         log.info("stt.cuda_libraries_registered", directories=[str(path) for path in added])

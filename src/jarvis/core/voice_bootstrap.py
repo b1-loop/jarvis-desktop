@@ -19,6 +19,7 @@ headphones, and only the wake word (or hotkey, or typing) does on speakers.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -247,7 +248,9 @@ def _saved(position: HudPosition | None) -> SavedPosition | None:
 
 def startup_shortcut(settings: Settings) -> Autostart | None:
     """The Startup-folder shortcut on Windows; elsewhere there is none to offer."""
-    if sys.platform != "win32":
+    # os.name, not sys.platform: mypy would mark the Windows branch unreachable
+    # when it type-checks for Linux (as CI does).
+    if os.name != "nt":
         return None
     return StartupShortcut(settings.data_dir)
 
