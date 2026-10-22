@@ -23,11 +23,21 @@ the HUD expands to its conversation view and collapses again. It uses the
 window's demo hooks, so the real mouse and keyboard focus are never
 touched; ``--record-interactive`` captures it.
 
+``--minimize`` scripts minimizing (ADR-0024, update): the idle HUD
+shrinks into its orb, the orb idles (measured: it must stay at the idle
+frame rate), shows a wake ripple and the listening, thinking and speaking
+looks with synthetic levels, then grows back into the HUD.
+``--record-minimize`` captures it. No hotkey is registered and the mouse
+is never moved: minimize and restore go through ``Overlay.minimize()`` and
+``Overlay.restore()``.
+
 Usage::
 
     uv run python scripts/demo_overlay.py
     uv run python scripts/demo_overlay.py --interactive
     uv run python scripts/demo_overlay.py --record-interactive docs/media/overlay-interactive.gif
+    uv run python scripts/demo_overlay.py --minimize
+    uv run python scripts/demo_overlay.py --record-minimize docs/media/overlay-minimize.gif
     uv run python scripts/demo_overlay.py --theme amber --intensity max
     uv run python scripts/demo_overlay.py --record docs/media/overlay-boot.gif
     uv run python scripts/demo_overlay.py --record-states docs/media/overlay-states.gif
@@ -165,6 +175,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--record-interactive", type=Path, metavar="OUT.gif", help="capture the interaction"
+    )
+    parser.add_argument(
+        "--minimize",
+        action="store_true",
+        help="scripted minimize to the orb, its states and the restore, with timings",
+    )
+    parser.add_argument(
+        "--record-minimize", type=Path, metavar="OUT.gif", help="capture the minimize script"
     )
     return parser.parse_args(argv)
 
@@ -445,6 +463,66 @@ def run_interactive(args: argparse.Namespace, config: OverlayConfig) -> int:
     return 0
 
 
+MORPH_S: Final = 0.7
+"""The 0.5 s HUD/orb morph plus a little settling."""
+ACTIVE_AFTER_CHANGE_S: Final = 1.1
+"""The window keeps the active rate for 1 s after any change (window.cpp)."""
+ORB_BEATS: Final = (
+    Beat(OverlayState.LISTENING, 2.0, speech_envelope, wake=True),
+    Beat(OverlayState.THINKING, 1.6),
+    Beat(OverlayState.SPEAKING, 2.2, voice_envelope),
+    Beat(OverlayState.IDLE, 1.0),
+)
+
+
+def minimize_demo(overlay: Overlay, tick: Callable[[], None]) -> None:
+    """HUD, shrink, idle orb (measured), the orb's states, grow back; timings per phase."""
+    run_for(1.5, lambda _elapsed: tick())
+    report("hud", overlay)
+    overlay.minimize()
+    run_for(MORPH_S, lambda _elapsed: tick())
+    report("shrink", overlay)
+    run_for(ACTIVE_AFTER_CHANGE_S, lambda _elapsed: tick())
+    overlay._native.reset_frame_stats()  # type: ignore[attr-defined]
+    run_for(3.0, lambda _elapsed: tick())
+    report("orb idle", overlay)
+    for beat in ORB_BEATS:
+        play_beat(overlay, beat, tick)
+        report(f"orb {beat.state.value.lower()}", overlay)
+    overlay.restore()
+    run_for(MORPH_S, lambda _elapsed: tick())
+    report("restore", overlay)
+    run_for(1.2, lambda _elapsed: tick())
+
+
+def run_minimize(args: argparse.Namespace, config: OverlayConfig) -> int:
+    """The ``--minimize`` / ``--record-minimize`` mode."""
+    backdrop = Backdrop() if args.record_minimize is not None else None
+    try:
+        overlay = create_native_overlay(replace(config, boot_animation=False))
+    except (NativeUnavailableError, OverlayError) as error:
+        print(f"Overlay unavailable: {error}", file=sys.stderr)
+        return 1
+    recorder = Recorder(panel_box(config), STATES_FPS, STATES_BUDGET_BYTES)
+
+    def tick() -> None:
+        if backdrop is not None:
+            backdrop.pump()
+        recorder.tick(time.perf_counter())
+
+    with overlay:
+        run_for(SETTLE_S, lambda _elapsed: tick())
+        recorder.armed = args.record_minimize is not None
+        overlay._native.reset_frame_stats()  # type: ignore[attr-defined]
+        minimize_demo(overlay, tick)
+    if backdrop is not None:
+        backdrop.close()
+    if args.record_minimize is not None:
+        size = recorder.save(args.record_minimize)
+        print(f"wrote {args.record_minimize} ({size / 1e6:.2f} MB)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the demo; returns a process exit code."""
     args = parse_args(argv)
@@ -460,6 +538,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.interactive or args.record_interactive is not None:
         return run_interactive(args, config)
+    if args.minimize or args.record_minimize is not None:
+        return run_minimize(args, config)
     return run_states(args, config)
 
 
