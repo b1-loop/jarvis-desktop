@@ -13,6 +13,10 @@
 - ``shortcuts``: desktop, Start-menu and Startup-folder shortcuts that
   launch the windowless app (``scripts/install_shortcuts.py``).
 - ``icon``: the application icon, drawn from the tray's own artwork.
+- ``autostart``: the HUD's "Start with Windows" switch over the shortcut
+  installer (Startup folder only).
+- ``restart``: the HUD's Restart button: relaunch the windowless app once
+  this one has released the single-instance lock (ADR-0024).
 
 ADR-0021 records why Jarvis is launched through ``uvw`` and shortcuts
 rather than shipped as a frozen executable.

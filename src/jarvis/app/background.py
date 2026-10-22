@@ -20,6 +20,8 @@ icon whose tooltip carries the error, and exits when the user picks Quit.
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
@@ -27,6 +29,7 @@ from pathlib import Path
 from typing import Any, Final, Protocol
 
 from jarvis.app.ollama_launcher import OllamaStartError, OllamaStatus, create_ollama_launcher
+from jarvis.app.restart import Relaunch, Spawner, spawn_detached
 from jarvis.app.single_instance import (
     HANDOFF_FILENAME,
     LOCK_FILENAME,
@@ -41,7 +44,12 @@ from jarvis.core.bootstrap import build_platform as build_platform_backend
 from jarvis.core.events import EventBus
 from jarvis.core.orchestrator import Writer
 from jarvis.core.providers import effective_llm_provider
-from jarvis.core.voice_bootstrap import VoiceFactories, VoiceFrontEndBuilder, build_overlay
+from jarvis.core.voice_bootstrap import (
+    SessionHooks,
+    VoiceFactories,
+    VoiceFrontEndBuilder,
+    build_overlay,
+)
 from jarvis.os_integration.base import Platform
 from jarvis.os_integration.errors import PlatformError
 from jarvis.ui.overlay import Overlay
@@ -107,10 +115,18 @@ def boot_overlay(settings: Settings) -> Overlay:
     return overlay
 
 
-def voice_front_end(wake_word: bool, write: Writer) -> FrontEndBuilder:
+def voice_front_end(wake_word: bool, write: Writer, hooks: SessionHooks) -> FrontEndBuilder:
     """The voice front end with terminal output sent to ``write`` (the log)."""
     factories = VoiceFactories(overlay=boot_overlay)
-    return VoiceFrontEndBuilder(wake_word=wake_word, factories=factories, write=write)
+    return VoiceFrontEndBuilder(wake_word=wake_word, factories=factories, write=write, hooks=hooks)
+
+
+def open_in_default_app(path: Path) -> None:
+    """Open ``path`` with its associated program (the log in a text viewer)."""
+    if sys.platform == "win32":
+        os.startfile(path)  # noqa: S606 - a file Jarvis wrote, opened with its registered viewer
+    else:
+        log.warning("desktop.open_log.unsupported", path=str(path))
 
 
 def ollama_starter(settings: Settings) -> OllamaStarter:
@@ -138,9 +154,11 @@ class BackgroundDeps:
     server: Callable[[Callable[[], None], Path], HandoverServer] = InstanceServer
     platform: Callable[[AsyncExitStack], Platform] = build_platform_backend
     application: Callable[[Settings, Overrides], Awaitable[Application]] = build_application
-    front_end: Callable[[bool, Writer], FrontEndBuilder] = voice_front_end
+    front_end: Callable[[bool, Writer, SessionHooks], FrontEndBuilder] = voice_front_end
     ollama: Callable[[Settings], OllamaStarter] = ollama_starter
     tray: ErrorTrayFactory = error_tray
+    open_file: Callable[[Path], None] = open_in_default_app
+    spawn: Spawner = spawn_detached
 
 
 def background_settings(settings: Settings) -> Settings:
@@ -182,10 +200,17 @@ async def run_background(
     if not lock.acquire():
         await _hand_over(settings, deps)
         return EXIT_OK
+    relaunch = Relaunch(wake_word=wake_word, spawn=deps.spawn)
     try:
-        return await BackgroundSession(settings, wake_word=wake_word, deps=deps).run()
+        code = await BackgroundSession(
+            settings, wake_word=wake_word, deps=deps, relaunch=relaunch
+        ).run()
     finally:
         lock.release()
+    # Only now: a new instance started while the lock was held would hand
+    # over to this one and exit.
+    relaunch.run_if_requested()
+    return code
 
 
 async def _hand_over(settings: Settings, deps: BackgroundDeps) -> None:
@@ -248,10 +273,18 @@ class BackgroundSession:
         deps: The effects (see :class:`BackgroundDeps`).
     """
 
-    def __init__(self, settings: Settings, *, wake_word: bool, deps: BackgroundDeps) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        wake_word: bool,
+        deps: BackgroundDeps,
+        relaunch: Relaunch | None = None,
+    ) -> None:
         self._settings = background_settings(settings)
         self._wake_word = wake_word
         self._deps = deps
+        self._relaunch = relaunch
         self._show: Callable[[], None] = self._show_while_starting
         self._tasks: set[asyncio.Task[None]] = set()
         self._platform: Platform | None = None
@@ -278,7 +311,12 @@ class BackgroundSession:
 
     def _overrides(self) -> Overrides:
         writer = LogWriter()
-        front_end = self._deps.front_end(self._wake_word, writer)
+        log_path = log_path_for(self._settings)
+        hooks = SessionHooks(
+            open_log=lambda: self._deps.open_file(log_path),
+            restart=self._relaunch.request if self._relaunch is not None else None,
+        )
+        front_end = self._deps.front_end(self._wake_word, writer, hooks)
         return Overrides(platform=self._platform, front_end=front_end)
 
     async def _ensure_ollama(self) -> str | None:

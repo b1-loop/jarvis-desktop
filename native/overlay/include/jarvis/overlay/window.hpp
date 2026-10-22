@@ -5,13 +5,18 @@
 
 #include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/effects.hpp"
+#include "jarvis/overlay/hud_data.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/placement.hpp"
+#include "jarvis/overlay/ui_events.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace jarvis::overlay {
 
@@ -49,6 +54,26 @@ struct OverlayConfig {
     /// Window title; never shown (frameless) but visible to window tools.
     std::string title = "Jarvis";
     ModelLimits limits;
+    /// Make the HUD's own shapes interactive (hover controls, text field,
+    /// dragging, the expanded view) while transparent pixels stay
+    /// click-through (ADR-0024). False keeps the display-only ADR-0022
+    /// behaviour, where clickThrough alone decides.
+    bool interactive = true;
+    /// Remembered position of the corner HUD; unset anchors it to @c corner.
+    std::optional<SavedPlacement> position;
+    /// Remembered position and logical size of the expanded panel; unset
+    /// opens it at kExpandedWidth x kExpandedHeight next to the corner HUD.
+    std::optional<SavedPlacement> expandedBounds;
+    HudDataLimits hudLimits;
+};
+
+/// Demo and test hooks that show interactive states without touching the
+/// real mouse or keyboard focus (scripts/demo_overlay.py records with them).
+struct DemoOverrides {
+    /// Show the hover controls as if the cursor were over the HUD.
+    bool hover{false};
+    /// Open the text field showing this text; unset leaves the field alone.
+    std::optional<std::string> input;
 };
 
 /// The overlay window: Win32 + Direct3D 11 + Dear ImGui, on a thread of its own.
@@ -115,6 +140,34 @@ public:
 
     /// Copy of the current model state; for tests and the dashboard.
     [[nodiscard]] OverlaySnapshot snapshot() const;
+
+    // --- interactive HUD (ADR-0024) -------------------------------------------
+
+    /// Everything the user did since the last call, oldest first. Python
+    /// polls this every ~30 ms; the UI thread never calls back.
+    [[nodiscard]] std::vector<UiEvent> pollUiEvents();
+    /// Events lost to the queue's overflow policy (see UiEventQueue).
+    [[nodiscard]] std::uint64_t droppedUiEvents() const;
+    /// Test hook: enqueue @p event as if the user had caused it.
+    void injectUiEvent(UiEvent event);
+
+    /// Show the microphone control as muted.
+    void setMuted(bool muted);
+    /// Append a line to the expanded view's conversation history.
+    void addHistory(HistoryEntry entry);
+    void clearHistory();
+    /// Replace the settings page (choices and current values, as data).
+    void setSettings(SettingsPage page);
+    /// Switch theme, intensity and size live.
+    void setAppearance(Appearance appearance);
+    /// Expand to the panel (true) or collapse to the corner HUD (false).
+    void setExpanded(bool expanded);
+    /// Whether the HUD is (or is animating towards) the expanded panel.
+    [[nodiscard]] bool expanded() const noexcept;
+    /// Copy of the data pushed so far; for tests.
+    [[nodiscard]] HudData hudData() const;
+    /// Demo hook, see DemoOverrides.
+    void setDemo(DemoOverrides demo);
 
     /// Close the window and join the UI thread. Idempotent.
     void close();

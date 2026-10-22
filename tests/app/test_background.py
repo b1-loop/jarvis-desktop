@@ -28,7 +28,7 @@ from jarvis.app.background import (
 from jarvis.app.ollama_launcher import OllamaStartError, OllamaStatus
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core.bootstrap import Overrides
-from jarvis.core.voice_bootstrap import VoiceUnavailableError
+from jarvis.core.voice_bootstrap import SessionHooks, VoiceUnavailableError
 from jarvis.os_integration.errors import PlatformError
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.utils.logging import close_file_logging
@@ -124,6 +124,9 @@ class Harness:
         self.error_tray: FakeTray | None = FakeTray()
         self.tray_callbacks: list[ErrorTrayControls] = []
         self.front_ends: list[tuple[bool, object]] = []
+        self.hooks: list[SessionHooks] = []
+        self.spawned: list[list[str]] = []
+        self.opened: list[Path] = []
 
     def deps(self) -> BackgroundDeps:
         return BackgroundDeps(
@@ -135,6 +138,8 @@ class Harness:
             front_end=self._front_end,
             ollama=lambda _settings: self.ollama,
             tray=self._tray,
+            open_file=self.opened.append,
+            spawn=lambda command, _cwd: self.spawned.append(list(command)),
         )
 
     async def _ping(self, _path: Path) -> bool:
@@ -148,7 +153,8 @@ class Harness:
     def _platform(self, _stack: AsyncExitStack) -> StubPlatform:
         return self.platform
 
-    def _front_end(self, wake_word: bool, write: object) -> Any:
+    def _front_end(self, wake_word: bool, write: object, hooks: SessionHooks) -> Any:
+        self.hooks.append(hooks)
         self.front_ends.append((wake_word, write))
         return "voice-front-end"
 
@@ -222,6 +228,40 @@ async def test_start_builds_voice_mode_with_the_dashboard_hidden_and_notifies(
     assert harness.messages == ["Jarvis is listening; say 'Hey Jarvis' or press Ctrl+Alt+J."]
     assert harness.lock.released
     assert harness.servers[0].started and harness.servers[0].closed
+    assert harness.spawned == []  # no restart was asked for
+
+
+async def test_restart_from_the_hud_relaunches_after_the_lock_is_released(
+    settings: Settings, harness: Harness
+) -> None:
+    def ask_for_restart() -> None:
+        restart = harness.hooks[0].restart
+        assert restart is not None
+        restart()
+        assert not harness.lock.released  # still running: nothing spawned yet
+        assert harness.spawned == []
+
+    harness.application.during_run = ask_for_restart
+
+    assert await run_background(settings, wake_word=False, deps=harness.deps()) == EXIT_OK
+
+    assert harness.lock.released
+    assert len(harness.spawned) == 1
+    assert harness.spawned[0][-2:] == ["--background", "--no-wakeword"]
+
+
+async def test_open_log_from_the_hud_opens_the_session_log(
+    settings: Settings, harness: Harness
+) -> None:
+    def open_log() -> None:
+        opener = harness.hooks[0].open_log
+        assert opener is not None
+        opener()
+
+    harness.application.during_run = open_log
+    await run_background(settings, wake_word=True, deps=harness.deps())
+
+    assert harness.opened == [settings.data_dir / "logs" / "jarvis.log"]
     assert harness.servers[0].path == settings.data_dir / "jarvis.instance"
 
 

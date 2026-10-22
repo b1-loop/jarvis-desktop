@@ -120,6 +120,16 @@ bool transcriptWanted(bool hasText, AssistantState state, float secondsIdle) noe
     return state != AssistantState::Idle || secondsIdle < kTranscriptLinger;
 }
 
+void OverlayAnimator::setIntensity(Intensity intensity) {
+    if (intensity == config_.intensity) {
+        return;
+    }
+    config_.intensity = intensity;
+    scale_ = intensityScale(intensity);
+    field_ = ParticleSystem(config_.particleSeed ^ kFieldSalt,
+                            particleBudget(intensity, config_.particleCount));
+}
+
 OverlayAnimator::OverlayAnimator(Clock::time_point epoch, AnimatorConfig config,
                                  BootTimeline timeline)
     : epoch_(epoch),

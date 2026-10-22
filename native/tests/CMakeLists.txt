@@ -63,13 +63,21 @@ if(JARVIS_BUILD_OVERLAY)
         overlay/animation_test.cpp
         overlay/boot_test.cpp
         overlay/effects_test.cpp
+        overlay/hud_data_test.cpp
+        overlay/hud_layout_test.cpp
+        overlay/interactive_window_test.cpp
         overlay/layout_test.cpp
         overlay/model_test.cpp
         overlay/particles_test.cpp
+        overlay/placement_test.cpp
         overlay/scene_test.cpp
         overlay/shaders_test.cpp
+        overlay/text_entry_test.cpp
+        overlay/ui_events_test.cpp
         overlay/window_test.cpp)
-    target_link_libraries(jarvis_tests PRIVATE jarvis::overlay)
+    # text_entry_test drives the private TextEntry over a headless ImGui context.
+    target_include_directories(jarvis_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../overlay/src")
+    target_link_libraries(jarvis_tests PRIVATE jarvis::overlay jarvis_imgui)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")

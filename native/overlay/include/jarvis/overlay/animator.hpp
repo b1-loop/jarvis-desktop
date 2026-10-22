@@ -121,6 +121,11 @@ public:
     [[nodiscard]] const AnimatorConfig& config() const noexcept { return config_; }
     [[nodiscard]] const IntensityScale& scale() const noexcept { return scale_; }
 
+    /// Switch the richness preset while running (settings page). Rotors and
+    /// state keep going; the particle field is reseeded with the preset's
+    /// particle count, which reads as the field thinning out or filling in.
+    void setIntensity(Intensity intensity);
+
 private:
     [[nodiscard]] std::optional<BootFrame> bootFrame(const OverlaySnapshot& snapshot,
                                                      Clock::time_point now) const noexcept;

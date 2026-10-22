@@ -266,6 +266,36 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
   microphone and the voice; `JARVIS_OVERLAY_SIZE` and
   `JARVIS_OVERLAY_INTENSITY` tune it, ADR-0023); the tray menu shows the
   dashboard, toggles the overlay and mutes the microphone.
+- **The HUD is interactive** (ADR-0024). Its transparent parts stay
+  click-through; its own shapes are not:
+  - **Hover controls** fade in over the HUD: keyboard (type a request),
+    microphone (mute), power (quit, asks "QUIT JARVIS?" first), gear
+    (settings), arrows (expand / collapse) and cross (hide; the tray's
+    "Toggle overlay" brings it back). With the HUD focused, Tab moves
+    between them and Enter or Space activates.
+  - **Typing.** Click the keyboard control or the text field, type, press
+    Enter. The request goes to the same conversation as voice; typing while
+    Jarvis speaks interrupts it like talking over it does, and a typed "yes"
+    answers a confirmation. Escape (or Enter) gives the keyboard back to the
+    window you were in. Swedish letters, IME input and Ctrl+V work.
+  - **Moving.** Drag the ring or the panel (the cursor turns into a move
+    cursor); it snaps to screen edges and corners within 16 px (hold Alt
+    for free placement), stays on screen across monitors and DPI changes,
+    and is remembered. Double-click the ring to send it back to its corner.
+  - **Expanded view.** The arrows open a larger panel (900 x 640, movable
+    and resizable from its corner grip, also remembered) with the whole
+    conversation of the session, tool calls in one line each, and the text
+    field. Escape collapses it.
+  - **Settings** (gear): voice (Swedish and English edge-tts voices),
+    speech language, LLM provider and Ollama model (listed live from
+    Ollama), wake word on/off and threshold, HUD size, theme and intensity,
+    "speak replies" (off for a silent typed conversation), start with
+    Windows, and the log file. Changes are saved to
+    `data/user_settings.json` and applied at once where possible; the rest
+    is marked "applies after restart" with a Restart button (windowless
+    app).
+
+  ![Interactive HUD: hover controls, typing a request, expanded view](docs/media/overlay-interactive.gif)
 - **Headphones.** There is no acoustic echo cancellation yet: with loud
   speakers Jarvis can hear itself after the echo guard and stop
   mid-sentence. Use headphones or a lower volume.

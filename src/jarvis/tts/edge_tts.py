@@ -83,6 +83,14 @@ class EdgeTTS(TTS):
         """The edge-tts voice id, e.g. ``en-GB-RyanNeural``."""
         return self._voice
 
+    def set_voice(self, voice: str) -> None:
+        """Speak the next sentence in ``voice`` (the HUD's voice setting, live).
+
+        edge-tts takes the voice per request, so nothing is reconnected; a
+        sentence already being synthesised finishes in the old voice.
+        """
+        self._voice = voice
+
     @property
     def sample_rate(self) -> int:
         """Always 24 kHz for edge-tts."""

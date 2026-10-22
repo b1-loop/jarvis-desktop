@@ -223,7 +223,9 @@ Rules that keep this safe:
   the audio worker.
 - The overlay never calls back into Python: the event loop pushes state,
   levels and text through setters that take the model mutex for
-  nanoseconds, and the UI thread draws a snapshot (ADR-0011).
+  nanoseconds, and the UI thread draws a snapshot (ADR-0011). What the user
+  does in the interactive HUD is queued natively and polled by the bridge
+  every 30 ms (ADR-0024).
 - The tray and dashboard threads never touch the event bus or the view
   model: the loop pushes immutable snapshots (dashboard) or swaps a
   pre-rendered image (tray), and user actions come back only through
@@ -390,6 +392,17 @@ tkinter dashboard (live state, transcript, tool calls with durations, stage
 latency statistics, memory inspector) for both front ends; both run on their
 own threads and receive immutable snapshots from `ui/view_model.py`
 (ADR-0011, ADR-0015).
+
+The HUD is interactive (ADR-0024). Its shapes are hit-tested natively
+(transparent pixels stay click-through), it can be dragged, typed into,
+expanded to a conversation view and used to change settings. The bridge
+drains its UI events and dispatches them to `core/hud_wiring.py`;
+`core/combined_input.py` merges typed lines and voice turns into the
+orchestrator's one input (typing while Jarvis speaks barges in),
+`core/reply_output.py` implements "speak replies", and
+`ui/hud_settings.py` validates, saves (`data_dir/user_settings.json`, read
+back at start by `jarvis/user_settings.py` between the environment and
+`.env`) and applies settings live or after a restart.
 
 ### Desktop app
 

@@ -7,7 +7,8 @@ reply, plus a four-act boot sequence at startup. Dear ImGui on Direct3D 11
 with a GPU bloom pipeline, in a frameless Win32 tool window with per-pixel
 transparency (DirectComposition), on a UI thread of its own. Exposed to
 Python as `jarvis_overlay`. Decisions: ADR-0011 (ImGui overlay), ADR-0022
-(animations and transparency), ADR-0023 (GPU bloom, 3D scene, corner HUD).
+(animations and transparency), ADR-0023 (GPU bloom, 3D scene, corner HUD),
+ADR-0024 (interactive HUD: hit-testing, dragging, typing, settings).
 
 ![Boot: ignition, assembly, systems check, hand-off](../../docs/media/overlay-boot.gif)
 
@@ -110,6 +111,40 @@ on), only slower and a little dimmer, and shows a live clock and date, the
 model and mode, the microphone and the uptime. The transcript rows slide in
 when there is text and stay up for 8 s after Jarvis returns to Idle.
 
+## Interactive HUD (ADR-0024)
+
+![Interactive HUD: hover controls, typing, expanded view](../../docs/media/overlay-interactive.gif)
+
+| Header / file | Type | Role |
+| --- | --- | --- |
+| `ui_events.hpp` | `UiEvent`, `UiEventQueue` | typed user actions; bounded queue (adjacent setting/placement edits coalesce, overflow drops the oldest) polled by Python |
+| `hud_data.hpp` | `HudDataModel`, `SettingsPage`, `HistoryEntry`, `Appearance` | what Python pushes as data: settings rows, history, mute, theme/intensity/size |
+| `hud_layout.hpp` | `CollapsedLayout`, `ExpandedLayout`, `HitMap`, `approach` | where the controls, field, panel and grip are, and what each point does |
+| `placement.hpp` | `snapToEdges`, `clampInto`, `monitorFor`, `restorePlacement`, `DragAnchor` | dragging maths: snapping, clamping, monitors, DPI-safe anchors |
+| `src/hud_interact.*`, `hud_expanded_ui.cpp`, `hud_settings_ui.cpp`, `hud_icons.cpp` | `HudInteraction` | private: ImGui widgets for controls, field, quit confirmation, history and settings |
+| `src/text_entry.*` | `TextEntry` | private: bounded UTF-8 field over `InputText` (WM_CHAR via `AddInputCharacterUTF16`, Ctrl+V) |
+| `src/hud_expanded.cpp` | `HudRenderer` members | private: the expanded panel's scrim, brackets and the unfold morph |
+| `src/window_input.cpp`, `src/window_place.cpp` | `OverlayWindow::Impl` members | private: hit-testing, cursor, drag, focus; monitors and placement |
+
+- **Click-through except over the HUD.** The window is `WS_EX_TRANSPARENT`
+  until the per-frame cursor poll finds the cursor over a shape of the
+  frame's `HitMap`; `WM_NCHITTEST` answers `HTTRANSPARENT`/`HTCLIENT` from
+  the same map. Boot frames and the morph have an empty map.
+- **Drag anywhere on the body** (ring disc, text column, expanded frame):
+  `SetCapture`, snap within 16 logical px of the monitor's work area (Alt
+  disables), clamp onto that monitor, report `PlacementChanged` (monitor +
+  logical offset) on release; double-click on the ring resets.
+- **Focus** only for the text field: `SetForegroundWindow` on the click,
+  back to the previous window on Enter/Escape; `WM_MOUSEACTIVATE` is
+  `MA_NOACTIVATE` otherwise.
+- **Morph.** Expand/collapse runs about 0.4 s (eased): the corner text fades
+  out, the frame unfolds from the text column with a scan line, the ring
+  flies into the header, the panel content fades in last. On the transparent
+  surface the window spans both panels for the duration (no resize per
+  frame); the layered fallback follows the interpolated rectangle.
+- **Hooks for tests and demos:** `injectUiEvent()` and `setDemo()` show
+  interactive states without moving the mouse or taking focus.
+
 ## Threads and pacing
 
 | Thread | Does | Shares |
@@ -171,7 +206,14 @@ independence, stall handling, pull and burst, bounds), `effects_test.cpp`
 `shaders_test.cpp` (every pass compiles with D3DCompile, SKIP without the
 DLL), `layout_test.cpp`, `model_test.cpp`, and `window_test.cpp` (real
 window on both surfaces, bloom on and off, GPU timing, every intensity;
-SKIP without a desktop).
+SKIP without a desktop). Interactive HUD: `ui_events_test.cpp` (ordering,
+coalescing, overflow, concurrent producers), `placement_test.cpp` (snap,
+clamp, monitors, unplugged monitor, DPI round trip, drag anchor, resize),
+`hud_layout_test.cpp` (control bar, both layouts, hit maps, `approach`),
+`hud_data_test.cpp`, `text_entry_test.cpp` (headless ImGui: Swedish letters
+and a surrogate pair through `AddInputCharacterUTF16`, Enter, Escape) and
+`interactive_window_test.cpp` (inject and poll, no focus stolen, live
+appearance, expand/collapse, unknown monitor).
 
 Build with `-DJARVIS_BUILD_OVERLAY=OFF` to leave the whole component (and
 its Python module) out.

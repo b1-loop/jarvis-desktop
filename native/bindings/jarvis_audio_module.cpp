@@ -210,6 +210,9 @@ void defineEngine(const py::module_& module) {
             "Return and clear the audio captured while listening, as float32 at 16 kHz.")
         .def("poll_events", &AudioEngine::pollEvents)
         .def("set_barge_in_target", &AudioEngine::setBargeInTarget, py::arg("playback"))
+        .def("set_wake_word_threshold", &AudioEngine::setWakeWordThreshold, py::arg("threshold"),
+             "Change the wake-word score threshold live; clamped to [0.01, 0.99].")
+        .def("wake_word_threshold", &AudioEngine::wakeWordThreshold)
         .def("input_level", &AudioEngine::inputLevel)
         .def("dropped_samples", &AudioEngine::droppedSamples)
         .def("samples_processed", &AudioEngine::samplesProcessed);

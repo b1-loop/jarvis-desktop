@@ -157,6 +157,15 @@ async def test_enable_barge_in_forwards_the_target(
     assert native.barge_in_targets == [playback, None]
 
 
+def test_wake_word_threshold_is_forwarded_as_float(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    engine.set_wake_word_threshold(1)
+
+    assert native.wake_word_thresholds == [1.0]
+    assert isinstance(native.wake_word_thresholds[0], float)
+
+
 def test_input_level_is_read_through(engine: AudioEngine, native: FakeNativeEngine) -> None:
     native.level = 0.42
 

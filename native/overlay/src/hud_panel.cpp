@@ -84,8 +84,14 @@ float textSize(const HudScene& scene, float logical) noexcept {
     return logical * scene.scale * scene.textScale;
 }
 
-float panelAlphaOf(const HudScene& scene) noexcept {
+float bootAlphaOf(const HudScene& scene) noexcept {
     return scene.frame.boot.has_value() ? scene.frame.boot->handoff : 1.0F;
+}
+
+/// The corner panel's own alpha: in during the boot hand-off, out during
+/// the first half of the expand morph (the panel's text gives way first).
+float panelAlphaOf(const HudScene& scene) noexcept {
+    return bootAlphaOf(scene) * (1.0F - anim::clamp01(scene.expand * 2.0F));
 }
 
 /// The y of the divider under the caption.
@@ -98,18 +104,23 @@ float dividerY(const HudScene& scene) noexcept {
 // --- scrims and frame ------------------------------------------------------------------
 
 void HudRenderer::drawScrim(ImDrawList& draw, const HudScene& scene) const {
+    const float ringAlpha = bootAlphaOf(scene) * scene.opacity;
+    if (ringAlpha <= 0.0F) {
+        return;
+    }
+    const Rgba plate{.r = theme_.plate.r, .g = theme_.plate.g, .b = theme_.plate.b};
+    // The ring keeps its dark disc while it flies into the expanded header.
+    radialGlow(draw, centreOf(scene), scene.geometry.radius * kRingScrimRadius,
+               withAlpha(plate, kRingScrimAlpha * ringAlpha));
     const float alpha = panelAlphaOf(scene) * scene.opacity;
     if (alpha <= 0.0F) {
         return;
     }
-    const Rgba dark = withAlpha(Rgba{.r = theme_.plate.r, .g = theme_.plate.g, .b = theme_.plate.b},
-                                kRingScrimAlpha * alpha);
-    radialGlow(draw, centreOf(scene), scene.geometry.radius * kRingScrimRadius, dark);
     // Nested rounded rectangles of low alpha add up to a dark core with a
     // feathered edge: readable over any wallpaper, but no hard panel border.
     const RectF& column = scene.panelText;
     const float step = kFeatherStep * scene.scale;
-    const ImU32 layer = toU32(withAlpha(dark, kFeatherAlpha / kRingScrimAlpha));
+    const ImU32 layer = toU32(withAlpha(plate, kFeatherAlpha * alpha));
     for (int i = 0; i < kFeatherLayers; ++i) {
         const float grow = step * static_cast<float>(kFeatherLayers - i);
         draw.AddRectFilled({column.x - grow, column.y - grow},
@@ -155,6 +166,9 @@ void HudRenderer::drawPanelText(ImDrawList& draw, const HudScene& scene,
     }
     drawCaption(draw, scene, *fonts.display, alpha);
     drawDivider(draw, scene, dividerY(scene), alpha);
+    if (scene.confirming) {
+        return;  // the quit confirmation is drawn in these rows instead
+    }
     const float transcript = anim::clamp01(scene.frame.transcript);
     drawIdleReadout(draw, scene, fonts, alpha * (1.0F - transcript));
     drawTranscript(draw, scene, fonts, alpha * transcript);
@@ -210,10 +224,10 @@ void HudRenderer::drawInfoLine(ImDrawList& draw, const HudScene& scene, const Hu
          withAlpha(theme_.text, alpha));
 }
 
-void HudRenderer::drawTelemetry(ImDrawList& draw, const HudScene& scene) {
+void HudRenderer::drawTelemetry(ImDrawList& draw, const HudScene& scene) const {
     const float alpha = panelAlphaOf(scene) * scene.opacity * intensity(scene);
-    if (alpha <= kNegligible) {
-        return;
+    if (alpha <= kNegligible || scene.inputOpen) {
+        return;  // the text field sits where the strip is
     }
     // A strip of level bars along the bottom of the column: the live audio
     // while listening or speaking, a slow shimmer while idle.
@@ -286,8 +300,10 @@ void HudRenderer::drawCaption(ImDrawList& draw, const HudScene& scene, ImFont& f
     const float brandSize = textSize(scene, kBrandSize);
     const float brandTracking = kBrandTracking * scene.scale * scene.textScale;
     const float baseline = column.y + ((size - brandSize) * 0.5F);
+    // The brand gives way to the hover controls drawn on the same line.
+    const float brand = (1.0F - wake) * (1.0F - anim::clamp01(scene.hover));
     const std::array<std::pair<std::string_view, Rgba>, 2> marks{{
-        {kBrand, withAlpha(accent(scene), 0.8F * (1.0F - wake) * alpha)},
+        {kBrand, withAlpha(accent(scene), 0.8F * brand * alpha)},
         {kWakeCaption, withAlpha(theme_.wakeFlash, wake * alpha)},
     }};
     for (const auto& [mark, colour] : marks) {

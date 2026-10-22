@@ -79,6 +79,16 @@ void AudioEngine::setBargeInTarget(std::shared_ptr<Playback> playback) {
     bargeIn_ = std::move(playback);
 }
 
+void AudioEngine::setWakeWordThreshold(float threshold) {
+    const std::scoped_lock lock(mutex_);
+    pipeline_.setWakeWordThreshold(threshold);
+}
+
+float AudioEngine::wakeWordThreshold() const {
+    const std::scoped_lock lock(mutex_);
+    return pipeline_.wakeWordThreshold();
+}
+
 float AudioEngine::inputLevel() const {
     const std::scoped_lock lock(mutex_);
     return pipeline_.inputLevel();

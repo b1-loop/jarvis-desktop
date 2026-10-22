@@ -67,6 +67,11 @@ public:
     /// Drop all buffered audio and detector state.
     void reset();
 
+    /// Change the wake-word threshold while running (the HUD's slider);
+    /// clamped to the open interval (0, 1) a probability threshold needs.
+    void setWakeWordThreshold(float threshold) noexcept;
+    [[nodiscard]] float wakeWordThreshold() const noexcept { return config_.wakeWordThreshold; }
+
 private:
     void processVadFrame(std::span<const float, kVadFrameSamples> frame);
     void processWakeWordChunk(std::span<const float, kWakeWordChunkSamples> chunk);

@@ -11,6 +11,7 @@ from jarvis.audio.models import AudioModelPaths
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core import voice_bootstrap
 from jarvis.core.bootstrap import FrontEndRequest, Overrides
+from jarvis.core.combined_input import CombinedInput
 from jarvis.core.events import EventBus
 from jarvis.core.state_machine import StateMachine
 from jarvis.core.voice_bootstrap import (
@@ -65,6 +66,7 @@ def factories(
         stt=lambda _settings: stt or ScriptedSTT(),
         tts=lambda _settings: ScriptedTTS(),
         overlay=lambda _settings: Overlay(StubOverlay()),
+        autostart=lambda _settings: None,
         poll_interval=0.001,
     )
 
@@ -87,7 +89,8 @@ async def test_full_front_end_has_wake_word_hotkey_and_warm_stt(
     async with AsyncExitStack() as stack:
         front = await builder(request(make_settings(), stack))
 
-        assert isinstance(front.source, VoiceInput)
+        assert isinstance(front.source, CombinedInput)
+        assert isinstance(front.source.voice, VoiceInput)
         assert "Say 'Hey Jarvis' or press ctrl+alt+j" in front.greeting
         assert stt.warmed == 1
         assert printed == [voice_bootstrap.STT_LOADING]
@@ -200,13 +203,42 @@ async def test_microphone_switch_closes_the_device_and_ignores_triggers(
     builder = VoiceFrontEndBuilder(factories=factories(engine=lambda _p, **_o: native))
     async with AsyncExitStack() as stack:
         front = await builder(request(make_settings(), stack))
-        assert front.microphone is not None and isinstance(front.source, VoiceInput)
+        assert front.microphone is not None and isinstance(front.source, CombinedInput)
+        voice = front.source.voice
+        assert isinstance(voice, VoiceInput)
 
         assert await front.microphone.toggle()
-        assert front.source.muted
+        assert voice.muted
         assert not native.running()
         assert not await front.microphone.toggle()
         assert native.running()
+
+
+async def test_the_hud_gets_a_settings_page_and_follows_mute(make_settings: MakeSettings) -> None:
+    native = StubOverlay()
+    voice = replace(factories(), overlay=lambda _settings: Overlay(native))
+    builder = VoiceFrontEndBuilder(factories=voice)
+    async with AsyncExitStack() as stack:
+        front = await builder(request(make_settings(), stack))
+        items = native.settings["items"]
+        assert isinstance(items, list)
+        rows = {item["key"]: item for item in items}
+        # ScriptedTTS cannot switch voices live, so the voice is restart-only.
+        assert rows["tts_voice"]["restart_required"] is True
+        assert rows["overlay_theme"]["restart_required"] is False
+        assert front.bind_controls is not None
+
+        assert front.microphone is not None
+        await front.microphone.toggle()
+        assert native.muted
+
+
+async def test_the_wake_word_setting_turns_the_wake_word_off(make_settings: MakeSettings) -> None:
+    builder = VoiceFrontEndBuilder(factories=factories())
+    async with AsyncExitStack() as stack:
+        front = await builder(request(make_settings(wake_word_enabled=False), stack))
+        assert "Press" in front.greeting
+        assert "Say" not in front.greeting
 
 
 async def test_overlay_toggle_flips_visibility(make_settings: MakeSettings) -> None:

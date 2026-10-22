@@ -37,10 +37,12 @@ DESKTOP_SIDE_EFFECTS = (
     "JARVIS_TRAY_ENABLED",
     "JARVIS_DASHBOARD_ENABLED",
     "JARVIS_PROACTIVE_ENABLED",
+    "JARVIS_USER_SETTINGS_ENABLED",
 )
-"""Off in every test: no windows or tray icons on a developer's desktop, and no
-real battery or calendar polling speaking into a test's recorded output.
-Tests that exercise these builders turn them back on explicitly."""
+"""Off in every test: no windows or tray icons on a developer's desktop, no
+real battery or calendar polling speaking into a test's recorded output, and
+no ``data/user_settings.json`` from the developer's own HUD leaking into
+settings. Tests that exercise these turn them back on explicitly."""
 
 
 @pytest.fixture(autouse=True)

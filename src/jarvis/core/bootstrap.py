@@ -120,6 +120,8 @@ class FrontEnd:
         attach: Called with the orchestrator once it exists (barge-in).
         toggle_overlay: Shows/hides the status overlay, if there is one.
         microphone: Mutes speech input, if there is any.
+        bind_controls: Called with the tray's controls once they exist, so
+            the interactive HUD's quit and mute go through them (ADR-0024).
     """
 
     source: InputSource
@@ -130,6 +132,7 @@ class FrontEnd:
     attach: Callable[[Orchestrator], None] | None = None
     toggle_overlay: Callable[[], None] | None = None
     microphone: MicrophoneSwitch | None = None
+    bind_controls: Callable[[AppControls], None] | None = None
 
 
 FrontEndBuilder = Callable[[FrontEndRequest], Awaitable[FrontEnd]]
@@ -528,6 +531,8 @@ async def build_ui(
         microphone=front.microphone,
     )
     await build_tray(settings, bus, stack, controls)
+    if front.bind_controls is not None:
+        front.bind_controls(controls)
     return controls
 
 

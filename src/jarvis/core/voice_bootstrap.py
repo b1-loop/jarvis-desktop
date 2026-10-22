@@ -20,7 +20,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Final, Protocol, runtime_checkable
 
+import httpx
+
 from jarvis import _native
+from jarvis.app.autostart import StartupShortcut
 from jarvis.audio.engine import (
     AudioEngine,
     AudioModelError,
@@ -31,7 +34,7 @@ from jarvis.audio.engine import (
     create_native_playback,
 )
 from jarvis.audio.models import AudioModelPaths
-from jarvis.config import RuntimeMode, Settings
+from jarvis.config import HudPosition, RuntimeMode, Settings
 from jarvis.core import providers
 from jarvis.core.bootstrap import (
     FrontEnd,
@@ -40,9 +43,12 @@ from jarvis.core.bootstrap import (
     build_application,
     run_text_mode,
 )
+from jarvis.core.combined_input import CombinedAnswers, CombinedInput
+from jarvis.core.hud_wiring import HudActions
 from jarvis.core.interruption import BargeInController
 from jarvis.core.orchestrator import Orchestrator, TerminalOutput, Writer
 from jarvis.core.overlay_bridge import OverlayBridge
+from jarvis.core.reply_output import SwitchableOutput, TextReplies
 from jarvis.core.voice_io import (
     Earcon,
     SystemVoice,
@@ -56,15 +62,19 @@ from jarvis.core.voice_triggers import AnyTrigger, HotkeyTrigger, TurnTrigger, W
 from jarvis.os_integration.errors import PlatformError
 from jarvis.stt.base import STT
 from jarvis.tts.base import TTS
+from jarvis.ui.hud_settings import AppearanceSwitch, Applier, Autostart, SettingsController
+from jarvis.ui.model_catalog import OllamaModels
 from jarvis.ui.overlay import (
     Overlay,
     OverlayConfig,
     OverlayIntensity,
     OverlaySize,
     OverlayTheme,
+    SavedPosition,
     create_overlay,
     default_microphone_name,
 )
+from jarvis.user_settings import UserSettingsStore, user_settings_path
 from jarvis.utils.errors import ConfigError, JarvisError, NativeUnavailableError
 from jarvis.utils.logging import get_logger
 
@@ -169,15 +179,41 @@ def build_overlay(settings: Settings) -> Overlay:
     ``play_boot`` is idempotent, so a launcher that also asks for it at
     startup changes nothing.
     """
-    config = OverlayConfig(
+    overlay = create_overlay(overlay_config(settings), enabled=settings.overlay_enabled)
+    overlay.play_boot(boot_readout(settings))
+    return overlay
+
+
+def overlay_config(settings: Settings) -> OverlayConfig:
+    """The overlay's configuration from the settings, remembered positions included."""
+    return OverlayConfig(
         theme=OverlayTheme(settings.overlay_theme),
         boot_animation=settings.overlay_boot_animation,
         intensity=OverlayIntensity(settings.overlay_intensity),
         size=OverlaySize(settings.overlay_size),
+        interactive=settings.overlay_interactive,
+        position=_saved(settings.overlay_position),
+        expanded_bounds=_saved(settings.overlay_expanded_bounds),
     )
-    overlay = create_overlay(config, enabled=settings.overlay_enabled)
-    overlay.play_boot(boot_readout(settings))
-    return overlay
+
+
+def _saved(position: HudPosition | None) -> SavedPosition | None:
+    if position is None:
+        return None
+    return SavedPosition(
+        monitor=position.monitor,
+        x=position.x,
+        y=position.y,
+        width=position.width,
+        height=position.height,
+    )
+
+
+def startup_shortcut(settings: Settings) -> Autostart | None:
+    """The Startup-folder shortcut on Windows; elsewhere there is none to offer."""
+    if sys.platform != "win32":
+        return None
+    return StartupShortcut(settings.data_dir)
 
 
 def _stdout_write(text: str) -> None:
@@ -195,7 +231,21 @@ class VoiceFactories:
     stt: Callable[[Settings], STT] = build_stt
     tts: Callable[[Settings], TTS] = build_tts
     overlay: Callable[[Settings], Overlay] = build_overlay
+    autostart: Callable[[Settings], Autostart | None] = startup_shortcut
     poll_interval: float = 0.01
+
+
+@dataclass(frozen=True, slots=True)
+class SessionHooks:
+    """What only the launcher knows how to do, offered to the HUD's settings page.
+
+    Attributes:
+        open_log: Opens the log file; None when the session logs to a terminal.
+        restart: Arranges a relaunch after exit; None for a console session.
+    """
+
+    open_log: Callable[[], None] | None = None
+    restart: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,12 +267,68 @@ class _OverlayParts:
             self.overlay.show()
 
 
-class VoiceMicrophone:
-    """``MicrophoneSwitch`` for the tray: closes the device and ignores triggers while muted."""
+@dataclass(frozen=True, slots=True)
+class _Inputs:
+    voice: VoiceInput
+    combined: CombinedInput
+    barge_in: BargeInController
 
-    def __init__(self, engine: AudioEngine, voice_input: VoiceInput) -> None:
+
+@dataclass(frozen=True, slots=True)
+class _HudParts:
+    """What the HUD's live settings act on."""
+
+    audio: _Audio
+    tts: TTS
+    replies: SwitchableOutput
+    inputs: _Inputs
+
+
+@runtime_checkable
+class _VoiceSwitch(Protocol):
+    def set_voice(self, voice: str) -> None: ...
+
+
+def live_appliers(overlay: Overlay, settings: Settings, parts: _HudParts) -> dict[str, Applier]:
+    """The settings this session can change live, each with its applier.
+
+    Settings without one here are offered as "applies after restart":
+    the voice only with edge-tts (not Piper), the wake-word threshold only
+    while the wake word runs.
+    """
+    appearance = AppearanceSwitch(overlay, settings)
+    appliers: dict[str, Applier] = {
+        "overlay_size": appearance.set_size,
+        "overlay_theme": appearance.set_theme,
+        "overlay_intensity": appearance.set_intensity,
+        "speak_replies": parts.replies.set_speak,
+    }
+    if parts.audio.wake_word_active:
+        appliers["wake_word_threshold"] = parts.audio.engine.set_wake_word_threshold
+    if isinstance(parts.tts, _VoiceSwitch):
+        appliers["tts_voice"] = parts.tts.set_voice
+    return appliers
+
+
+class VoiceMicrophone:
+    """``MicrophoneSwitch`` for the tray and the HUD: closes the device and ignores triggers.
+
+    Args:
+        engine: The audio engine to stop and start.
+        voice_input: Ignores triggers while muted.
+        on_change: Told the new state (the HUD's microphone control).
+    """
+
+    def __init__(
+        self,
+        engine: AudioEngine,
+        voice_input: VoiceInput,
+        *,
+        on_change: Callable[[bool], None] | None = None,
+    ) -> None:
         self._engine = engine
         self._input = voice_input
+        self._on_change = on_change
 
     async def toggle(self) -> bool:
         """Flip mute; returns True when now muted."""
@@ -232,6 +338,8 @@ class VoiceMicrophone:
             await self._engine.stop()
         else:
             await self._engine.start()
+        if self._on_change is not None:
+            self._on_change(muted)
         return muted
 
 
@@ -250,10 +358,12 @@ class VoiceFrontEndBuilder:
         wake_word: bool = True,
         factories: VoiceFactories | None = None,
         write: Writer | None = None,
+        hooks: SessionHooks | None = None,
     ) -> None:
         self._wake_word = wake_word
         self._factories = factories or VoiceFactories()
         self._write = write or _stdout_write
+        self._hooks = hooks or SessionHooks()
 
     async def __call__(self, request: FrontEndRequest) -> FrontEnd:
         """Open the audio devices and assemble voice input and output.
@@ -261,6 +371,8 @@ class VoiceFrontEndBuilder:
         Raises:
             VoiceUnavailableError: If voice cannot run (see the module docs).
         """
+        # --no-wakeword and the HUD's "Wake word" switch both turn it off.
+        self._wake_word = self._wake_word and request.settings.wake_word_enabled
         native_error = self._factories.native_error()
         audio = await self._start_audio(request, native_error)
         tts = self._factories.tts(request.settings)
@@ -370,24 +482,17 @@ class VoiceFrontEndBuilder:
         trigger: TurnTrigger,
         overlay: _OverlayParts,
     ) -> FrontEnd:
-        settings = request.settings
-        terminal = TerminalOutput(settings.assistant_name, write=self._write)
-        output = VoiceOutput(
-            tts=tts,
-            speaker=speaker,
-            bus=request.bus,
-            terminal=terminal,
-            on_sentence=overlay.bridge.show_response,
-        )
-        request.stack.push_async_callback(output.aclose)
+        output, replies = self._outputs(request, speaker, tts, overlay)
         barge_in = BargeInController(
             engine=audio.engine,
             playback=speaker.native,
             state=request.state,
-            echo_guard_seconds=settings.barge_in_echo_guard_ms / MS_PER_SECOND,
+            echo_guard_seconds=request.settings.barge_in_echo_guard_ms / MS_PER_SECOND,
         )
         output.set_observer(barge_in)
-        system_voice = SystemVoice(output, barge_in.suspended)
+        # System phrases follow "speak replies" too: a silent typed session
+        # must not suddenly ask a confirmation question out loud.
+        system_voice = SystemVoice(replies, barge_in.suspended)
         timeline = TurnTimeline(request.bus)
         voice_input = self._input(
             request=request,
@@ -398,20 +503,95 @@ class VoiceFrontEndBuilder:
             timeline=timeline,
             system_voice=system_voice,
         )
+        inputs = _Inputs(
+            voice=voice_input,
+            combined=CombinedInput(voice_input, silence=speaker.stop, echo=self._write),
+            barge_in=barge_in,
+        )
+        request.stack.push_async_callback(inputs.combined.aclose)
+        parts = _HudParts(audio=audio, tts=tts, replies=replies, inputs=inputs)
+        return self._front_end(request, overlay, parts, system_voice, timeline)
+
+    def _outputs(
+        self, request: FrontEndRequest, speaker: Speaker, tts: TTS, overlay: _OverlayParts
+    ) -> tuple[VoiceOutput, SwitchableOutput]:
+        """The speaking output and the switch in front of it ("speak replies")."""
+        settings = request.settings
+        terminal = TerminalOutput(settings.assistant_name, write=self._write)
+        output = VoiceOutput(
+            tts=tts,
+            speaker=speaker,
+            bus=request.bus,
+            terminal=terminal,
+            on_sentence=overlay.bridge.show_response,
+        )
+        request.stack.push_async_callback(output.aclose)
+        silent = TextReplies(terminal, overlay.bridge.show_response)
+        return output, SwitchableOutput(output, silent, speak=settings.speak_replies)
+
+    def _front_end(
+        self,
+        request: FrontEndRequest,
+        overlay: _OverlayParts,
+        parts: _HudParts,
+        system_voice: SystemVoice,
+        timeline: TurnTimeline,
+    ) -> FrontEnd:
+        inputs = parts.inputs
+        microphone = VoiceMicrophone(
+            parts.audio.engine, inputs.voice, on_change=overlay.overlay.set_muted
+        )
+        hud = self._hud(request, overlay, parts, microphone)
 
         def attach(orchestrator: Orchestrator) -> None:
-            barge_in.attach(turns=orchestrator, capture=voice_input)
+            inputs.barge_in.attach(turns=orchestrator, capture=inputs.voice)
+            inputs.combined.attach(orchestrator)
 
+        answers = CombinedAnswers(inputs.voice, inputs.combined)
         return FrontEnd(
-            source=voice_input,
-            sink=output,
-            ask=VoiceConfirmation(listener=voice_input, speak=system_voice),
+            source=inputs.combined,
+            sink=parts.replies,
+            ask=VoiceConfirmation(listener=answers, speak=system_voice),
             llm=FirstTokenProbe(request.llm, timeline),
-            greeting=self._greeting(settings, audio),
+            greeting=self._greeting(request.settings, parts.audio),
             attach=attach,
             toggle_overlay=overlay.toggle,
-            microphone=VoiceMicrophone(audio.engine, voice_input),
+            microphone=microphone,
+            bind_controls=hud.bind_controls,
         )
+
+    def _hud(
+        self,
+        request: FrontEndRequest,
+        overlay: _OverlayParts,
+        parts: _HudParts,
+        microphone: VoiceMicrophone,
+    ) -> HudActions:
+        """The settings page and the HUD's actions, connected to the bridge."""
+        settings = request.settings
+        store = UserSettingsStore(user_settings_path(settings.data_dir))
+        http = httpx.AsyncClient()
+        request.stack.push_async_callback(http.aclose)
+        controller = SettingsController(
+            settings=settings,
+            store=store,
+            view=overlay.overlay,
+            appliers=live_appliers(overlay.overlay, settings, parts),
+            models=OllamaModels(http, settings.ollama_base_url),
+            autostart=self._factories.autostart(settings),
+        )
+        controller.push()
+        actions = HudActions(
+            overlay=overlay.overlay,
+            typed=parts.inputs.combined,
+            settings=controller,
+            store=store,
+            microphone=microphone,
+            open_log=self._hooks.open_log,
+            restart=self._hooks.restart,
+        )
+        overlay.bridge.attach_handlers(actions)
+        return actions
 
     def _input(
         self,

@@ -33,6 +33,7 @@ target_include_directories(jarvis_imgui SYSTEM PUBLIC
 # time instead of silently changing behaviour.
 target_compile_definitions(jarvis_imgui PUBLIC
     IMGUI_DISABLE_OBSOLETE_FUNCTIONS
+    IMGUI_USE_WCHAR32
     IMGUI_DISABLE_DEMO_WINDOWS)
 # The DX11 backend compiles its shaders at runtime through d3dcompiler.
 target_link_libraries(jarvis_imgui PUBLIC d3d11 dxgi d3dcompiler)
@@ -74,18 +75,30 @@ add_library(jarvis_overlay_ui STATIC
     src/effects.cpp
     src/hud.cpp
     src/hud_boot.cpp
+    src/hud_data.cpp
     src/hud_draw.cpp
+    src/hud_expanded.cpp
+    src/hud_expanded_ui.cpp
+    src/hud_icons.cpp
+    src/hud_interact.cpp
+    src/hud_layout.cpp
     src/hud_panel.cpp
     src/hud_scene.cpp
+    src/hud_settings_ui.cpp
     src/layout.cpp
     src/model.cpp
     src/particles.cpp
+    src/placement.cpp
     src/postfx.cpp
     src/scene.cpp
     src/shaders.cpp
     src/surface.cpp
     src/system_info.cpp
-    src/window.cpp)
+    src/text_entry.cpp
+    src/ui_events.cpp
+    src/window.cpp
+    src/window_input.cpp
+    src/window_place.cpp)
 add_library(jarvis::overlay ALIAS jarvis_overlay_ui)
 
 target_include_directories(jarvis_overlay_ui
@@ -98,7 +111,7 @@ target_include_directories(jarvis_overlay_ui
 # the boot readout's microphone name.
 target_link_libraries(jarvis_overlay_ui
     PUBLIC jarvis::common
-    PRIVATE jarvis_imgui dcomp d3dcompiler ole32 propsys)
+    PRIVATE jarvis_imgui dcomp d3dcompiler ole32 propsys shcore)
 # Keep <windows.h> from defining min/max macros and from dragging in the
 # legacy APIs; this only affects our translation units, not ImGui's.
 target_compile_definitions(jarvis_overlay_ui PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

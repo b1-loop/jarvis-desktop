@@ -3,16 +3,21 @@
 #include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/animator.hpp"
 #include "jarvis/overlay/errors.hpp"
+#include "jarvis/overlay/hud_data.hpp"
+#include "jarvis/overlay/hud_layout.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/ui_events.hpp"
 
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
 #include "hud.hpp"
+#include "hud_interact.hpp"
 #include "postfx.hpp"
 #include "surface.hpp"
+#include "window_impl.hpp"
 #include <d3d11.h>
 #include <dxgi.h>
 #include <windows.h>
@@ -20,9 +25,7 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <chrono>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -35,15 +38,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <type_traits>
 #include <utility>
 #include <vector>
-
-// The backend keeps this declaration behind '#if 0' in its header so the
-// header stays free of <windows.h>; applications declare it themselves.
-// NOLINTNEXTLINE(readability-identifier-naming) - symbol name is Dear ImGui's
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam,
-                                                             LPARAM lParam);
 
 namespace jarvis::overlay {
 
@@ -52,70 +48,24 @@ namespace {
 using Microsoft::WRL::ComPtr;
 using Clock = OverlayModel::Clock;
 
-constexpr float kBaseDpi = 96.0F;
 constexpr std::wstring_view kBodyFont = L"\\Fonts\\segoeui.ttf";
 constexpr std::wstring_view kDisplayFont = L"\\Fonts\\bahnschrift.ttf";
 constexpr std::wstring_view kClassNamePrefix = L"JarvisOverlay.";
-constexpr std::uint64_t kWordMask = 0xFFFF;
 constexpr int kMaxOpacity = 255;
-constexpr unsigned kWordBits = 16;
-/// Side of the square boot canvas, 96-DPI pixels.
-constexpr int kBootCanvas = 520;
-/// Transparent margin around the panel so glows, the wake ripple and the
-/// particle field are not clipped; only on the transparent surface, where
-/// it is invisible (and click-through like the rest of the window).
-constexpr int kBleed = 44;
 /// Length of the whip-pan streak at the fastest point of the hand-off,
 /// 96-DPI pixels.
 constexpr float kWhipLength = 70.0F;
 constexpr std::size_t kAdapterNameChars = 30;
 /// Light reaches this share of the canvas side beyond the boot canvas.
 constexpr float kRegionMargin = 0.2F;
-/// Panel padding, 96-DPI pixels.
-constexpr float kPanelPadding = 14.0F;
 /// How long after the last mutation the renderer keeps the active frame rate.
 constexpr std::chrono::seconds kActiveAfterChange{1};
 constexpr std::array<D3D_FEATURE_LEVEL, 2> kFeatureLevels{D3D_FEATURE_LEVEL_11_0,
                                                           D3D_FEATURE_LEVEL_10_0};
 /// Waitable timers count in 100 ns units; negative means relative.
 constexpr long long kTimerTicksPerMicrosecond = 10;
-
-UINT lowWord(LPARAM value) noexcept {
-    return static_cast<UINT>(static_cast<std::uint64_t>(value) & kWordMask);
-}
-
-UINT highWord(LPARAM value) noexcept {
-    return static_cast<UINT>((static_cast<std::uint64_t>(value) >> kWordBits) & kWordMask);
-}
-
-std::string lastErrorText() {
-    return "Win32 error " + std::to_string(GetLastError());
-}
-
-std::wstring toWide(std::string_view utf8) {
-    if (utf8.empty()) {
-        return {};
-    }
-    const std::string owned{utf8};  // the Win32 call wants a sized, contiguous buffer
-    const int size = static_cast<int>(owned.size());
-    const int needed = MultiByteToWideChar(CP_UTF8, 0, owned.c_str(), size, nullptr, 0);
-    std::wstring wide(static_cast<std::size_t>(std::max(needed, 0)), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, owned.c_str(), size, wide.data(), needed);
-    return wide;
-}
-
-std::string toUtf8(std::wstring_view wide) {
-    if (wide.empty()) {
-        return {};
-    }
-    const std::wstring owned{wide};
-    const int size = static_cast<int>(owned.size());
-    const int needed =
-        WideCharToMultiByte(CP_UTF8, 0, owned.c_str(), size, nullptr, 0, nullptr, nullptr);
-    std::string utf8(static_cast<std::size_t>(std::max(needed, 0)), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, owned.c_str(), size, utf8.data(), needed, nullptr, nullptr);
-    return utf8;
-}
+/// Longest frame step the interaction fades integrate (after a hidden spell).
+constexpr float kMaxInteractionStep = 0.1F;
 
 /// A font under %WINDIR% as UTF-8 for ImGui's loader; empty if it is missing.
 std::string systemFontPath(std::wstring_view relative) {
@@ -156,16 +106,6 @@ double millisecondsBetween(Clock::time_point from, Clock::time_point to) noexcep
     return std::chrono::duration<double, std::milli>(to - from).count();
 }
 
-/// Closes a Win32 HANDLE on destruction.
-struct HandleCloser {
-    void operator()(HANDLE handle) const noexcept {
-        if (handle != nullptr) {
-            CloseHandle(handle);
-        }
-    }
-};
-using UniqueHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, HandleCloser>;
-
 /// High-resolution waitable timer (Windows 10 1803+), a normal one before
 /// that; both let the loop sleep precisely without raising the global
 /// timer resolution or spinning.
@@ -181,30 +121,6 @@ UniqueHandle createFrameTimer() {
     }
     return UniqueHandle{timer};
 }
-
-/// Primary monitor's work area (the screen minus the taskbar).
-PixelRect primaryWorkArea() noexcept {
-    MONITORINFO monitor{};
-    monitor.cbSize = sizeof(monitor);
-    GetMonitorInfoW(MonitorFromPoint(POINT{.x = 0, .y = 0}, MONITOR_DEFAULTTOPRIMARY), &monitor);
-    return PixelRect{.left = monitor.rcWork.left,
-                     .top = monitor.rcWork.top,
-                     .right = monitor.rcWork.right,
-                     .bottom = monitor.rcWork.bottom};
-}
-
-/// Where the window goes and what is drawn where, for one frame.
-struct FrameLayout {
-    Placement window;
-    /// Everything below is in client coordinates of @c window.
-    HudGeometry geometry;
-    RectF panel;
-    RectF panelText;
-    RectF canvas;
-    /// Direction of the hand-off (boot centre to panel centre), unit length.
-    float handoffX{0.0F};
-    float handoffY{0.0F};
-};
 
 /// The wall clock for the idle readout, formatted once per frame.
 hud::HudClock localClock() {
@@ -230,95 +146,34 @@ std::string adapterName(ID3D11Device& device) {
 
 }  // namespace
 
-/// Everything that needs Win32, Direct3D or ImGui. A plain pimpl struct:
-/// the members up to statsMutex are shared with the facade; everything
-/// after uiThread is touched only by the UI thread.
-struct OverlayWindow::Impl {
-    explicit Impl(OverlayConfig initial);
-    ~Impl();
+std::string lastErrorText() {
+    return "Win32 error " + std::to_string(GetLastError());
+}
 
-    Impl(const Impl&) = delete;
-    Impl& operator=(const Impl&) = delete;
-    Impl(Impl&&) = delete;
-    Impl& operator=(Impl&&) = delete;
+std::wstring toWide(std::string_view utf8) {
+    if (utf8.empty()) {
+        return {};
+    }
+    const std::string owned{utf8};  // the Win32 call wants a sized, contiguous buffer
+    const int size = static_cast<int>(owned.size());
+    const int needed = MultiByteToWideChar(CP_UTF8, 0, owned.c_str(), size, nullptr, 0);
+    std::wstring wide(static_cast<std::size_t>(std::max(needed, 0)), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, owned.c_str(), size, wide.data(), needed);
+    return wide;
+}
 
-    void close();
-
-    OverlayConfig config;
-    /// The panel's size preset with any explicit width/height applied.
-    PanelMetrics metrics;
-    OverlayModel model;
-    std::atomic<bool> running{false};
-    std::atomic<HWND> hwnd{nullptr};
-    std::atomic<bool> transparent{false};
-    std::string fallbackReason;  // written before `ready`, read-only afterwards
-    mutable std::mutex statsMutex;
-    anim::FrameStatsAccumulator stats;  // guarded by statsMutex
-
-    std::promise<void> ready;
-    std::jthread uiThread;
-    std::wstring className;
-    HINSTANCE instance{GetModuleHandleW(nullptr)};
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    std::unique_ptr<RenderSurface> surface;
-    anim::OverlayAnimator animator;
-    std::unique_ptr<PostProcessor> post;
-    std::unique_ptr<GpuTimer> gpuTimer;
-    std::string bloomReason;  // guarded by statsMutex once the thread runs
-    std::atomic<bool> bloomActive{false};
-    std::vector<ReadoutLine> systemReadout;
-    std::unique_ptr<hud::HudRenderer> hud;
-    hud::HudFonts fonts;
-    UniqueHandle frameTimer;
-    PixelRect workArea;
-    Placement placement;
-    float dpiScale{1.0F};
-    bool win32BackendReady{false};
-    bool dx11BackendReady{false};
-    bool shown{false};
-    bool forcedClickThrough{false};
-    bool quit{false};
-    std::uint64_t lastRevision{0};
-    Clock::time_point lastChange{Clock::now()};
-    Clock::time_point nextFrame{Clock::now()};
-    std::optional<Clock::time_point> lastFrameStart;
-
-private:
-    void threadMain();
-    void registerClass();
-    void createWindow(DWORD exStyle);
-    void destroyWindow();
-    void createDevice();
-    void createSurface();
-    void createPostProcessing();
-    void describeSystem();
-    void initImGui();
-    void messageLoop();
-    void pumpMessages();
-    void waitUntil(Clock::time_point deadline) const;
-    void updateVisibility(bool visible);
-    void renderFrame(const OverlaySnapshot& snapshot, Clock::time_point now);
-    void drawFrame(const OverlaySnapshot& snapshot, const anim::AnimationFrame& frame,
-                   const FrameLayout& layout);
-    void submitFrame();
-    void placeBoot(FrameLayout& layout, const anim::BootFrame& boot,
-                   const HudGeometry& panelHud) const;
-    [[nodiscard]] FrameLayout layoutFor(const anim::AnimationFrame& frame) const;
-    void applyPlacement(const Placement& target);
-    void setClickThrough(bool on) const;
-    void syncBootClickThrough(bool booting);
-    void recordFrame(Clock::time_point start, Clock::time_point end);
-    void collectGpuTime();
-    void retirePostProcessing();
-    [[nodiscard]] PostSettings postSettings(const anim::AnimationFrame& frame,
-                                            const FrameLayout& layout) const noexcept;
-    [[nodiscard]] std::chrono::microseconds framePeriodFor(const OverlaySnapshot& snapshot);
-    void shutdown();
-
-    static LRESULT CALLBACK wndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-    LRESULT handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-};
+std::string toUtf8(std::wstring_view wide) {
+    if (wide.empty()) {
+        return {};
+    }
+    const std::wstring owned{wide};
+    const int size = static_cast<int>(owned.size());
+    const int needed =
+        WideCharToMultiByte(CP_UTF8, 0, owned.c_str(), size, nullptr, 0, nullptr, nullptr);
+    std::string utf8(static_cast<std::size_t>(std::max(needed, 0)), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, owned.c_str(), size, utf8.data(), needed, nullptr, nullptr);
+    return utf8;
+}
 
 // --- lifecycle (caller thread) -----------------------------------------------
 
@@ -326,7 +181,14 @@ OverlayWindow::Impl::Impl(OverlayConfig initial)
     : config(std::move(initial)),
       metrics(withOverride(panelMetrics(config.size), config.width, config.height)),
       model(config.limits),
-      animator(Clock::now(), anim::AnimatorConfig{.intensity = config.intensity}) {
+      hudData(
+          config.hudLimits,
+          Appearance{.theme = config.theme, .intensity = config.intensity, .size = config.size}),
+      animator(Clock::now(), anim::AnimatorConfig{.intensity = config.intensity}),
+      appearance(
+          Appearance{.theme = config.theme, .intensity = config.intensity, .size = config.size}),
+      cornerSaved(config.position),
+      expandedSaved(config.expandedBounds) {
     std::future<void> started = ready.get_future();
     uiThread = std::jthread([this] { threadMain(); });
     started.get();  // rethrows OverlayError from the UI thread
@@ -363,7 +225,8 @@ void OverlayWindow::Impl::threadMain() {
         hud = std::make_unique<hud::HudRenderer>(*device.Get(), themeFor(config.theme), animator,
                                                  post.get());
         frameTimer = createFrameTimer();
-        workArea = primaryWorkArea();
+        refreshMonitors();
+        resolvePlacements();
         applyPlacement(layoutFor(animator.frame()).window);
     } catch (...) {
         shutdown();
@@ -383,8 +246,11 @@ void OverlayWindow::Impl::registerClass() {
     className = std::wstring{kClassNamePrefix} + std::to_wstring(identity);
     WNDCLASSEXW windowClass{};
     windowClass.cbSize = sizeof(windowClass);
+    // Double-clicks on the ring reset the HUD to its default corner.
+    windowClass.style = CS_DBLCLKS;
     windowClass.lpfnWndProc = &Impl::wndProc;
     windowClass.hInstance = instance;
+    windowClass.hCursor = LoadCursorA(nullptr, IDC_ARROW);
     windowClass.lpszClassName = className.c_str();
     if (RegisterClassExW(&windowClass) == 0) {
         className.clear();
@@ -430,10 +296,13 @@ void OverlayWindow::Impl::createDevice() {
 }
 
 void OverlayWindow::Impl::createSurface() {
+    // An interactive HUD starts click-through too; the cursor poll opens
+    // the window to the mouse only over the HUD's own shapes.
+    const bool startThrough = config.clickThrough || config.interactive;
     if (config.transparent) {
         try {
             createWindow(compositionWindowStyle());
-            setClickThrough(config.clickThrough);
+            setClickThrough(startThrough);
             surface = createCompositionSurface(hwnd.load(), *device.Get());
             transparent.store(true);
             return;
@@ -448,7 +317,7 @@ void OverlayWindow::Impl::createSurface() {
         fallbackReason = "per-pixel transparency disabled in the configuration";
     }
     createWindow(layeredWindowStyle());
-    setClickThrough(config.clickThrough);
+    setClickThrough(startThrough);
     surface = createLayeredSurface(hwnd.load(), *device.Get(), config.opacity);
 }
 
@@ -487,11 +356,17 @@ void OverlayWindow::Impl::initImGui() {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.LogFilename = nullptr;
-    // The window never receives input (WS_EX_TRANSPARENT / NOACTIVATE), so
-    // ImGui must not try to shape the cursor or track the mouse.
-    // NOLINTNEXTLINE(bugprone-signed-bitwise) - ImGui flags are plain ints by design
-    io.ConfigFlags |= ImGuiConfigFlags_NoMouse | ImGuiConfigFlags_NoMouseCursorChange;
+    // The window procedure shapes the cursor itself (move, resize, text).
+    // NOLINTBEGIN(bugprone-signed-bitwise,hicpp-signed-bitwise) - ImGui flags are plain ints
+    io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+    if (config.interactive) {
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    } else {
+        io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+    }
+    // NOLINTEND(bugprone-signed-bitwise,hicpp-signed-bitwise)
     fonts = loadFonts();
+    hud::applyHudStyle(themeFor(config.theme), dpiScale);
 
     win32BackendReady = ImGui_ImplWin32_Init(hwnd.load());
     if (!win32BackendReady) {
@@ -544,8 +419,8 @@ void OverlayWindow::Impl::waitUntil(Clock::time_point deadline) const {
     due.QuadPart = -(wait.count() * kTimerTicksPerMicrosecond);
     HANDLE timer = frameTimer.get();
     SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-    // Wakes for the timer or for any message (close, DPI change), whichever
-    // comes first; no polling, no busy loop.
+    // Wakes for the timer or for any message (close, DPI change, input),
+    // whichever comes first; no polling, no busy loop.
     MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
 }
 
@@ -553,22 +428,83 @@ void OverlayWindow::Impl::updateVisibility(bool visible) {
     if (visible == shown) {
         return;
     }
+    if (!visible) {
+        releaseFocus();
+    }
     ShowWindow(hwnd.load(), visible ? SW_SHOWNOACTIVATE : SW_HIDE);
     shown = visible;
 }
 
 void OverlayWindow::Impl::renderFrame(const OverlaySnapshot& snapshot, Clock::time_point now) {
+    const HudData data = hudData.snapshot();
+    applyHudData(data);
+    applyDemo();
     const anim::AnimationFrame& frame = animator.advance(snapshot, now);
-    syncBootClickThrough(frame.boot.has_value());
+    const bool booting = frame.boot.has_value();
+    syncBootClickThrough(booting);
+    advanceInteraction(now);
+    if (placementDirty) {
+        resolvePlacements();
+    }
     const FrameLayout layout = layoutFor(frame);
     applyPlacement(layout.window);
-    drawFrame(snapshot, frame, layout);
+    updateHitMap(layout, booting);
+    pollCursor();
+    drawFrame(snapshot, frame, layout, data);
     recordFrame(now, Clock::now());
     collectGpuTime();
 }
 
+void OverlayWindow::Impl::applyHudData(const HudData& data) {
+    if (data.appearance == appearance) {
+        return;
+    }
+    if (data.appearance.theme != appearance.theme) {
+        hud->setTheme(themeFor(data.appearance.theme));
+        hud::applyHudStyle(hud->theme(), dpiScale);
+    }
+    animator.setIntensity(data.appearance.intensity);
+    if (data.appearance.size != appearance.size) {
+        metrics = withOverride(panelMetrics(data.appearance.size), config.width, config.height);
+        placementDirty = true;
+    }
+    appearance = data.appearance;
+}
+
+void OverlayWindow::Impl::applyDemo() {
+    const std::uint64_t revision = demoRevision.load();
+    if (revision == seenDemo) {
+        return;
+    }
+    seenDemo = revision;
+    const std::scoped_lock lock(demoMutex);
+    demoHover = demo.hover;
+    if (demo.input.has_value()) {
+        interaction.showDemoInput(*demo.input);
+    }
+}
+
+void OverlayWindow::Impl::advanceInteraction(Clock::time_point now) {
+    const float dt = lastAdvance.has_value()
+                         ? std::min(std::chrono::duration<float>(now - *lastAdvance).count(),
+                                    kMaxInteractionStep)
+                         : 0.0F;
+    lastAdvance = now;
+    const bool wanted = demoHover || hoverKind != HitKind::None || interaction.inputOpen() ||
+                        interaction.confirming() || drag.mode != DragMode::None || keyboardFocus;
+    if (wanted) {
+        hoverSeen = now;
+    }
+    const bool linger = std::chrono::duration<float>(now - hoverSeen).count() < kHoverLingerSeconds;
+    hover = approach(hover, linger ? 1.0F : 0.0F, dt, kHoverFadeSeconds);
+    const bool expandTarget = interaction.expanded();
+    expandLinear = approach(expandLinear, expandTarget ? 1.0F : 0.0F, dt, kMorphSeconds);
+    expandedNow.store(expandTarget);
+}
+
 void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
-                                    const anim::AnimationFrame& frame, const FrameLayout& layout) {
+                                    const anim::AnimationFrame& frame, const FrameLayout& layout,
+                                    const HudData& data) {
     ImGui_ImplDX11_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -576,6 +512,7 @@ void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
                               ? static_cast<float>(std::clamp(config.opacity, 0, kMaxOpacity)) /
                                     static_cast<float>(kMaxOpacity)
                               : 1.0F;
+    const bool collapsed = layout.expand <= 0.0F;
     const hud::HudScene scene{.snapshot = snapshot,
                               .frame = frame,
                               .geometry = layout.geometry,
@@ -586,13 +523,41 @@ void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
                               .opacity = opacity,
                               .textScale = metrics.textScale,
                               .systemReadout = systemReadout,
-                              .clock = localClock()};
+                              .clock = localClock(),
+                              .expand = layout.expand,
+                              .panelFrame = layout.frame,
+                              .hover = config.interactive ? hover : 0.0F,
+                              .inputOpen = collapsed && interaction.inputOpen(),
+                              .confirming = collapsed && interaction.confirming()};
     if (post != nullptr) {
         post->setFrame(postSettings(frame, layout));
     }
     hud->draw(*ImGui::GetBackgroundDrawList(), scene, fonts);
+    if (config.interactive && !frame.boot.has_value()) {
+        runInteraction(scene, layout, data);
+    }
     ImGui::Render();
     submitFrame();
+}
+
+void OverlayWindow::Impl::runInteraction(const hud::HudScene& scene, const FrameLayout& layout,
+                                         const HudData& data) {
+    const hud::InteractFrame in{.data = data,
+                                .collapsed = layout.collapsed,
+                                .expanded = layout.expanded,
+                                .expand = layout.expand,
+                                .hover = hover,
+                                .scale = dpiScale,
+                                .textScale = metrics.textScale,
+                                .accent = hud->accent(scene),
+                                .opacity = scene.opacity};
+    const hud::InteractResult result = interaction.frame(in, fonts, hud->theme());
+    if (result.takeFocus) {
+        takeFocus();
+    }
+    if (result.releaseFocus) {
+        releaseFocus();
+    }
 }
 
 void OverlayWindow::Impl::submitFrame() {
@@ -660,96 +625,6 @@ void OverlayWindow::Impl::collectGpuTime() {
     }
 }
 
-FrameLayout OverlayWindow::Impl::layoutFor(const anim::AnimationFrame& frame) const {
-    const Placement panelPx =
-        anchorToCorner(config.corner, workArea, scaled(metrics.width, dpiScale),
-                       scaled(metrics.height, dpiScale), scaled(config.margin, dpiScale));
-    const RectF panel = toRectF(panelPx);
-    const HudGeometry panelHud = panelGeometry(panel, kPanelPadding * metrics.textScale * dpiScale);
-    FrameLayout layout{.window = panelPx,
-                       .geometry = panelHud,
-                       .panel = panel,
-                       .panelText = panelHud.text,
-                       .canvas = panel};
-    if (frame.boot.has_value()) {
-        placeBoot(layout, *frame.boot, panelHud);
-    } else if (transparent.load()) {
-        layout.window = inflated(panelPx, scaled(kBleed, dpiScale));
-    }
-    const auto dx = static_cast<float>(-layout.window.x);
-    const auto dy = static_cast<float>(-layout.window.y);
-    layout.geometry = translated(layout.geometry, dx, dy);
-    layout.panel = translated(layout.panel, dx, dy);
-    layout.panelText = translated(layout.panelText, dx, dy);
-    layout.canvas = translated(layout.canvas, dx, dy);
-    return layout;
-}
-
-void OverlayWindow::Impl::placeBoot(FrameLayout& layout, const anim::BootFrame& boot,
-                                    const HudGeometry& panelHud) const {
-    const int side = scaled(kBootCanvas, dpiScale);
-    const RectF canvas = toRectF(centredIn(workArea, side, side));
-    const HudGeometry bootHud = bootGeometry(canvas);
-    layout.canvas = lerpRect(canvas, layout.panel, boot.handoff);
-    layout.geometry = lerpGeometry(bootHud, panelHud, boot.handoff);
-    const float dx = panelHud.centreX - bootHud.centreX;
-    const float dy = panelHud.centreY - bootHud.centreY;
-    const float distance = std::hypot(dx, dy);
-    if (distance > 0.0F) {
-        layout.handoffX = dx / distance;
-        layout.handoffY = dy / distance;
-    }
-    // Transparent: one work-area-sized window, so the move is pure drawing.
-    // Fallback: the opaque window itself follows the canvas.
-    layout.window = transparent.load() ? Placement{.x = workArea.left,
-                                                   .y = workArea.top,
-                                                   .width = workArea.right - workArea.left,
-                                                   .height = workArea.bottom - workArea.top}
-                                       : enclosingPlacement(layout.canvas);
-}
-
-void OverlayWindow::Impl::applyPlacement(const Placement& target) {
-    if (target == placement) {
-        return;
-    }
-    placement = target;
-    // WM_SIZE arrives synchronously and resizes the swap chain before the
-    // frame is drawn, so the new size is used immediately.
-    SetWindowPos(hwnd.load(), HWND_TOPMOST, target.x, target.y, target.width, target.height,
-                 SWP_NOACTIVATE);
-}
-
-void OverlayWindow::Impl::setClickThrough(bool on) const {
-    auto* const window = hwnd.load();
-    const LONG_PTR current = GetWindowLongPtrW(window, GWL_EXSTYLE);
-    // NOLINTBEGIN(bugprone-signed-bitwise,hicpp-signed-bitwise) - Win32 style flags are signed
-    constexpr LONG_PTR kPassThrough = WS_EX_TRANSPARENT | WS_EX_LAYERED;
-    // The fallback is always layered (that is its transparency); the
-    // composition window only needs WS_EX_LAYERED for click-through.
-    const bool layeredSurface = (current & WS_EX_NOREDIRECTIONBITMAP) == 0;
-    LONG_PTR style = on ? (current | kPassThrough) : (current & ~WS_EX_TRANSPARENT);
-    if (!on && !layeredSurface) {
-        style &= ~WS_EX_LAYERED;
-    }
-    // NOLINTEND(bugprone-signed-bitwise,hicpp-signed-bitwise)
-    SetWindowLongPtrW(window, GWL_EXSTYLE, style);
-    if (on && !layeredSurface) {
-        // A layered window stays invisible until its attributes are set;
-        // full alpha leaves the composition visual's per-pixel alpha alone.
-        SetLayeredWindowAttributes(window, 0, kMaxOpacity, LWA_ALPHA);
-    }
-}
-
-void OverlayWindow::Impl::syncBootClickThrough(bool booting) {
-    // The boot canvas sits in the middle of the screen; it must never eat a
-    // click there, even when the panel itself is configured to take them.
-    if (config.clickThrough || booting == forcedClickThrough) {
-        return;
-    }
-    forcedClickThrough = booting;
-    setClickThrough(booting);
-}
-
 void OverlayWindow::Impl::recordFrame(Clock::time_point start, Clock::time_point end) {
     const double interval =
         lastFrameStart.has_value() ? millisecondsBetween(*lastFrameStart, start) : 0.0;
@@ -760,12 +635,22 @@ void OverlayWindow::Impl::recordFrame(Clock::time_point start, Clock::time_point
 
 std::chrono::microseconds OverlayWindow::Impl::framePeriodFor(const OverlaySnapshot& snapshot) {
     const auto now = Clock::now();
-    if (snapshot.revision != lastRevision) {
+    const std::uint64_t hudRevision = hudData.snapshot().revision;
+    if (snapshot.revision != lastRevision || hudRevision != lastHudRevision) {
         lastRevision = snapshot.revision;
+        lastHudRevision = hudRevision;
         lastChange = now;
     }
-    const bool busy =
-        animator.pace(snapshot) == anim::Pace::Active || (now - lastChange) < kActiveAfterChange;
+    // Hover and morph fades, a drag, typing or the cursor over the HUD all
+    // need the active rate; the idle corner HUD with the cursor elsewhere
+    // stays at the idle rate (ADR-0023 budget).
+    const bool fading = (hover > 0.0F && hover < 1.0F) ||
+                        (expandLinear > 0.0F && expandLinear < 1.0F) ||
+                        expandLinear != (interaction.expanded() ? 1.0F : 0.0F);
+    const bool interacting =
+        fading || drag.mode != DragMode::None || keyboardFocus || hoverKind != HitKind::None;
+    const bool busy = animator.pace(snapshot) == anim::Pace::Active ||
+                      (now - lastChange) < kActiveAfterChange || interacting;
     return framePeriod(busy && snapshot.visible ? config.activeFps : config.idleFps);
 }
 
@@ -792,66 +677,6 @@ void OverlayWindow::Impl::shutdown() {
     destroyWindow();
     if (!className.empty()) {
         UnregisterClassW(className.c_str(), instance);
-    }
-}
-
-// --- window procedure --------------------------------------------------------
-
-LRESULT CALLBACK OverlayWindow::Impl::wndProc(HWND window, UINT message, WPARAM wParam,
-                                              LPARAM lParam) {
-    if (message == WM_NCCREATE) {
-        // Win32 passes the CREATESTRUCT and stores user data as integers.
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - GWLP_USERDATA is a LONG_PTR
-        const auto userData = reinterpret_cast<LONG_PTR>(create->lpCreateParams);
-        SetWindowLongPtrW(window, GWLP_USERDATA, userData);
-    }
-    const LONG_PTR userData = GetWindowLongPtrW(window, GWLP_USERDATA);
-    // Inverse of the store above.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
-    auto* self = reinterpret_cast<Impl*>(userData);
-    if (self == nullptr) {
-        return DefWindowProcW(window, message, wParam, lParam);
-    }
-    return self->handleMessage(window, message, wParam, lParam);
-}
-
-LRESULT OverlayWindow::Impl::handleMessage(HWND window, UINT message, WPARAM wParam,
-                                           LPARAM lParam) {
-    if (ImGui::GetCurrentContext() != nullptr &&
-        ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam) != 0) {
-        return 1;
-    }
-    switch (message) {
-        case WM_SIZE:
-            if (wParam != SIZE_MINIMIZED && surface != nullptr) {
-                surface->resize(lowWord(lParam), highWord(lParam));
-            }
-            return 0;
-        case WM_DPICHANGED:
-            dpiScale = static_cast<float>(highWord(static_cast<LPARAM>(wParam))) / kBaseDpi;
-            return 0;  // the next frame's layout uses the new scale
-        case WM_DISPLAYCHANGE:
-        case WM_SETTINGCHANGE:
-            workArea = primaryWorkArea();  // the work area or resolution changed
-            return 0;
-        case WM_MOUSEACTIVATE:
-            return MA_NOACTIVATE;
-        case WM_DESTROY:
-            // Only the live window ends the loop; the composition attempt
-            // that failed and was destroyed during creation must not.
-            if (window == hwnd.load()) {
-                PostQuitMessage(0);
-            }
-            return 0;
-        case WM_NCDESTROY:
-            if (window == hwnd.load()) {
-                hwnd.store(nullptr);
-            }
-            return 0;
-        default:
-            return DefWindowProcW(window, message, wParam, lParam);
     }
 }
 
@@ -937,6 +762,59 @@ void OverlayWindow::resetFrameStats() {
     impl_->stats.reset();
 }
 
+std::vector<UiEvent> OverlayWindow::pollUiEvents() {
+    return impl_->events.drain();
+}
+
+std::uint64_t OverlayWindow::droppedUiEvents() const {
+    return impl_->events.dropped();
+}
+
+void OverlayWindow::injectUiEvent(UiEvent event) {
+    impl_->events.push(std::move(event));
+}
+
+void OverlayWindow::setMuted(bool muted) {
+    impl_->hudData.setMuted(muted);
+}
+
+void OverlayWindow::addHistory(HistoryEntry entry) {
+    impl_->hudData.addHistory(std::move(entry));
+}
+
+void OverlayWindow::clearHistory() {
+    impl_->hudData.clearHistory();
+}
+
+void OverlayWindow::setSettings(SettingsPage page) {
+    impl_->hudData.setSettings(std::move(page));
+}
+
+void OverlayWindow::setAppearance(Appearance appearance) {
+    impl_->hudData.setAppearance(appearance);
+}
+
+void OverlayWindow::setExpanded(bool expanded) {
+    impl_->hudData.requestExpanded(expanded);
+    impl_->expandedNow.store(expanded);
+}
+
+bool OverlayWindow::expanded() const noexcept {
+    return impl_->expandedNow.load();
+}
+
+HudData OverlayWindow::hudData() const {
+    return impl_->hudData.snapshot();
+}
+
+void OverlayWindow::setDemo(DemoOverrides demo) {
+    {
+        const std::scoped_lock lock(impl_->demoMutex);
+        impl_->demo = std::move(demo);
+    }
+    impl_->demoRevision.fetch_add(1);
+}
+
 void OverlayWindow::close() {
     impl_->close();
 }
@@ -954,10 +832,6 @@ const OverlayConfig& OverlayWindow::config() const noexcept {
 // - Transparency is chosen once, at creation: WS_EX_NOREDIRECTIONBITMAP
 //   cannot be added or removed later, so a failed composition attempt
 //   destroys that window and creates the layered fallback from scratch.
-// - During boot the transparent window spans the work area and the handoff
-//   to the corner is pure drawing; the window is resized exactly twice. The
-//   opaque fallback instead moves its window with the canvas, which costs a
-//   swap-chain resize per frame for under half a second.
 // - Dear ImGui keeps one global context per process, so one OverlayWindow at
 //   a time is supported; the Python side only ever creates one.
 // - The bloom pipeline is optional at every step: it can be switched off,
@@ -970,3 +844,9 @@ const OverlayConfig& OverlayWindow::config() const noexcept {
 //   Present(0) never blocks, the flip-model swap chain is shown by DWM on
 //   the next vblank anyway, and a hidden or idle panel costs a few wakeups
 //   per second and nothing more.
+// - The interactive layer (ADR-0024) only adds work while it is used: the
+//   idle corner HUD with the cursor elsewhere costs one GetCursorPos and a
+//   hit test of a dozen shapes per frame, and stays at the idle rate.
+// - User actions leave the UI thread only as UiEvents in a queue that
+//   Python polls; settings, history and appearance arrive as data. The
+//   UI thread therefore never waits for, or calls into, Python.
