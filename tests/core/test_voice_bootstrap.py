@@ -271,3 +271,21 @@ async def test_run_voice_mode_falls_back_to_text_with_the_reason(
 
     assert "Voice mode is unavailable: jarvis_audio is not built" in printed[0]
     assert output.said == ["Goodbye."]
+
+
+def test_build_overlay_starts_the_boot_sequence(make_settings: MakeSettings) -> None:
+    overlay = voice_bootstrap.build_overlay(
+        make_settings(overlay_enabled=False, overlay_theme="amber")
+    )
+
+    assert isinstance(overlay._native, StubOverlay)
+    assert overlay._native.boot_started
+
+
+def test_build_overlay_honours_a_disabled_boot_animation(make_settings: MakeSettings) -> None:
+    overlay = voice_bootstrap.build_overlay(
+        make_settings(overlay_enabled=False, overlay_boot_animation=False)
+    )
+
+    assert isinstance(overlay._native, StubOverlay)
+    assert not overlay._native.boot_started

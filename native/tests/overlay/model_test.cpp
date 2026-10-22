@@ -177,3 +177,34 @@ TEST_CASE("a zero flash duration disables the flash", "[overlay][model]") {
 
     REQUIRE(model.snapshot(at(10)).wakeFlash == 0.0F);
 }
+
+TEST_CASE("the boot sequence starts once, however often it is requested", "[overlay][model]") {
+    OverlayModel model;
+    REQUIRE_FALSE(model.snapshot().bootStartedAt.has_value());
+
+    REQUIRE(model.playBoot(at(100)));
+    const auto revision = model.revision();
+    REQUIRE_FALSE(model.playBoot(at(900)));
+    REQUIRE(model.revision() == revision);
+    REQUIRE(model.snapshot().bootStartedAt == at(100));
+}
+
+TEST_CASE("a boot can be skipped once, and only after it started", "[overlay][model]") {
+    OverlayModel model;
+    REQUIRE_FALSE(model.skipBoot(at(50)));
+
+    model.playBoot(at(100));
+    REQUIRE(model.skipBoot(at(400)));
+    REQUIRE_FALSE(model.skipBoot(at(500)));
+    REQUIRE(model.snapshot().bootSkippedAt == at(400));
+}
+
+TEST_CASE("leaving Idle during the boot skips it", "[overlay][model]") {
+    OverlayModel model;
+    model.playBoot(at(0));
+    model.setState(AssistantState::Idle, at(100));  // no change, no skip
+    REQUIRE_FALSE(model.snapshot().bootSkippedAt.has_value());
+
+    model.setState(AssistantState::Listening, at(700));
+    REQUIRE(model.snapshot().bootSkippedAt == at(700));
+}

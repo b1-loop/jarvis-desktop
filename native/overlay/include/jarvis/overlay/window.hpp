@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
 
@@ -17,18 +18,25 @@ namespace jarvis::overlay {
 /// pixels at 96 DPI; the window scales them by the monitor's DPI itself.
 struct OverlayConfig {
     Corner corner = Corner::BottomRight;
-    int width = 380;
+    int width = 420;
     int height = 132;
     /// Distance from the two edges of the chosen corner.
     int margin = 24;
     /// Let clicks fall through to whatever is underneath (WS_EX_TRANSPARENT).
+    /// The boot sequence is always click-through, whatever this says.
     bool clickThrough = true;
-    /// Whole-window opacity, 0 (invisible) to 255 (opaque).
+    /// Overall opacity, 0 (invisible) to 255 (opaque): a global alpha on the
+    /// transparent surface, the whole-window alpha on the fallback.
     int opacity = 235;
-    /// Frame rate while something is happening (state not Idle, fresh data).
+    /// Frame rate while something animates (boot, cross-fade, not Idle).
     int activeFps = 60;
-    /// Frame rate once the panel has been static for a second.
-    int idleFps = 10;
+    /// Frame rate while the idle ring only breathes.
+    int idleFps = 15;
+    /// Prefer per-pixel transparency (DirectComposition); false forces the
+    /// whole-window-alpha fallback, which is also used when composition fails.
+    bool transparent = true;
+    /// Palette of the HUD.
+    ThemeName theme = ThemeName::Cyan;
     /// Window title; never shown (frameless) but visible to window tools.
     std::string title = "Jarvis";
     ModelLimits limits;
@@ -43,6 +51,10 @@ struct OverlayConfig {
 /// returns; the UI thread picks the change up on its next frame. No code
 /// here ever calls back into the caller, which is what keeps the Python
 /// binding free of GIL concerns.
+///
+/// Rendering goes to a DirectComposition visual with per-pixel alpha when
+/// available, otherwise to a layered window with whole-window alpha; which
+/// one was chosen is reported by transparent() and fallbackReason().
 ///
 /// Destruction posts WM_CLOSE, joins the thread and releases the Direct3D
 /// objects in reverse creation order on that thread.
@@ -61,7 +73,24 @@ public:
     void setTranscript(std::string_view utf8);
     void setResponse(std::string_view utf8);
     void setVisible(bool visible);
+    /// Pulse the ring outwards to acknowledge the wake word.
     void flashWakeWord();
+
+    /// Play the boot sequence (about 2.5 s) once. Non-blocking and
+    /// idempotent: later calls return false and change nothing.
+    bool playBoot();
+    /// Cut the boot sequence short; it still glides into the corner.
+    bool skipBoot();
+
+    /// True when the window has per-pixel transparency (DirectComposition).
+    [[nodiscard]] bool transparent() const noexcept;
+    /// Why the fallback was used; empty when transparent() is true.
+    [[nodiscard]] std::string fallbackReason() const;
+
+    /// Smoothed frame timings measured on the UI thread.
+    [[nodiscard]] anim::FrameStats frameStats() const;
+    /// Start measuring afresh, e.g. at the beginning of a demo phase.
+    void resetFrameStats();
 
     [[nodiscard]] bool visible() const;
     [[nodiscard]] AssistantState state() const;

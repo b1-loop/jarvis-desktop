@@ -10,6 +10,7 @@ from jarvis.ui.overlay import (
     OverlayCorner,
     OverlayError,
     OverlayState,
+    OverlayTheme,
     StubOverlay,
     create_native_overlay,
     create_overlay,
@@ -30,6 +31,7 @@ def overlay(native: FakeNativeOverlay) -> Overlay:
 
 def test_state_names_mirror_the_native_enum() -> None:
     assert [state.value for state in OverlayState] == ["IDLE", "LISTENING", "THINKING", "SPEAKING"]
+    assert [theme.value for theme in OverlayTheme] == ["cyan", "amber"]
     assert [corner.value for corner in OverlayCorner] == [
         "TOP_LEFT",
         "TOP_RIGHT",
@@ -63,7 +65,7 @@ def test_text_and_levels_are_forwarded_in_order(
         ("push_level", 0.4),
         ("set_transcript", "hello"),
         ("set_response", "hi there"),
-        ("flash_wake_word", None),
+        ("wake_pulse", None),
     ]
 
 
@@ -143,6 +145,76 @@ def test_stub_overlay_satisfies_the_protocol_and_records_values() -> None:
     assert not stub.running()
 
 
+def test_wake_pulse_and_its_bridge_alias_forward_the_same_call(
+    overlay: Overlay, native: FakeNativeOverlay
+) -> None:
+    overlay.wake_pulse()
+    overlay.flash_wake_word()
+
+    assert native.names() == ["wake_pulse", "wake_pulse"]
+
+
+def test_play_boot_is_idempotent_and_reports_who_started_it(
+    overlay: Overlay, native: FakeNativeOverlay
+) -> None:
+    assert overlay.play_boot()
+    assert not overlay.play_boot()
+
+    assert native.calls == [("play_boot", True), ("play_boot", False)]
+
+
+def test_play_boot_is_a_no_op_when_the_animation_is_disabled(native: FakeNativeOverlay) -> None:
+    overlay = Overlay(native, boot_animation=False)
+
+    assert not overlay.play_boot()
+    assert native.calls == []
+
+
+def test_boot_calls_after_close_do_nothing(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    overlay.close()
+
+    assert not overlay.play_boot()
+    assert not overlay.skip_boot()
+    assert native.names() == ["close"]
+
+
+def test_skip_boot_forwards(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    overlay.play_boot()
+
+    assert overlay.skip_boot()
+    assert native.names() == ["play_boot", "skip_boot"]
+
+
+def test_transparent_reflects_the_native_surface(
+    overlay: Overlay, native: FakeNativeOverlay
+) -> None:
+    assert overlay.transparent
+    native._transparent = False
+    assert not overlay.transparent
+
+
+def test_stub_boot_mirrors_the_native_rules() -> None:
+    stub = StubOverlay()
+
+    assert not stub.skip_boot()  # nothing to skip yet
+    assert stub.play_boot()
+    assert not stub.play_boot()
+    assert stub.skip_boot()
+    assert not stub.skip_boot()
+    assert stub.boot_started
+    assert stub.boot_skipped
+    assert not stub.transparent()
+    assert "stub" in stub.fallback_reason()
+
+
+def test_disabled_overlay_keeps_the_boot_setting() -> None:
+    overlay = create_overlay(OverlayConfig(boot_animation=False), enabled=False)
+
+    assert not overlay.play_boot()
+    assert isinstance(overlay._native, StubOverlay)
+    assert not overlay._native.boot_started
+
+
 def test_overlay_error_is_a_jarvis_error() -> None:
     assert issubclass(OverlayError, JarvisError)
 
@@ -151,11 +223,14 @@ def test_config_defaults_are_the_documented_ones() -> None:
     config = OverlayConfig()
 
     assert config.corner is OverlayCorner.BOTTOM_RIGHT
-    assert (config.width, config.height, config.margin) == (380, 132, 24)
+    assert (config.width, config.height, config.margin) == (420, 132, 24)
     assert config.click_through
     assert config.opacity == 235
-    assert (config.active_fps, config.idle_fps) == (60, 10)
+    assert (config.active_fps, config.idle_fps) == (60, 15)
     assert (config.level_history, config.max_text_chars) == (64, 240)
+    assert config.transparent
+    assert config.theme is OverlayTheme.CYAN
+    assert config.boot_animation
 
 
 def test_create_overlay_disabled_returns_a_stub() -> None:
@@ -208,6 +283,8 @@ def jarvis_overlay() -> ModuleType:
 def test_native_module_mirrors_the_python_enums(jarvis_overlay: ModuleType) -> None:
     assert set(jarvis_overlay.AssistantState.__members__) == {s.value for s in OverlayState}
     assert set(jarvis_overlay.Corner.__members__) == {c.value for c in OverlayCorner}
+    assert set(jarvis_overlay.Theme.__members__) == {t.name for t in OverlayTheme}
+    assert 2.0 < jarvis_overlay.BOOT_DURATION_SECONDS < 3.0
     assert issubclass(jarvis_overlay.OverlayError, jarvis_overlay.NativeError)
     assert "step 13" in jarvis_overlay.IMPLEMENTATION_STATUS
 
@@ -237,7 +314,27 @@ def test_native_window_round_trips_state_through_the_facade(jarvis_overlay: Modu
         assert snapshot.wake_flash > 0
         assert not snapshot.visible
         assert not overlay.visible
+        assert overlay.transparent == (overlay._native.fallback_reason() == "")  # type: ignore[attr-defined]
     assert not overlay.running
+
+
+@pytestmark_native
+def test_native_boot_is_non_blocking_and_idempotent(jarvis_overlay: ModuleType) -> None:
+    try:
+        overlay = create_native_overlay(OverlayConfig(theme=OverlayTheme.AMBER))
+    except OverlayError as exc:
+        pytest.skip(f"overlay window unavailable here: {exc}")
+
+    with overlay:
+        assert overlay.play_boot()
+        assert not overlay.play_boot()
+        snapshot = overlay._native.snapshot()  # type: ignore[attr-defined]
+        assert snapshot.boot_started
+        assert not snapshot.boot_skipped
+        assert overlay.skip_boot()
+        assert overlay._native.snapshot().boot_skipped  # type: ignore[attr-defined]
+        stats = overlay._native.frame_stats()  # type: ignore[attr-defined]
+        assert stats.frames >= 0
 
 
 @pytestmark_native

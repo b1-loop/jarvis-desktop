@@ -1,15 +1,19 @@
 """Facade over the native status overlay (``jarvis_overlay``).
 
-The overlay is a small always-on-top panel showing what Jarvis is doing:
-a state indicator, a live waveform, the user's transcript and the spoken
-reply. All rendering happens on a native UI thread; Python only pushes
-state through cheap, thread-safe setters and never receives callbacks.
+The overlay is a small always-on-top HUD showing what Jarvis is doing: an
+animated ring whose motion tells the state (breathing when idle, a radial
+waveform while listening and speaking, orbiting arcs while thinking, a
+ripple when the wake word is heard), the user's transcript and the spoken
+reply. At startup it can play a short boot sequence in the middle of the
+screen before gliding into its corner. All rendering and animation happen
+on a native UI thread; Python only pushes state through cheap, thread-safe
+setters and never receives callbacks.
 
 The native window is injected through the :class:`NativeOverlay` Protocol
 so the facade is unit-tested with fakes, and :class:`StubOverlay` stands in
 for it in text-only mode or when the native build is missing. The
-orchestrator (step 7) is the only intended caller of the setters; the tray
-icon and dashboard (later in step 13) will read the same state.
+orchestrator is the only intended caller of the state setters; the
+launcher calls :meth:`Overlay.play_boot` when Jarvis starts.
 """
 
 from __future__ import annotations
@@ -52,6 +56,13 @@ class OverlayCorner(StrEnum):
     BOTTOM_RIGHT = "BOTTOM_RIGHT"
 
 
+class OverlayTheme(StrEnum):
+    """Palette of the HUD; values are the settings spelling, names the native enum."""
+
+    CYAN = "cyan"
+    AMBER = "amber"
+
+
 @dataclass(frozen=True, slots=True)
 class OverlayConfig:
     """Geometry and behaviour of the panel. Sizes are logical pixels at 96 DPI.
@@ -62,23 +73,30 @@ class OverlayConfig:
         height: Panel height.
         margin: Distance from the two edges of the chosen corner.
         click_through: Let clicks fall through to the window underneath.
-        opacity: Whole-panel opacity, 0 (invisible) to 255 (opaque).
-        active_fps: Frame rate while something is happening.
-        idle_fps: Frame rate once the panel has been static for a second.
+        opacity: Overall opacity, 0 (invisible) to 255 (opaque).
+        active_fps: Frame rate while something animates.
+        idle_fps: Frame rate while the idle ring only breathes.
         level_history: Number of level samples kept for the waveform.
         max_text_chars: Longest transcript or reply kept, in characters.
+        transparent: Prefer per-pixel transparency (DirectComposition); the
+            whole-window-alpha fallback is used when it is off or unavailable.
+        theme: Palette of the HUD.
+        boot_animation: Whether :meth:`Overlay.play_boot` plays anything.
     """
 
     corner: OverlayCorner = OverlayCorner.BOTTOM_RIGHT
-    width: int = 380
+    width: int = 420
     height: int = 132
     margin: int = 24
     click_through: bool = True
     opacity: int = 235
     active_fps: int = 60
-    idle_fps: int = 10
+    idle_fps: int = 15
     level_history: int = 64
     max_text_chars: int = 240
+    transparent: bool = True
+    theme: OverlayTheme = OverlayTheme.CYAN
+    boot_animation: bool = True
 
 
 class NativeOverlay(Protocol):
@@ -103,8 +121,20 @@ class NativeOverlay(Protocol):
     def set_visible(self, visible: bool) -> None:
         """Show or hide the panel without destroying it."""
 
-    def flash_wake_word(self) -> None:
-        """Pulse the indicator to acknowledge the wake word."""
+    def wake_pulse(self) -> None:
+        """Ripple the ring outwards to acknowledge the wake word."""
+
+    def play_boot(self) -> bool:
+        """Start the boot sequence; True only for the call that started it."""
+
+    def skip_boot(self) -> bool:
+        """Cut a running boot sequence short; True if one was skipped."""
+
+    def transparent(self) -> bool:
+        """Whether the window has per-pixel transparency."""
+
+    def fallback_reason(self) -> str:
+        """Why the fallback surface is used; empty when transparent."""
 
     def visible(self) -> bool:
         """Whether the panel is currently shown."""
@@ -131,6 +161,8 @@ class StubOverlay:
         self.response = ""
         self.levels: list[float] = []
         self.wake_flashes = 0
+        self.boot_started = False
+        self.boot_skipped = False
         self._visible = True
         self._running = True
 
@@ -155,9 +187,31 @@ class StubOverlay:
         """Record visibility."""
         self._visible = visible
 
-    def flash_wake_word(self) -> None:
-        """Count the flash."""
+    def wake_pulse(self) -> None:
+        """Count the pulse."""
         self.wake_flashes += 1
+
+    def play_boot(self) -> bool:
+        """Record the first request only, like the native model."""
+        if self.boot_started:
+            return False
+        self.boot_started = True
+        return True
+
+    def skip_boot(self) -> bool:
+        """Record a skip of a started boot, once."""
+        if not self.boot_started or self.boot_skipped:
+            return False
+        self.boot_skipped = True
+        return True
+
+    def transparent(self) -> bool:
+        """A stub has no window, so nothing is transparent."""
+        return False
+
+    def fallback_reason(self) -> str:
+        """Explain that nothing is drawn."""
+        return "stub overlay: nothing is drawn"
 
     def visible(self) -> bool:
         """Whether ``set_visible(True)`` was the last visibility call."""
@@ -178,10 +232,15 @@ class Overlay:
     Keeps the last state it was told so the tray icon can read it without a
     round trip into the native module, and refuses to forward anything once
     closed so a late TTS chunk after shutdown cannot touch a dead window.
+
+    Args:
+        native: The window (or a stub/fake with the same shape).
+        boot_animation: When False, :meth:`play_boot` is a logged no-op.
     """
 
-    def __init__(self, native: NativeOverlay) -> None:
+    def __init__(self, native: NativeOverlay, *, boot_animation: bool = True) -> None:
         self._native = native
+        self._boot_animation = boot_animation
         self._state = OverlayState.IDLE
         self._closed = False
 
@@ -206,8 +265,13 @@ class Overlay:
         """Whether the panel is shown."""
         return self._native.visible()
 
+    @property
+    def transparent(self) -> bool:
+        """Whether the panel is drawn with per-pixel transparency."""
+        return self._native.transparent()
+
     def set_state(self, state: OverlayState) -> None:
-        """Switch the indicator colour and label."""
+        """Switch the HUD to ``state``; the native side cross-fades over ~200 ms."""
         self._state = state
         self._forward(lambda: self._native.set_state(state.value))
 
@@ -223,9 +287,38 @@ class Overlay:
         """Show what Jarvis is saying."""
         self._forward(lambda: self._native.set_response(text))
 
+    def wake_pulse(self) -> None:
+        """Acknowledge the wake word with a bright ripple from the ring."""
+        self._forward(self._native.wake_pulse)
+
     def flash_wake_word(self) -> None:
-        """Acknowledge the wake word with a short pulse on the indicator."""
-        self._forward(self._native.flash_wake_word)
+        """Same as :meth:`wake_pulse`; the name the voice pipeline's bridge uses."""
+        self.wake_pulse()
+
+    def play_boot(self) -> bool:
+        """Play the boot sequence once. Non-blocking and idempotent.
+
+        Returns immediately; the animation (about 2.5 s) runs on the native
+        UI thread and ends with the panel in its corner. Later calls, calls
+        after :meth:`close` and calls with ``boot_animation`` disabled do
+        nothing.
+
+        Returns:
+            True only for the call that started the sequence.
+        """
+        if self._closed or not self._boot_animation:
+            log.debug("overlay.boot.skipped", closed=self._closed, enabled=self._boot_animation)
+            return False
+        started = self._native.play_boot()
+        if started:
+            log.info("overlay.boot.started")
+        return started
+
+    def skip_boot(self) -> bool:
+        """Cut a running boot sequence short; it still glides into the corner."""
+        if self._closed:
+            return False
+        return self._native.skip_boot()
 
     def show(self) -> None:
         """Show the panel."""
@@ -257,6 +350,10 @@ class _Setter(Protocol):
 def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
     """Construct the real ``jarvis_overlay.OverlayWindow`` and wrap it.
 
+    Logs which surface the window ended up with, so "why is my overlay a
+    dark box?" has an answer in the log (per-pixel transparency needs
+    DirectComposition; the fallback uses whole-window alpha).
+
     Raises:
         NativeUnavailableError: If the extension module is not built.
         OverlayError: If the window or its Direct3D device cannot be created.
@@ -272,14 +369,22 @@ def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
     native_config.opacity = config.opacity
     native_config.active_fps = config.active_fps
     native_config.idle_fps = config.idle_fps
+    native_config.transparent = config.transparent
+    native_config.theme = module.Theme.__members__[config.theme.name]
     native_config.limits.level_history = config.level_history
     native_config.limits.max_text_chars = config.max_text_chars
     try:
         window = module.OverlayWindow(native_config)
     except module.OverlayError as exc:
         raise OverlayError(str(exc)) from exc
-    log.info("overlay.created", corner=config.corner.value)
-    return Overlay(cast(NativeOverlay, window))
+    log.info(
+        "overlay.created",
+        corner=config.corner.value,
+        theme=config.theme.value,
+        transparent=window.transparent(),
+        fallback_reason=window.fallback_reason() or None,
+    )
+    return Overlay(cast(NativeOverlay, window), boot_animation=config.boot_animation)
 
 
 def create_overlay(config: OverlayConfig | None = None, *, enabled: bool = True) -> Overlay:
@@ -289,19 +394,25 @@ def create_overlay(config: OverlayConfig | None = None, *, enabled: bool = True)
     a missing build or a headless session logs a warning and the assistant
     carries on without a panel.
     """
+    boot_animation = (config or OverlayConfig()).boot_animation
     if not enabled:
-        return Overlay(StubOverlay())
+        return Overlay(StubOverlay(), boot_animation=boot_animation)
     try:
         return create_native_overlay(config)
     except (NativeUnavailableError, OverlayError) as exc:
         log.warning("overlay.unavailable", reason=str(exc))
-        return Overlay(StubOverlay())
+        return Overlay(StubOverlay(), boot_animation=boot_animation)
 
 
 # Design notes:
 # - set_state crosses the boundary as a string on purpose: the native enum
 #   lives in a module that text-only mode never imports, and a name lookup
 #   costs nothing against the per-frame work on the other side.
+# - play_boot returns a bool instead of raising on repeats: the launcher and
+#   the voice front end may both ask for it at startup, and "already
+#   playing" is not an error, just a no-op worth knowing about in tests.
+# - All animation timing lives natively (native/overlay/animation.hpp) and
+#   depends on elapsed time only, so Python never needs to tick anything.
 # - The facade swallows nothing but calls after close(); every other error is
 #   a programming error and should surface.
 # - No asyncio here: every native setter returns in microseconds, so wrapping

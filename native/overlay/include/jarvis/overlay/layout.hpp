@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -29,24 +30,48 @@ struct Rgba {
     [[nodiscard]] bool operator==(const Rgba&) const noexcept = default;
 };
 
-/// Palette of the panel. Defaults are a dark panel with one accent per state
-/// so the state is readable from colour alone, before the label is.
+/// Palette of the HUD. One hue family per theme, with the state told apart
+/// by brightness and a small hue shift (and, above all, by motion), so the
+/// panel reads as one instrument rather than four traffic lights.
 struct Theme {
-    Rgba background{0.07F, 0.08F, 0.11F, 1.0F};
-    Rgba text{0.93F, 0.94F, 0.96F, 1.0F};
-    Rgba mutedText{0.60F, 0.63F, 0.70F, 1.0F};
-    Rgba idle{0.55F, 0.60F, 0.70F, 1.0F};
-    Rgba listening{0.30F, 0.85F, 0.45F, 1.0F};
-    Rgba thinking{0.98F, 0.75F, 0.25F, 1.0F};
-    Rgba speaking{0.35F, 0.65F, 1.00F, 1.0F};
-    Rgba wakeFlash{1.00F, 1.00F, 1.00F, 1.0F};
+    /// Clear colour of the opaque fallback (whole-window alpha) path.
+    Rgba background{0.02F, 0.05F, 0.08F, 1.0F};
+    Rgba text{0.86F, 0.97F, 1.00F, 1.0F};
+    Rgba mutedText{0.45F, 0.70F, 0.80F, 1.0F};
+    Rgba idle{0.25F, 0.62F, 0.80F, 1.0F};
+    Rgba listening{0.35F, 0.93F, 1.00F, 1.0F};
+    Rgba thinking{0.55F, 0.78F, 1.00F, 1.0F};
+    Rgba speaking{0.40F, 1.00F, 0.88F, 1.0F};
+    Rgba wakeFlash{0.85F, 1.00F, 1.00F, 1.0F};
+    /// The light the rings are drawn in.
+    Rgba accent{0.30F, 0.85F, 1.00F, 1.0F};
+    /// Glass plate behind the text so it stays readable over any desktop.
+    Rgba plate{0.01F, 0.06F, 0.10F, 0.55F};
+
+    [[nodiscard]] bool operator==(const Theme&) const noexcept = default;
 };
+
+/// Named palettes selectable from settings.
+enum class ThemeName : std::uint8_t { Cyan, Amber };
+
+/// The palette for @p name. Cyan is Theme{}; Amber is the same design in
+/// warm light for users who find blue too cold on a dark wallpaper.
+[[nodiscard]] Theme themeFor(ThemeName name) noexcept;
+
+/// Lower-case name as used in settings ("cyan", "amber").
+[[nodiscard]] std::string_view toString(ThemeName name) noexcept;
+
+/// Inverse of toString(ThemeName); std::nullopt for anything else.
+[[nodiscard]] std::optional<ThemeName> parseThemeName(std::string_view name) noexcept;
 
 /// Accent colour for @p state.
 [[nodiscard]] Rgba stateColour(const Theme& theme, AssistantState state) noexcept;
 
 /// Human label shown next to the indicator, e.g. "Listening".
 [[nodiscard]] std::string_view stateLabel(AssistantState state) noexcept;
+
+/// Upper-case caption of the HUD, e.g. "STANDBY" for Idle.
+[[nodiscard]] std::string_view hudLabel(AssistantState state) noexcept;
 
 /// @return @p colour with its alpha multiplied by @p factor (clamped to [0, 1]).
 [[nodiscard]] Rgba withAlpha(Rgba colour, float factor) noexcept;
@@ -95,6 +120,62 @@ struct Placement {
 /// @p margin from both edges. Sizes and margin are already in physical pixels.
 [[nodiscard]] Placement anchorToCorner(Corner corner, PixelRect workArea, int width, int height,
                                        int margin) noexcept;
+
+/// Axis-aligned rectangle with float coordinates, for animated geometry.
+struct RectF {
+    float x{0.0F};
+    float y{0.0F};
+    float width{0.0F};
+    float height{0.0F};
+
+    [[nodiscard]] float right() const noexcept { return x + width; }
+    [[nodiscard]] float bottom() const noexcept { return y + height; }
+    [[nodiscard]] bool operator==(const RectF&) const noexcept = default;
+};
+
+/// @p placement as a RectF.
+[[nodiscard]] RectF toRectF(Placement placement) noexcept;
+
+/// Interpolate position and size from @p from (t = 0) to @p to (t = 1).
+[[nodiscard]] RectF lerpRect(RectF from, RectF to, float t) noexcept;
+
+/// A @p width x @p height window centred in @p workArea.
+[[nodiscard]] Placement centredIn(PixelRect workArea, int width, int height) noexcept;
+
+/// @p rect moved by (@p dx, @p dy).
+[[nodiscard]] RectF translated(RectF rect, float dx, float dy) noexcept;
+
+/// @p placement grown by @p amount on every side.
+[[nodiscard]] Placement inflated(Placement placement, int amount) noexcept;
+
+/// Smallest whole-pixel placement containing @p rect.
+[[nodiscard]] Placement enclosingPlacement(RectF rect) noexcept;
+
+/// Where the HUD's parts sit inside a canvas, in the same pixel space.
+struct HudGeometry {
+    /// Centre of the ring.
+    float centreX{0.0F};
+    float centreY{0.0F};
+    /// Radius of the outermost ring.
+    float radius{0.0F};
+    /// Area for text: the panel's column, or the boot title block.
+    RectF text;
+
+    [[nodiscard]] bool operator==(const HudGeometry&) const noexcept = default;
+};
+
+/// Corner panel: ring on the left, text column on the right.
+[[nodiscard]] HudGeometry panelGeometry(RectF panel, float padding) noexcept;
+
+/// Boot canvas: ring in the upper half, title block underneath.
+[[nodiscard]] HudGeometry bootGeometry(RectF canvas) noexcept;
+
+/// @p geometry moved by (@p dx, @p dy), e.g. from screen to client coordinates.
+[[nodiscard]] HudGeometry translated(const HudGeometry& geometry, float dx, float dy) noexcept;
+
+/// Interpolate every part of the geometry; used for the boot handoff.
+[[nodiscard]] HudGeometry lerpGeometry(const HudGeometry& from, const HudGeometry& to,
+                                       float t) noexcept;
 
 /// Resample @p levels (oldest first) into @p barCount bar heights in [0, 1].
 ///
