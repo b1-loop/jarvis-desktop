@@ -172,7 +172,8 @@ How to read it:
   did not dominate: cloud-mode English turns with a tool had a median
   total of 9.2 s, those without 9.4 s.
 - **Barge-in onset -> stop is 450 ms by design**: the segmenter waits for
-  250 ms of continuous speech before it believes you, and Silero needs a
+  250 ms of speech (dips between the two thresholds pause the count rather
+  than restart it) before it believes you, and Silero needs a
   few 32 ms frames to rise above its threshold. The cut itself is native.
 - **Playback ran into a null sink**, so nothing was played aloud: every
   stage up to "first audio chunk handed to the device" is measured as in

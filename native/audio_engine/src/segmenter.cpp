@@ -26,8 +26,14 @@ SpeechSegmenter::Transition SpeechSegmenter::update(float probability) noexcept 
 }
 
 SpeechSegmenter::Transition SpeechSegmenter::updateWhileSilent(float probability) noexcept {
-    if (probability < config_.startThreshold) {
+    if (probability < config_.endThreshold) {
         speechFrames_ = 0;
+        return Transition::None;
+    }
+    if (probability < config_.startThreshold) {
+        // Between the thresholds: a dip inside a word, not silence. Hold the
+        // count instead of restarting it, the same hysteresis that keeps
+        // speech alive once it has started.
         return Transition::None;
     }
     ++speechFrames_;
