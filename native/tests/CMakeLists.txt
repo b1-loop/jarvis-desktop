@@ -16,6 +16,7 @@ add_executable(jarvis_tests
     audio/playback_test.cpp
     audio/pipeline_test.cpp
     audio/engine_test.cpp
+    audio/mp3_decoder_test.cpp
     audio/silero_vad_test.cpp
     audio/open_wake_word_test.cpp)
 
@@ -25,9 +26,11 @@ target_link_libraries(jarvis_tests PRIVATE
     jarvis::audio_engine
     Catch2::Catch2WithMain)
 # Model-backed tests skip themselves when the files are absent, so a checkout
-# without downloaded models still runs the rest of the suite.
+# without downloaded models still runs the rest of the suite. Fixtures are
+# shared with the Python suite so both decode the same clip.
 target_compile_definitions(jarvis_tests PRIVATE
-    JARVIS_MODELS_DIR="${JARVIS_MODELS_DIR}")
+    JARVIS_MODELS_DIR="${JARVIS_MODELS_DIR}"
+    JARVIS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures")
 jarvis_set_warnings(jarvis_tests)
 jarvis_copy_onnxruntime_dll(jarvis_tests)
 

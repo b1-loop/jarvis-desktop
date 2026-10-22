@@ -26,11 +26,13 @@ FetchContent_MakeAvailable(onnxruntime)
 # --- miniaudio: compiled once, with the library's own warning level -------
 add_library(jarvis_miniaudio STATIC src/miniaudio_impl.cpp)
 target_include_directories(jarvis_miniaudio SYSTEM PUBLIC "${miniaudio_SOURCE_DIR}")
-# We only need device I/O; dropping the decoders, generators and the engine
-# graph halves the compile time of the implementation unit.
+# We need device I/O and the MP3 decoder (edge-tts speech arrives as MP3);
+# dropping the other codecs, the generators and the engine graph keeps the
+# compile time of the implementation unit down.
 target_compile_definitions(jarvis_miniaudio PUBLIC
     MA_NO_ENCODING
-    MA_NO_DECODING
+    MA_NO_WAV
+    MA_NO_FLAC
     MA_NO_GENERATION
     MA_NO_RESOURCE_MANAGER
     MA_NO_NODE_GRAPH
@@ -57,6 +59,7 @@ endfunction()
 add_library(jarvis_audio_engine STATIC
     src/engine.cpp
     src/microphone.cpp
+    src/mp3_decoder.cpp
     src/onnx_session.cpp
     src/open_wake_word.cpp
     src/pipeline.cpp

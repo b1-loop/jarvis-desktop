@@ -127,6 +127,7 @@ def test_shell_working_root_is_a_path(
 
     assert make_settings().shell_working_root == Path("C:/projects")
 
+
 def test_web_and_document_defaults(make_settings: Callable[..., Settings]) -> None:
     settings = make_settings()
 

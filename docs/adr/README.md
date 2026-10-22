@@ -9,6 +9,7 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0002](0002-decoupled-native-build.md) | Build native extensions separately from the Python package | Accepted |
 | [0003](0003-cpp-audio-hot-path.md) | C++ for the audio hot path | Accepted |
+| [0005](0005-provider-interfaces-and-streaming.md) | Provider interfaces, streaming speech and a third LLM provider | Accepted |
 | [0006](0006-plugin-tools-and-confirmation.md) | Plugin tools, central confirmation and a policy-first sandbox | Accepted |
 | [0007](0007-proactive-module.md) | Proactive module: one scheduler, polled triggers, YAML routines | Accepted |
 | [0008](0008-memory-storage.md) | SQLite for structured memory, ChromaDB for semantic memory | Accepted |

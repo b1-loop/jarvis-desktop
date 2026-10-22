@@ -26,7 +26,7 @@ is Python 3.12.
 | 2 | Scaffold, tooling, CI | done |
 | 3 | C++ audio engine | done |
 | 4 | C++ Windows integration | **next** |
-| 5 | STT / TTS / LLM cloud providers | planned |
+| 5 | STT / TTS / LLM cloud providers | done |
 | 6 | Agent core, text-only loop | framework done, agent loop pending |
 | 7 | Voice pipeline with barge-in | planned |
 | 8 | Phase 1 + 2 tools | integration providers done, tools pending |
@@ -76,6 +76,7 @@ Two runtime modes:
 | Mode | LLM | STT | TTS | Network |
 | --- | --- | --- | --- | --- |
 | `cloud` (default) | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
+| `cloud` + `JARVIS_LLM_PROVIDER=ollama` | Ollama (local HTTP API) | faster-whisper | edge-tts | TTS only |
 | `local` | llama.cpp | whisper.cpp | Piper | none |
 
 Full design, threading model and trade-offs: [ARCHITECTURE.md](ARCHITECTURE.md)

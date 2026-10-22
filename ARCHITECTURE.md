@@ -57,6 +57,22 @@ Each stage is a class behind an abstract base in its package's `base.py`.
 Stages never call each other; the orchestrator moves data between them over
 `asyncio.Queue`s and publishes progress on the event bus.
 
+### Providers *(step 5)*
+
+| Stage | Interface | CLOUD | Ollama option | LOCAL *(step 12)* |
+| --- | --- | --- | --- | --- |
+| STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off-loop) | same | `WhisperCppSTT` |
+| TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | same | `PiperTTS` |
+| LLM | `llm.base.LLMClient` | `AnthropicClient` (streaming, tool use, vision) | `OllamaClient` | `LocalLlamaClient` |
+
+`llm.factory.create_llm_client` picks the LLM by `JARVIS_LLM_PROVIDER`.
+Providers receive their external dependency through a `Protocol`, so unit
+tests run on fakes and never touch the network or the native build.
+Streaming is sentence-by-sentence: `llm.streaming.SentenceSplitter` cuts
+text deltas into sentences, each sentence goes to `TTS.synthesize`, which
+yields PCM chunks while the rest downloads. Retries share one policy in
+`utils.retry`. See ADR-0005.
+
 ## 4. State machine
 
 `IDLE → LISTENING → THINKING → SPEAKING → IDLE`. `core/state_machine.py`
