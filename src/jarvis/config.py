@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 from enum import StrEnum
 from pathlib import Path
+from typing import Annotated, Final, Literal
+
 from typing import Annotated, Literal
 
 from pydantic import Field, SecretStr, field_validator
@@ -21,6 +23,27 @@ from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.utils.errors import ConfigError
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
+
+DEFAULT_SHELL_ALLOWLIST: Final[tuple[str, ...]] = (
+    "git",
+    "ls",
+    "dir",
+    "cat",
+    "type",
+    "python",
+    "uv",
+    "pip",
+    "pytest",
+    "ruff",
+    "mypy",
+    "npm",
+    "npx",
+    "node",
+    "cargo",
+    "where",
+    "which",
+)
+"""Programs the shell tool runs without asking; anything else needs spoken confirmation."""
 
 
 class RuntimeMode(StrEnum):
@@ -92,11 +115,33 @@ class Settings(BaseSettings):
     routines_dir: Path = Path("routines")
     proactive_poll_seconds: int = Field(default=60, gt=0)
 
+    # Agent
+    confirm_destructive: bool = True
+    shell_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: list(DEFAULT_SHELL_ALLOWLIST)
+    )
+    shell_timeout_seconds: int = 30
+    shell_working_root: Path | None = None
+
     @field_validator("log_level", mode="before")
     @classmethod
     def _uppercase_log_level(cls, value: object) -> object:
         """Accept ``debug`` as well as ``DEBUG``; people type both."""
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator("shell_allowlist", mode="before")
+    @classmethod
+    def _split_allowlist(cls, value: object) -> object:
+        """Accept ``git,python,uv`` from the env file instead of a JSON list."""
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("shell_working_root", mode="before")
+    @classmethod
+    def _empty_root_is_none(cls, value: object) -> object:
+        """An empty ``JARVIS_SHELL_WORKING_ROOT=`` line means the home directory."""
+        return None if value == "" else value
 
     def validate_for_mode(self) -> None:
         """Check that the credentials the selected mode needs are present.

@@ -57,11 +57,28 @@ Each stage is a class behind an abstract base in its package's `base.py`.
 Stages never call each other; the orchestrator moves data between them over
 `asyncio.Queue`s and publishes progress on the event bus.
 
-## 4. State machine *(step 6)*
+## 4. State machine
 
-`IDLE → LISTENING → THINKING → SPEAKING → IDLE`. Transitions are validated by
-`core/state_machine.py` and published as `StateChanged` events. Barge-in is the
-transition `SPEAKING → LISTENING` triggered by VAD activity during playback.
+`IDLE → LISTENING → THINKING → SPEAKING → IDLE`. `core/state_machine.py`
+holds the current `AssistantState` and an explicit transition table:
+
+| From | To | Meaning |
+| --- | --- | --- |
+| IDLE | LISTENING | wake word or hotkey |
+| LISTENING | THINKING | end of speech, transcript ready |
+| LISTENING | IDLE | silence, nothing to do |
+| THINKING | SPEAKING | answer (or tool summary) ready |
+| THINKING | IDLE | nothing to say |
+| SPEAKING | IDLE | playback finished |
+| SPEAKING | LISTENING | barge-in: the user talked over Jarvis |
+
+Anything else raises `InvalidTransitionError`. Every transition is published
+as a `StateChanged` event on the `EventBus` (`core/events.py`), which is how
+the overlay, tray icon, dashboard and logs stay in sync without the
+orchestrator knowing about them. The bus is in-process and single-loop;
+each subscriber has a bounded queue that drops the oldest event (counted and
+logged) rather than ever blocking the publisher, because the publisher is
+the latency-critical voice path.
 
 ## 5. Threading model
 
@@ -101,10 +118,28 @@ Detection parameters (thresholds, hysteresis, cooldown, pre-roll) live in
 `PipelineConfig` and are exposed to Python unchanged. ADR-0003 records why
 this layer is C++.
 
-## 6. Agent and tools *(step 6)*
+## 6. Agent and tools *(agent loop: step 6, pending)*
 
-Tool discovery, pydantic validation, confirmation policy and the LLM tool-call
-protocol. Covered by ADR-0005 and ADR-0006.
+A tool is one module in `jarvis/tools/` defining a `Tool` subclass: `name`,
+`description`, a pydantic `Input` model, a `category`, a risk declaration
+(`requires_confirmation` or a per-call `needs_confirmation`) and `async run()`.
+`agent/registry.py` discovers every plugin with `pkgutil`, records broken ones
+as `DiscoveryFailure`s instead of crashing, and produces the Anthropic-style
+`{name, description, input_schema}` definitions from the pydantic models.
+
+Tools receive services only through `ToolContext` (settings, event bus,
+clock, confirmation callback, OS and memory facades as Protocols) and return
+a `ToolResult` with `spoken` (for TTS), `detail` (for the LLM and dashboard)
+and `data` (JSON). Invalid arguments and tool failures become `ok=False`
+results, never exceptions in the agent loop.
+
+`agent/confirmation.py` is the only place that decides whether to ask the
+user: the tool's declaration, a list of always-confirm categories and the
+`JARVIS_CONFIRM_DESTRUCTIVE` trusted-mode flag. Shell commands additionally
+pass through `utils/sandbox.py` (argv only, denylist, allowlist, working
+root, scrubbed environment, timeout, output cap). The agent loop that turns
+a transcript into tool calls and a spoken summary (`agent/loop.py`) depends
+on the LLM interface and lands with it. See ADR-0006.
 
 ## 7. Memory *(step 9)*
 
