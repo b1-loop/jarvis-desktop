@@ -2,8 +2,8 @@
 
 "How much battery do I have?", "how long will it last?". system_monitor
 already reports the level as part of a full machine snapshot; this tool
-answers the battery question alone, without sampling CPU for a third of a
-second, and adds the time-remaining estimate the snapshot does not carry.
+answers the battery question alone, without sampling CPU and the process
+table, and adds the time-remaining estimate the snapshot does not carry.
 The top-processes question is system_monitor's and is not duplicated here.
 """
 
