@@ -23,13 +23,13 @@
 
 namespace jarvis::overlay {
 
-/// The hover controls, left to right.
-enum class HudControl : std::uint8_t { Keyboard, Mute, Settings, Expand, Quit, Close };
+/// The hover controls (kHudControls gives their order, left to right).
+enum class HudControl : std::uint8_t { Keyboard, Mute, Settings, Expand, Quit, Close, Minimize };
 
-inline constexpr std::size_t kHudControlCount = 6;
+inline constexpr std::size_t kHudControlCount = 7;
 inline constexpr std::array<HudControl, kHudControlCount> kHudControls{
-    HudControl::Keyboard, HudControl::Mute,   HudControl::Quit,
-    HudControl::Settings, HudControl::Expand, HudControl::Close};
+    HudControl::Keyboard, HudControl::Mute,     HudControl::Quit, HudControl::Settings,
+    HudControl::Expand,   HudControl::Minimize, HudControl::Close};
 
 /// Short description shown as the tooltip, e.g. "Type a request".
 [[nodiscard]] std::string_view controlLabel(HudControl control) noexcept;
@@ -149,6 +149,11 @@ void collapsedHitMap(HitMap& map, const HudGeometry& ring, RectF column,
 /// Fill @p map for the expanded panel: the frame drags, the tabs, body,
 /// input and controls are controls, the grip resizes.
 void expandedHitMap(HitMap& map, const ExpandedLayout& layout);
+
+/// Fill @p map for the minimized orb: its disc of @p radius around
+/// (@p centreX, @p centreY) drags (and a click on it restores the HUD);
+/// everything around it, the halo included, stays click-through.
+void orbHitMap(HitMap& map, float centreX, float centreY, float radius);
 
 /// Seconds the expand/collapse morph takes.
 inline constexpr float kMorphSeconds = 0.42F;

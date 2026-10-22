@@ -4,6 +4,7 @@
 #include "jarvis/overlay/animator.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/orb.hpp"
 #include "jarvis/overlay/scene.hpp"
 
 #include <imgui.h>
@@ -61,10 +62,33 @@ HudRenderer::HudRenderer(ID3D11Device& device, Theme theme, const anim::OverlayA
 }
 
 void HudRenderer::draw(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts) {
-    const auto& boot = scene.frame.boot;
-    drawScrim(draw, scene);
-    drawExpandedScrim(draw, scene);
+    if (scene.orb >= 1.0F) {
+        drawOrbFrame(draw, scene);  // minimized: the orb alone, the cheap idle path
+        return;
+    }
+    // Mid-morph the HUD's scene fades as its ring shrinks into the orb,
+    // and the orb fades in on top of it (orb.hpp has the curves).
+    const OrbMorph morph = orbMorphAt(scene.orb);
+    HudScene hud = scene;
+    hud.opacity *= morph.sceneAlpha;
+    const float orbAlpha = morph.orbAlpha * scene.opacity;
+    drawScrim(draw, hud);
+    drawExpandedScrim(draw, hud);
+    drawOrbScrim(draw, scene, orbAlpha);
     blend_.beginLight(draw);
+    drawSceneLight(draw, hud, fonts);
+    drawOrbLight(draw, scene, orbAlpha);
+    blend_.endLight(draw);
+    // Text after the light layer: never bloomed, never aberrated, always crisp.
+    if (hud.frame.boot.has_value()) {
+        drawReadout(draw, hud, *hud.frame.boot, fonts);
+    }
+    drawPanelText(draw, hud, fonts);
+    drawExpandedCaption(draw, hud, fonts);
+}
+
+void HudRenderer::drawSceneLight(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts) {
+    const auto& boot = scene.frame.boot;
     drawBackdropGlow(draw, scene);
     if (boot.has_value()) {
         drawIgnition(draw, scene, *boot);
@@ -87,13 +111,6 @@ void HudRenderer::draw(ImDrawList& draw, const HudScene& scene, const HudFonts& 
     if (boot.has_value()) {
         drawBootTitle(draw, scene, *boot, fonts);
     }
-    blend_.endLight(draw);
-    // Text after the light layer: never bloomed, never aberrated, always crisp.
-    if (boot.has_value()) {
-        drawReadout(draw, scene, *boot, fonts);
-    }
-    drawPanelText(draw, scene, fonts);
-    drawExpandedCaption(draw, scene, fonts);
 }
 
 // --- shared state ----------------------------------------------------------------

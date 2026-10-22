@@ -1,6 +1,7 @@
 #include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/orb.hpp"
 
 #include <imgui.h>
 
@@ -89,9 +90,11 @@ float bootAlphaOf(const HudScene& scene) noexcept {
 }
 
 /// The corner panel's own alpha: in during the boot hand-off, out during
-/// the first half of the expand morph (the panel's text gives way first).
+/// the first half of the expand morph (the panel's text gives way first)
+/// and the first third of the shrink into the orb.
 float panelAlphaOf(const HudScene& scene) noexcept {
-    return bootAlphaOf(scene) * (1.0F - anim::clamp01(scene.expand * 2.0F));
+    return bootAlphaOf(scene) * (1.0F - anim::clamp01(scene.expand * 2.0F)) *
+           orbMorphAt(scene.orb).panelAlpha;
 }
 
 /// The y of the divider under the caption.

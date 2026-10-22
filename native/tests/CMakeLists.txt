@@ -67,7 +67,10 @@ if(JARVIS_BUILD_OVERLAY)
         overlay/hud_layout_test.cpp
         overlay/interactive_window_test.cpp
         overlay/layout_test.cpp
+        overlay/minimize_policy_test.cpp
+        overlay/minimize_window_test.cpp
         overlay/model_test.cpp
+        overlay/orb_test.cpp
         overlay/particles_test.cpp
         overlay/placement_test.cpp
         overlay/scene_test.cpp

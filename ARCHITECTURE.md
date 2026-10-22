@@ -412,6 +412,14 @@ orchestrator's one input (typing while Jarvis speaks barges in),
 back at start by `jarvis/user_settings.py` between the environment and
 `.env`) and applies settings live or after a restart.
 
+It can also be minimized to a small glowing orb (ADR-0024, update): the
+docking, the morph, auto-minimize and full-screen hiding are pure native
+modules (`overlay/orb.hpp`, `overlay/minimize_policy.hpp`); Python
+remembers the user's choice (`core/hud_wiring.py`), offers it in the tray,
+and registers the `hud_toggle_hotkey` (`core/hud_hotkey.py`) through a
+`core/hotkey_router.py` shared with the voice hotkey so neither consumer
+steals the other's presses.
+
 ### Desktop app
 
 `scripts/install_shortcuts.py` writes desktop, Start-menu and (optionally)

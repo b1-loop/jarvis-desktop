@@ -45,6 +45,15 @@ SAVED_NOTICE: Final = "Saved."
 LIVE_NOTICE: Final = "Saved and applied."
 RESTART_NOTICE: Final = "Saved; applies after a restart."
 SLIDER_FORMAT: Final = "{:.2f}"
+AUTO_MINIMIZE_CHOICES: Final = (
+    ("0.00", "Off"),
+    ("30.00", "After 30 s idle"),
+    ("60.00", "After 1 min idle"),
+    ("120.00", "After 2 min idle"),
+    ("300.00", "After 5 min idle"),
+)
+"""Delays offered for ``hud_auto_minimize_seconds``, spelled as ``to_text`` spells floats;
+another value from ``.env`` is still shown (``with_current``)."""
 
 
 class Apply(StrEnum):
@@ -129,6 +138,17 @@ SETTING_DEFS: Final[tuple[SettingDef, ...]] = (
         SettingKind.CHOICE,
         Apply.LIVE,
         static_choices=(("calm", "Calm"), ("normal", "Normal"), ("max", "Max")),
+    ),
+    SettingDef(
+        "hud_auto_minimize_seconds",
+        "Auto-minimize to the orb",
+        "OVERLAY",
+        SettingKind.CHOICE,
+        Apply.LIVE,
+        static_choices=AUTO_MINIMIZE_CHOICES,
+    ),
+    SettingDef(
+        "hud_hide_in_fullscreen", "Hide in full screen", "OVERLAY", SettingKind.TOGGLE, Apply.LIVE
     ),
     SettingDef(START_WITH_WINDOWS, "Start with Windows", "SYSTEM", SettingKind.TOGGLE, Apply.LIVE),
     SettingDef(OPEN_LOG, "Open log file", "SYSTEM", SettingKind.ACTION, Apply.LIVE),

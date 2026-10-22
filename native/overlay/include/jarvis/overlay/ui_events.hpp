@@ -79,9 +79,11 @@ struct SettingsOpened {
 /// monitor's work area, so a saved position means the same place after a
 /// DPI change and survives the monitor order changing.
 struct PlacementChanged {
-    /// Which of the two remembered placements this is.
+    /// Which of the remembered placements this is: the expanded panel, the
+    /// orb (when @c orb is set), otherwise the corner HUD.
     bool expanded{false};
-    /// False after a double-click on the ring: back to the default corner.
+    /// False after a double-click on the ring (back to the default corner)
+    /// or, for the orb, after the HUD moved (it docks next to it again).
     bool custom{true};
     /// Monitor device name, e.g. "\\\\.\\DISPLAY2".
     std::string monitor;
@@ -90,13 +92,30 @@ struct PlacementChanged {
     /// Logical size; only meaningful for the expanded panel.
     float width{0.0F};
     float height{0.0F};
+    /// The minimized orb's position (ADR-0024, update).
+    bool orb{false};
     [[nodiscard]] bool operator==(const PlacementChanged&) const = default;
+};
+
+/// The HUD shrank to the orb: the minimize control, or auto-minimize.
+struct Minimized {
+    /// True when the auto-minimize policy did it (not to be remembered).
+    bool automatic{false};
+    [[nodiscard]] bool operator==(const Minimized&) const = default;
+};
+
+/// The orb grew back into the HUD: a click on it, or auto-minimize
+/// popping it back for a turn.
+struct Restored {
+    /// True when the auto-minimize policy did it (not to be remembered).
+    bool automatic{false};
+    [[nodiscard]] bool operator==(const Restored&) const = default;
 };
 
 /// One thing the user did.
 using UiEvent =
     std::variant<SubmitText, CloseRequested, QuitRequested, ToggleMute, SetExpanded, SettingChanged,
-                 OpenLog, RestartRequested, SettingsOpened, PlacementChanged>;
+                 OpenLog, RestartRequested, SettingsOpened, PlacementChanged, Minimized, Restored>;
 
 /// Snake-case name of the event's alternative, e.g. "submit_text"; the
 /// spelling the Python binding uses.

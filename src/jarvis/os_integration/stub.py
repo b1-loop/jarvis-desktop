@@ -17,6 +17,7 @@ from typing import Final
 from jarvis.os_integration.base import HotkeyEvent, Platform, WindowInfo
 from jarvis.os_integration.errors import (
     InvalidHotkeyError,
+    PlatformError,
     ProcessNotFoundError,
     WindowNotFoundError,
 )
@@ -44,6 +45,9 @@ class StubPlatform(Platform):
         typed: Every text passed to :meth:`type_text`.
         notifications: Every ``(title, message)`` passed to :meth:`notify`.
         hotkeys: Registered specs keyed by id.
+        taken: Specs "another application" owns: registering one raises
+            ``PlatformError`` like the real backend, so collision handling
+            can be tested.
     """
 
     calls: list[tuple[str, tuple[object, ...]]] = field(default_factory=list)
@@ -56,6 +60,7 @@ class StubPlatform(Platform):
     typed: list[str] = field(default_factory=list)
     notifications: list[tuple[str, str]] = field(default_factory=list)
     hotkeys: dict[int, str] = field(default_factory=dict)
+    taken: set[str] = field(default_factory=set)
     _pending: list[HotkeyEvent] = field(default_factory=list)
     _next_hotkey_id: int = 1
     _next_pid: int = _STUB_FIRST_PID
@@ -74,6 +79,8 @@ class StubPlatform(Platform):
         self._record("register_hotkey", spec)
         if not spec.strip():
             raise InvalidHotkeyError("hotkey spec is empty")
+        if spec.lower().replace(" ", "") in self.taken:
+            raise PlatformError(f"hotkey {spec!r} is already registered by another application")
         hotkey_id = self._next_hotkey_id
         self._next_hotkey_id += 1
         self.hotkeys[hotkey_id] = spec.lower().replace(" ", "")

@@ -64,6 +64,8 @@ std::string_view controlLabel(HudControl control) noexcept {
             return "Expand or collapse";
         case HudControl::Quit:
             return "Quit Jarvis";
+        case HudControl::Minimize:
+            return "Minimize to the orb (click the orb to restore)";
         case HudControl::Close:
             break;
     }
@@ -223,6 +225,11 @@ void expandedHitMap(HitMap& map, const ExpandedLayout& layout) {
         map.addRect(button, HitKind::Control);
     }
     map.addRect(layout.grip, HitKind::Resize);
+}
+
+void orbHitMap(HitMap& map, float centreX, float centreY, float radius) {
+    map.clear();
+    map.addCircle(centreX, centreY, radius, HitKind::Drag);
 }
 
 float approach(float value, float target, float dtSeconds, float seconds) noexcept {

@@ -4,7 +4,9 @@
 small method per UI event. They contain no UI code and little logic; each
 forwards to the component that owns the behaviour (the combined input for
 typed requests, the app controls for quit and mute, the settings controller
-for edits, the user settings store for the HUD's remembered position).
+for edits, the user settings store for the HUD's remembered position and
+whether it was left minimized). :meth:`HudActions.toggle_minimized` is
+what the tray's "Minimize HUD"/"Restore HUD" and the HUD hotkey call.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ log = get_logger(__name__)
 
 POSITION_KEY: Final = "overlay_position"
 EXPANDED_BOUNDS_KEY: Final = "overlay_expanded_bounds"
+ORB_POSITION_KEY: Final = "hud_orb_position"
+MINIMIZED_KEY: Final = "hud_minimized"
 RESTART_UNAVAILABLE: Final = "Quit Jarvis and start it again to apply."
 LOG_UNAVAILABLE: Final = "This session logs to the terminal, not to a file."
 
@@ -38,6 +42,16 @@ class HudOverlay(Protocol):
 
     def add_history(self, role: HistoryRole, text: str) -> None:
         """Append one conversation line."""
+
+    @property
+    def minimized(self) -> bool:
+        """Whether the HUD is (or is shrinking into) the orb."""
+
+    def minimize(self) -> None:
+        """Shrink the HUD into the orb."""
+
+    def restore(self) -> None:
+        """Grow the orb back into the HUD."""
 
 
 class TypedRequests(Protocol):
@@ -82,8 +96,13 @@ class HudActions:
         self._controls: AppControls | None = None
 
     def bind_controls(self, controls: AppControls) -> None:
-        """Use the tray's controls for quit and mute (built after the front end)."""
+        """Use the tray's controls for quit and mute (built after the front end).
+
+        The tray already exists then, so its "Minimize HUD"/"Restore HUD"
+        entry is set from the HUD (which may have started minimized).
+        """
         self._controls = controls
+        self._show_minimized(self._overlay.minimized)
 
     def submit(self, text: str) -> None:
         """Show the typed line like a spoken one, then hand it to the conversation."""
@@ -140,13 +159,50 @@ class HudActions:
         self.quit()
 
     async def placement_changed(self, event: PlacementChanged) -> None:
-        """Remember where the HUD (or the expanded panel) now is."""
-        key = EXPANDED_BOUNDS_KEY if event.expanded else POSITION_KEY
+        """Remember where the HUD (or the expanded panel, or the orb) now is."""
+        key = _placement_key(event)
         value = _position_json(event) if event.custom else None
+        await self._remember(key, value)
+
+    async def minimized(self, automatic: bool) -> None:
+        """The HUD shrank to the orb; remember it unless auto-minimize did it."""
+        await self._minimized_changed(True, automatic)
+
+    async def restored(self, automatic: bool) -> None:
+        """The orb grew back; remember it unless auto-minimize did it."""
+        await self._minimized_changed(False, automatic)
+
+    async def toggle_minimized(self) -> None:
+        """Minimize or restore the HUD (the tray entry and the HUD hotkey)."""
+        minimized = not self._overlay.minimized
+        if minimized:
+            self._overlay.minimize()
+        else:
+            self._overlay.restore()
+        await self._minimized_changed(minimized, False)
+
+    async def _minimized_changed(self, minimized: bool, automatic: bool) -> None:
+        log.info("hud.minimized", minimized=minimized, automatic=automatic)
+        self._show_minimized(minimized)
+        if not automatic:
+            await self._remember(MINIMIZED_KEY, minimized)
+
+    def _show_minimized(self, minimized: bool) -> None:
+        tray = self._controls.tray if self._controls is not None else None
+        if tray is not None:
+            tray.set_hud_minimized(minimized)
+
+    async def _remember(self, key: str, value: object) -> None:
         try:
             await asyncio.to_thread(self._store.update, key, value)
         except (UserSettingsError, OSError):
-            log.exception("hud.placement.not_saved", key=key)
+            log.exception("hud.not_saved", key=key)
+
+
+def _placement_key(event: PlacementChanged) -> str:
+    if event.orb:
+        return ORB_POSITION_KEY
+    return EXPANDED_BOUNDS_KEY if event.expanded else POSITION_KEY
 
 
 def _position_json(event: PlacementChanged) -> dict[str, object]:
@@ -165,3 +221,6 @@ def _position_json(event: PlacementChanged) -> dict[str, object]:
 #   what app.background does after its session ends.
 # - A position that cannot be saved is logged, not raised: the HUD is where
 #   the user put it for this session either way.
+# - Only the user's own minimize and restore are remembered for the next
+#   start. An orb made by auto-minimize is a passing state; starting the
+#   next session minimized because of it would look like a bug.

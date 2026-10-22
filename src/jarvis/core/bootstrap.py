@@ -133,6 +133,8 @@ class FrontEnd:
         microphone: Mutes speech input, if there is any.
         bind_controls: Called with the tray's controls once they exist, so
             the interactive HUD's quit and mute go through them (ADR-0024).
+        toggle_hud_minimized: Shrinks the HUD to its orb or restores it,
+            for the tray's "Minimize HUD" entry, if there is a HUD.
     """
 
     source: InputSource
@@ -144,6 +146,7 @@ class FrontEnd:
     toggle_overlay: Callable[[], None] | None = None
     microphone: MicrophoneSwitch | None = None
     bind_controls: Callable[[AppControls], None] | None = None
+    toggle_hud_minimized: Callable[[], Awaitable[None]] | None = None
 
 
 FrontEndBuilder = Callable[[FrontEndRequest], Awaitable[FrontEnd]]
@@ -614,6 +617,7 @@ async def build_ui(
         dashboard=dashboard,
         toggle_overlay=front.toggle_overlay,
         microphone=front.microphone,
+        toggle_hud_minimized=front.toggle_hud_minimized,
     )
     await build_tray(settings, bus, stack, controls)
     if front.bind_controls is not None:
