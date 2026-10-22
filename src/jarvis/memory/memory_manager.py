@@ -97,9 +97,9 @@ def _said(message: Message) -> str:
 def without_tool_exchanges(messages: Sequence[Message]) -> list[Message]:
     """Drop every tool answer together with the user message it answered.
 
-    ``recall`` also uses this to decide which recent turns are already in
-    the prompt: a hidden exchange stays eligible as a semantic hit, where it
-    appears as its question only, so "what did I ask?" can still find it.
+    A dropped exchange inside the recent window does not come back as a
+    semantic hit either: its question alone ("add milk to my list") was
+    enough for qwen2.5:7b to answer a later "what's on my list" from it.
     """
     kept: list[Message] = []
     for index, message in enumerate(messages):
@@ -269,8 +269,7 @@ class MemoryManager:
         facts = [f for f in await self._store.list_facts() if not f.key.startswith(PROFILE_PREFIX)]
         facts.sort(key=lambda fact: fact.updated_at, reverse=True)
         recent = await self._store.recent_messages(2 * self._recent_turns)
-        shown = {message.id for message in without_tool_exchanges(recent)}
-        semantic = await self._semantic_hits_for(user_text, exclude=shown)
+        semantic = await self._semantic_hits_for(user_text, exclude={m.id for m in recent})
         context = RecalledContext(
             profile=profile.render(),
             facts=tuple(facts),

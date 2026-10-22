@@ -55,10 +55,11 @@ async def test_text_mode_answers_with_tools_and_remembers_the_turn(
         "Goodbye.",
     ]
     assert [e.name for e in finished if isinstance(e, ToolCallFinished)] == ["current_time"]
-    # The second request was answered with the first turn recalled from SQLite.
+    # The first turn was answered with a tool, so its stale data stays out of
+    # the second prompt (ADR-0028); the turn itself is still stored below.
     second_system = llm.requests[2][0]
     assert isinstance(second_system, SystemMessage)
-    assert "what time is it?" in second_system.text
+    assert "It is a fine evening" not in second_system.text
     async with SqliteStore(tmp_path / MEMORY_DB_FILENAME) as store:
         messages = await store.recent_messages(10)
     assert [(m.role, m.content) for m in messages][:2] == [

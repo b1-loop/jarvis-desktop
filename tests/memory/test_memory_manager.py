@@ -321,15 +321,15 @@ async def test_semantic_hits_lose_the_answers_that_came_from_tools(
     assert "Milk and eggs." not in context.render()
 
 
-async def test_a_hidden_recent_tool_exchange_comes_back_as_its_question(
+async def test_a_hidden_recent_tool_exchange_does_not_come_back_as_a_semantic_hit(
     manager: MemoryManager,
 ) -> None:
-    await manager.record_turn("what time is it", "It is 09:11.", [{"name": "current_time"}])
+    await manager.record_turn("add milk to my list", "Added milk.", [{"name": "add_todo"}])
 
-    context = await manager.recall("what did I ask about the time")
+    context = await manager.recall("what is on my list")
 
-    assert [hit.text for hit in context.semantic] == ["User: what time is it"]
-    assert "09:11" not in context.render()
+    assert context.semantic == ()
+    assert "milk" not in context.render()
 
 
 async def test_semantic_hits_without_a_message_id_are_kept_as_they_are(
