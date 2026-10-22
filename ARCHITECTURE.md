@@ -199,6 +199,22 @@ on the LLM interface and lands with it. See ADR-0006.
 facts + recent turns + semantic hits trimmed to a character budget. All data
 stays under `Settings.data_dir`. See ADR-0008.
 
+## 7b. Vision *(step 11)*
+
+`vision/ScreenReader` turns "what does this error mean?" into one request:
+capture through `Platform` (primary monitor, whole desktop, or only the
+focused window), a `Redactor` hook (no-op today), downscale to
+`vision_max_long_edge` and re-encode PNG, then JPEG, then smaller until the
+base64 fits `vision_max_image_bytes` (`vision/imaging.py`, in a worker
+thread), and one user message with the image and the question to a
+vision-capable `LLMClient`. `vision/factory.py` picks that client from the
+configured provider (Claude with `vision_model`, Ollama only with
+`ollama_vision_model`, none for llama.cpp). Tools reach it through
+`ToolContext.vision`; `describe_screen`, `explain_screen_error` and
+`ask_about_screen` share `tools/_screen.py` and say aloud when a screenshot
+went to a cloud provider. Captures happen only inside a tool call. See
+ADR-0016.
+
 ## 7a. Local inference *(step 12)*
 
 `native/inference` wraps whisper.cpp and llama.cpp (ADR-0010). Transcription
