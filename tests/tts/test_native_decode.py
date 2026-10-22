@@ -42,6 +42,21 @@ def test_decode_mp3_rejects_garbage_with_decode_error(jarvis_audio: ModuleType) 
         jarvis_audio.decode_mp3(b"definitely not an mp3 file")
 
 
+def test_audio_errors_keep_their_type_after_other_native_modules_load(
+    jarvis_audio: ModuleType,
+) -> None:
+    # Every module binds its own NativeError to the same C++ type; with
+    # global translators the last module imported used to claim them all.
+    for name in ("jarvis_overlay", "jarvis_os", "jarvis_inference"):
+        try:
+            _native.load(name)
+        except NativeUnavailableError:
+            continue
+
+    with pytest.raises(jarvis_audio.DecodeError):
+        jarvis_audio.decode_mp3(b"still not an mp3 file")
+
+
 async def test_batched_decoding_with_overlap_matches_a_whole_file_decode(
     jarvis_audio: ModuleType,
 ) -> None:

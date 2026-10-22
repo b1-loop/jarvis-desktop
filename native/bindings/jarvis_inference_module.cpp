@@ -109,12 +109,15 @@ const char* finishReasonName(FinishReason reason) {
     return "unknown";
 }
 
-// Translators are consulted most-recently-registered first, so the base
+// Translators are module-local: every Jarvis module binds its own NativeError
+// to the same C++ type, and global translators would let whichever module was
+// imported last translate the others' errors. Within a module they are
+// consulted most-recently-registered first, so the base
 // class goes first and the derived class after it.
 void defineExceptions(const py::module_& module) {
-    const auto& nativeError =
-        py::register_exception<jarvis::NativeError>(module, "NativeError", PyExc_RuntimeError);
-    py::register_exception<jarvis::ModelError>(module, "ModelError", nativeError.ptr());
+    const auto& nativeError = py::register_local_exception<jarvis::NativeError>(
+        module, "NativeError", PyExc_RuntimeError);
+    py::register_local_exception<jarvis::ModelError>(module, "ModelError", nativeError.ptr());
 }
 
 void defineTranscript(const py::module_& module) {

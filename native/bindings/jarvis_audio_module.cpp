@@ -71,14 +71,18 @@ std::unique_ptr<AudioEngine> makeEngine(const std::filesystem::path& vadModel,
                                          config);
 }
 
-// Translators are consulted most-recently-registered first, so the base
+// Translators are module-local: every Jarvis module binds its own NativeError
+// to the same C++ type, and global translators would let whichever module was
+// imported last translate the others' errors. Within a module they are
+// consulted most-recently-registered first, so the base
 // class goes first and the derived classes after it.
 void defineExceptions(const py::module_& module) {
-    const auto& nativeError =
-        py::register_exception<jarvis::NativeError>(module, "NativeError", PyExc_RuntimeError);
-    py::register_exception<jarvis::AudioDeviceError>(module, "AudioDeviceError", nativeError.ptr());
-    py::register_exception<jarvis::ModelError>(module, "ModelError", nativeError.ptr());
-    py::register_exception<jarvis::DecodeError>(module, "DecodeError", nativeError.ptr());
+    const auto& nativeError = py::register_local_exception<jarvis::NativeError>(
+        module, "NativeError", PyExc_RuntimeError);
+    py::register_local_exception<jarvis::AudioDeviceError>(module, "AudioDeviceError",
+                                                           nativeError.ptr());
+    py::register_local_exception<jarvis::ModelError>(module, "ModelError", nativeError.ptr());
+    py::register_local_exception<jarvis::DecodeError>(module, "DecodeError", nativeError.ptr());
 }
 
 std::span<const std::byte> asBytes(const py::bytes& data) {
