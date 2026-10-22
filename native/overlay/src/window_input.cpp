@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 
 // The backend keeps this declaration behind '#if 0' in its header so the
@@ -98,6 +99,14 @@ void OverlayWindow::Impl::updateHitMap(const FrameLayout& layout, bool booting) 
     inputRect.reset();
     hitRing = layout.geometry;
     if (!config.interactive || booting) {
+        return;
+    }
+    if (layout.orb > 0.0F) {
+        // Only the finished orb is clickable; mid-morph nothing is.
+        if (layout.orb >= 1.0F) {
+            const HudGeometry& orb = layout.geometry;
+            orbHitMap(hitMap, orb.centreX, orb.centreY, orb.radius);
+        }
         return;
     }
     if (layout.expand <= 0.0F) {
@@ -189,23 +198,32 @@ bool OverlayWindow::Impl::beginDrag(POINT client, bool doubleClick) {
     if (kind != HitKind::Drag && kind != HitKind::Resize) {
         return false;
     }
-    const bool expanded = expandLinear >= 1.0F;
+    const HudPanel panel = activePanel();
     const float dx = static_cast<float>(client.x) - hitRing.centreX;
     const float dy = static_cast<float>(client.y) - hitRing.centreY;
-    if (doubleClick && kind == HitKind::Drag && std::hypot(dx, dy) <= hitRing.radius) {
-        resetPlacement(expanded);
+    // A double-click on the ring resets the HUD's place; on the orb it is
+    // simply another click (the first one already restores).
+    if (doubleClick && kind == HitKind::Drag && panel != HudPanel::Orb &&
+        std::hypot(dx, dy) <= hitRing.radius) {
+        resetPlacement(panel == HudPanel::Expanded);
         return true;
     }
     POINT screen = client;
     ClientToScreen(hwnd.load(), &screen);
     drag = DragState{.mode = kind == HitKind::Resize ? DragMode::Resize : DragMode::Move,
-                     .expanded = expanded,
+                     .panel = panel,
                      .anchor = {},
                      .start = screen,
-                     .startRect = expanded ? expandedPanel : cornerPanel};
+                     .startRect = panelRect(panel),
+                     .moved = panel != HudPanel::Orb};
     drag.anchor = anchorFor(drag.startRect, screen.x, screen.y);
     SetCapture(hwnd.load());
     return true;
+}
+
+bool OverlayWindow::Impl::leftDragRectangle(POINT cursor) const noexcept {
+    return std::abs(cursor.x - drag.start.x) > GetSystemMetrics(SM_CXDRAG) ||
+           std::abs(cursor.y - drag.start.y) > GetSystemMetrics(SM_CYDRAG);
 }
 
 void OverlayWindow::Impl::continueDrag() {
@@ -213,7 +231,13 @@ void OverlayWindow::Impl::continueDrag() {
     if (GetCursorPos(&cursor) == 0) {
         return;
     }
-    Placement& rect = drag.expanded ? expandedPanel : cornerPanel;
+    if (!drag.moved) {
+        if (!leftDragRectangle(cursor)) {
+            return;  // still a click on the orb
+        }
+        drag.moved = true;
+    }
+    Placement& rect = panelRect(drag.panel);
     if (drag.mode == DragMode::Move) {
         const Placement moved = dragTo(drag.anchor, cursor.x, cursor.y, rect.width, rect.height);
         const MonitorArea& monitor = monitorOf(moved);
@@ -233,17 +257,21 @@ void OverlayWindow::Impl::continueDrag() {
     rect = grown;
 }
 
-void OverlayWindow::Impl::endDrag() {
+void OverlayWindow::Impl::endDrag(bool released) {
     if (drag.mode == DragMode::None) {
         return;
     }
-    const bool expanded = drag.expanded;
+    const DragState ended = drag;
     // Cleared first: ReleaseCapture sends WM_CAPTURECHANGED synchronously.
     drag.mode = DragMode::None;
     if (GetCapture() == hwnd.load()) {
         ReleaseCapture();
     }
-    reportPlacement(expanded);
+    if (ended.moved) {
+        reportPlacement(ended.panel);
+    } else if (released) {
+        setOrbTarget(false, false, true);  // a click on the orb restores the HUD
+    }
 }
 
 bool OverlayWindow::Impl::onSetCursor() const {
@@ -253,7 +281,8 @@ bool OverlayWindow::Impl::onSetCursor() const {
     const HitKind kind = hitAtClient(cursor);
     LPCSTR shape = IDC_ARROW;
     if (kind == HitKind::Drag) {
-        shape = IDC_SIZEALL;
+        // The orb's main action is a click (restore); the HUD's is a drag.
+        shape = activePanel() == HudPanel::Orb ? IDC_HAND : IDC_SIZEALL;
     } else if (kind == HitKind::Resize) {
         shape = IDC_SIZENWSE;
     } else if (kind == HitKind::Control && inputRect.has_value() && contains(*inputRect, cursor)) {
@@ -315,12 +344,12 @@ std::optional<LRESULT> OverlayWindow::Impl::handleMouse(UINT message, LPARAM lPa
             return std::nullopt;
         case WM_LBUTTONUP:
             if (drag.mode != DragMode::None) {
-                endDrag();
+                endDrag(true);
                 return 0;
             }
             return std::nullopt;
         case WM_CAPTURECHANGED:
-            endDrag();
+            endDrag(false);
             return std::nullopt;
         default:
             return std::nullopt;
@@ -331,7 +360,7 @@ void OverlayWindow::Impl::onDpiChanged(WPARAM wParam) {
     const float next = static_cast<float>(highWord(static_cast<LPARAM>(wParam))) / kBaseDpi;
     if (drag.mode != DragMode::None && dpiScale > 0.0F) {
         // Mid-drag onto another monitor: keep the logical size.
-        Placement& rect = drag.expanded ? expandedPanel : cornerPanel;
+        Placement& rect = panelRect(drag.panel);
         const float ratio = next / dpiScale;
         rect.width = static_cast<int>(std::lround(static_cast<float>(rect.width) * ratio));
         rect.height = static_cast<int>(std::lround(static_cast<float>(rect.height) * ratio));

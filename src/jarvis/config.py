@@ -68,6 +68,12 @@ SMALL_MODEL_TOOLS_PER_TURN: Final = 12
 ALL_TOOLS_PER_TURN: Final = 0
 """``max_tools_per_turn`` value that offers every tool (the Claude default)."""
 
+DEFAULT_TOOL_EMBEDDING_MODEL: Final = "bge-m3"
+"""Multilingual Ollama embedding model for tool selection; measured in ADR-0020."""
+
+_DISABLED_WORDS: Final = frozenset({"none", "off", "false"})
+_MODEL_DEFAULT_WORDS: Final = frozenset({"default", "auto", "none"})
+
 
 class RuntimeMode(StrEnum):
     """Which set of providers the pipeline is assembled from.
@@ -379,6 +385,52 @@ class Settings(BaseSettings):
     """Position and size of the expanded panel; None opens it at 900 x 640."""
     user_settings_enabled: bool = True
     """Layer ``data_dir/user_settings.json`` (the HUD's choices) over ``.env``."""
+
+    # HUD minimize
+    hud_toggle_hotkey: str = "ctrl+alt+h"
+    """Global hotkey that minimizes the HUD to its orb and restores it; empty disables it.
+    Skipped (and logged) if it is the voice hotkey or another program owns it."""
+    hud_auto_minimize_seconds: float = Field(default=0.0, ge=0.0)
+    """Shrink the idle, untouched HUD to the orb after this many seconds; 0 is off.
+    A wake word or a turn pops it back, and it returns after the turn plus the delay."""
+    hud_hide_in_fullscreen: bool = True
+    """Hide the HUD and the orb while a full-screen application (game, video,
+    presentation) is in front on their monitor."""
+    hud_minimized: bool = False
+    """Whether the user left the HUD minimized; written by the HUD, restored at start."""
+    hud_orb_position: HudPosition | None = None
+    """Where the user dragged the orb; None docks it at the screen edge nearest the HUD."""
+
+    # Tool selection (multilingual)
+    tool_embedding_model: str | None = DEFAULT_TOOL_EMBEDDING_MODEL
+    """Ollama embedding model for the semantic half of tool selection; None = words only."""
+    tool_embedding_timeout_ms: int = Field(default=150, ge=1)
+    """Longest a turn waits for the request's embedding before ranking by words alone."""
+    tool_selection_keyword_weight: float = Field(default=0.4, ge=0.0)
+    """Share of word overlap in the hybrid tool ranking (ADR-0020, update)."""
+    tool_selection_semantic_weight: float = Field(default=0.6, ge=0.0)
+    """Share of embedding similarity in the hybrid tool ranking."""
+    ollama_think: bool | None = False
+    """Ollama's ``think`` field: False/True, or None for the model's own default.
+
+    Off by default: thinking models (qwen3) otherwise reason before every
+    answer, which multiplied a spoken turn's latency in measurements."""
+
+    @field_validator("tool_embedding_model", mode="before")
+    @classmethod
+    def _disabled_embedding_model_is_none(cls, value: object) -> object:
+        """``none`` or ``off`` turns the embedding ranking off (empty keeps the default)."""
+        if isinstance(value, str) and value.strip().lower() in _DISABLED_WORDS:
+            return None
+        return value
+
+    @field_validator("ollama_think", mode="before")
+    @classmethod
+    def _default_think_is_none(cls, value: object) -> object:
+        """``default`` or ``auto`` leaves thinking to the model (sends no ``think`` field)."""
+        if isinstance(value, str) and value.strip().lower() in _MODEL_DEFAULT_WORDS:
+            return None
+        return value
 
     @classmethod
     def settings_customise_sources(

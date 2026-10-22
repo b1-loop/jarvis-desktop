@@ -85,8 +85,11 @@ add_library(jarvis_overlay_ui STATIC
     src/hud_panel.cpp
     src/hud_scene.cpp
     src/hud_settings_ui.cpp
+    src/hud_orb.cpp
     src/layout.cpp
+    src/minimize_policy.cpp
     src/model.cpp
+    src/orb.cpp
     src/particles.cpp
     src/placement.cpp
     src/postfx.cpp
@@ -98,6 +101,7 @@ add_library(jarvis_overlay_ui STATIC
     src/ui_events.cpp
     src/window.cpp
     src/window_input.cpp
+    src/window_orb.cpp
     src/window_place.cpp)
 add_library(jarvis::overlay ALIAS jarvis_overlay_ui)
 

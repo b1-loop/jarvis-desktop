@@ -44,6 +44,8 @@ from jarvis.core.bootstrap import (
     run_text_mode,
 )
 from jarvis.core.combined_input import CombinedAnswers, CombinedInput
+from jarvis.core.hotkey_router import HotkeyRouter
+from jarvis.core.hud_hotkey import HudHotkey
 from jarvis.core.hud_wiring import HudActions
 from jarvis.core.interruption import BargeInController
 from jarvis.core.orchestrator import Orchestrator, TerminalOutput, Writer
@@ -194,6 +196,10 @@ def overlay_config(settings: Settings) -> OverlayConfig:
         interactive=settings.overlay_interactive,
         position=_saved(settings.overlay_position),
         expanded_bounds=_saved(settings.overlay_expanded_bounds),
+        start_minimized=settings.hud_minimized,
+        orb_position=_saved(settings.hud_orb_position),
+        auto_minimize_seconds=settings.hud_auto_minimize_seconds,
+        hide_in_fullscreen=settings.hud_hide_in_fullscreen,
     )
 
 
@@ -302,6 +308,8 @@ def live_appliers(overlay: Overlay, settings: Settings, parts: _HudParts) -> dic
         "overlay_theme": appearance.set_theme,
         "overlay_intensity": appearance.set_intensity,
         "speak_replies": parts.replies.set_speak,
+        "hud_auto_minimize_seconds": lambda seconds: overlay.set_auto_minimize(float(seconds)),
+        "hud_hide_in_fullscreen": lambda hide: overlay.set_hide_in_fullscreen(bool(hide)),
     }
     if parts.audio.wake_word_active:
         appliers["wake_word_threshold"] = parts.audio.engine.set_wake_word_threshold
@@ -381,9 +389,10 @@ class VoiceFrontEndBuilder:
         except native_error as error:
             raise VoiceUnavailableError(f"no audio output device: {error}") from error
         stt = await self._load_stt(request.settings)
-        trigger = await self._trigger(request, audio)
+        hotkeys = HotkeyRouter(request.platform)
+        trigger = await self._trigger(request, audio, hotkeys)
         overlay = self._overlay(request, audio.engine, speaker)
-        return self._assemble(
+        front = self._assemble(
             request=request,
             audio=audio,
             speaker=speaker,
@@ -392,6 +401,8 @@ class VoiceFrontEndBuilder:
             trigger=trigger,
             overlay=overlay,
         )
+        await self._hud_hotkey(request, hotkeys, front)
+        return front
 
     async def _start_audio(self, request: FrontEndRequest, native_error: type[Exception]) -> _Audio:
         settings = request.settings
@@ -440,11 +451,13 @@ class VoiceFrontEndBuilder:
             await stt.warm_up()
         return stt
 
-    async def _trigger(self, request: FrontEndRequest, audio: _Audio) -> TurnTrigger:
+    async def _trigger(
+        self, request: FrontEndRequest, audio: _Audio, hotkeys: HotkeyRouter
+    ) -> TurnTrigger:
         triggers: list[TurnTrigger] = []
         if audio.wake_word_active:
             triggers.append(WakeWordTrigger(audio.engine))
-        hotkey = HotkeyTrigger(request.platform, request.settings.hotkey)
+        hotkey = HotkeyTrigger(hotkeys.view(), request.settings.hotkey)
         try:
             await hotkey.register()
         except PlatformError as error:
@@ -455,6 +468,22 @@ class VoiceFrontEndBuilder:
             request.stack.push_async_callback(hotkey.aclose)
             triggers.append(hotkey)
         return AnyTrigger(triggers)
+
+    async def _hud_hotkey(
+        self, request: FrontEndRequest, hotkeys: HotkeyRouter, front: FrontEnd
+    ) -> None:
+        """The minimize/restore hotkey, unless it is off, the voice hotkey or taken."""
+        if front.toggle_hud_minimized is None:
+            return
+        settings = request.settings
+        hotkey = HudHotkey(
+            hotkeys.view(),
+            settings.hud_toggle_hotkey,
+            front.toggle_hud_minimized,
+            reserved=(settings.hotkey,),
+        )
+        if await hotkey.start():
+            request.stack.push_async_callback(hotkey.aclose)
 
     def _overlay(
         self, request: FrontEndRequest, engine: AudioEngine, speaker: Speaker
@@ -558,6 +587,7 @@ class VoiceFrontEndBuilder:
             toggle_overlay=overlay.toggle,
             microphone=microphone,
             bind_controls=hud.bind_controls,
+            toggle_hud_minimized=hud.toggle_minimized,
         )
 
     def _hud(
@@ -670,6 +700,9 @@ async def run_voice_mode(
 # - The tray and dashboard are built by bootstrap.build_ui for both front
 #   ends; this module only contributes the overlay toggle and the
 #   microphone switch their menu needs.
+# - The voice hotkey and the HUD hotkey (minimize to the orb) share one
+#   HotkeyRouter: Platform.poll_hotkeys clears what it returns, so two
+#   independent pollers would steal each other's presses.
 # - Muting stops the audio engine (the device is really closed, which
 #   Windows shows in its microphone indicator) and makes the input ignore
 #   hotkey presses until unmuted.

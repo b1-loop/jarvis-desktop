@@ -40,6 +40,7 @@ class PlayMusicTool(Tool[PlayMusicInput]):
     )
     Input = PlayMusicInput
     category = ToolCategory.MEDIA
+    keywords = ("spela", "musik")
 
     async def run(self, params: PlayMusicInput, context: ToolContext) -> ToolResult:
         """Ask the provider to play the query and report the track."""

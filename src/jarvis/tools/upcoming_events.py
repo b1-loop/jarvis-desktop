@@ -109,6 +109,7 @@ class UpcomingEventsTool(Tool[UpcomingEventsInput]):
     )
     Input = UpcomingEventsInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("meeting", "next", "möte", "möten", "nästa")
 
     async def run(self, params: UpcomingEventsInput, context: ToolContext) -> ToolResult:
         """Run the shared query and describe the next event first."""

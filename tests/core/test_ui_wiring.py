@@ -71,8 +71,22 @@ async def test_missing_parts_are_logged_no_ops() -> None:
 
     controls.show_dashboard()
     controls.toggle_overlay()
+    controls.toggle_hud_minimized()
     controls.toggle_microphone()
     await asyncio.sleep(0)
+
+
+async def test_the_minimize_entry_runs_the_hud_toggle_off_the_callback() -> None:
+    toggles: list[int] = []
+
+    async def toggle() -> None:
+        toggles.append(1)
+
+    controls = AppControls(stop=lambda: None, toggle_hud_minimized=toggle)
+    controls.toggle_hud_minimized()
+    assert toggles == []  # the tray callback returns at once; the toggle runs as a task
+    await eventually(lambda: toggles)
+    assert toggles == [1]
 
 
 async def test_disabled_dashboard_and_tray_are_stubs(make_settings: MakeSettings) -> None:

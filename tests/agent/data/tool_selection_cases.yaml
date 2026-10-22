@@ -76,3 +76,235 @@ cases:
     expected: [clipboard_set]
   - request: run dir in the terminal
     expected: [shell_command]
+
+  # -- Swedish (ADR-0020, update of 2026-10-22) --------------------------------
+  # The user speaks Swedish (JARVIS_STT_LANGUAGE=sv). Natural phrasing as a
+  # Swedish speaker says it, including definite forms and compounds
+  # ("att-göra-listan", "ljusstyrkan", "skärmdump", "påminnelser").
+  - request: vad är klockan?
+    expected: [current_time]
+    lang: sv
+  - request: vilket datum är det idag?
+    expected: [current_time]
+    lang: sv
+  - request: hur mycket batteri har jag?
+    expected: [battery_status, system_monitor]
+    lang: sv
+  - request: hur mycket minne använder datorn?
+    expected: [system_monitor]
+    lang: sv
+  - request: varför är datorn så långsam?
+    expected: [system_monitor]
+    lang: sv
+  - request: hur hårt jobbar processorn just nu?
+    expected: [system_monitor]
+    lang: sv
+  - request: höj volymen lite
+    expected: [set_volume]
+    lang: sv
+  - request: sänk ljudet
+    expected: [set_volume]
+    lang: sv
+  - request: stäng av ljudet helt
+    expected: [mute]
+    lang: sv
+  - request: sänk ljusstyrkan på skärmen
+    expected: [set_brightness]
+    lang: sv
+  - request: gör skärmen ljusare
+    expected: [set_brightness]
+    lang: sv
+  - request: ta en skärmdump
+    expected: [take_screenshot]
+    lang: sv
+  - request: lås datorn
+    expected: [lock_screen]
+    lang: sv
+  - request: öppna Spotify
+    expected: [open_app]
+    lang: sv
+  - request: stäng Anteckningar
+    expected: [close_app]
+    lang: sv
+  - request: växla till Chrome
+    expected: [switch_window]
+    lang: sv
+  - request: minimera det här fönstret
+    expected: [window_action]
+    lang: sv
+  - request: lägg till mjölk på att-göra-listan
+    expected: [add_todo]
+    lang: sv
+  - request: vad står på min att-göra-lista?
+    expected: [list_todos]
+    lang: sv
+  - request: bocka av mjölken på listan
+    expected: [complete_todo]
+    lang: sv
+  - request: påminn mig att ringa mamma klockan sex
+    expected: [add_reminder]
+    lang: sv
+  - request: vilka påminnelser har jag?
+    expected: [list_reminders]
+    lang: sv
+  - request: anteckna att wifi-lösenordet sitter på kylskåpet
+    expected: [add_note]
+    lang: sv
+  - request: vad har jag i kalendern idag?
+    expected: [todays_agenda]
+    lang: sv
+  - request: boka ett möte med Anna i morgon klockan tre
+    expected: [create_event]
+    lang: sv
+  - request: när är mitt nästa möte?
+    expected: [upcoming_events]
+    lang: sv
+  - request: har jag fått några nya mejl?
+    expected: [list_unread_email, summarize_inbox]
+    lang: sv
+  - request: sök i mejlen efter fakturan från kunden
+    expected: [search_email]
+    lang: sv
+  - request: hur blir vädret i Stockholm i morgon?
+    expected: [web_search]
+    lang: sv
+  - request: spela lite jazz
+    expected: [play_music]
+    lang: sv
+  - request: hoppa över den här låten
+    expected: [music_control]
+    lang: sv
+  - request: vilken låt är det här?
+    expected: [now_playing]
+    lang: sv
+  - request: hitta mitt CV som pdf
+    expected: [find_files]
+    lang: sv
+  - request: när är jag ledig en timme den här veckan?
+    expected: [find_free_slot]
+    lang: sv
+  - request: vad är det jag tittar på?
+    expected: [describe_screen, ask_about_screen]
+    lang: sv
+  - request: kör testerna för projektet
+    expected: [run_tests]
+    lang: sv
+
+  # -- Swedish, held out ---------------------------------------------------------
+  # Written after the Swedish keywords and never used to write them, so
+  # their keyword hit rate shows how word overlap generalises to phrasing
+  # nobody anticipated. The hybrid weights were chosen on all cases
+  # (ADR-0020, update). Do not add keywords to make these pass; add a new
+  # held-out case instead when a real session misses.
+  - request: hur dags är det?
+    expected: [current_time]
+    lang: sv
+    holdout: true
+  - request: vilken veckodag är det i dag?
+    expected: [current_time]
+    lang: sv
+    holdout: true
+  - request: hur länge räcker laddningen?
+    expected: [battery_status, system_monitor]
+    lang: sv
+    holdout: true
+  - request: är datorn överbelastad?
+    expected: [system_monitor]
+    lang: sv
+    holdout: true
+  - request: vilka program drar mest resurser?
+    expected: [system_monitor]
+    lang: sv
+    holdout: true
+  - request: det är för tyst, skruva upp
+    expected: [set_volume]
+    lang: sv
+    holdout: true
+  - request: dra ner ljudet lite
+    expected: [set_volume]
+    lang: sv
+    holdout: true
+  - request: skärmen är för stark
+    expected: [set_brightness]
+    lang: sv
+    holdout: true
+  - request: spara en bild av skärmen
+    expected: [take_screenshot]
+    lang: sv
+    holdout: true
+  - request: starta Word
+    expected: [open_app]
+    lang: sv
+    holdout: true
+  - request: avsluta Teams
+    expected: [close_app]
+    lang: sv
+    holdout: true
+  - request: gå till webbläsaren
+    expected: [switch_window]
+    lang: sv
+    holdout: true
+  - request: jag måste köpa bröd, skriv upp det
+    expected: [add_todo]
+    lang: sv
+    holdout: true
+  - request: vad har jag kvar att göra?
+    expected: [list_todos]
+    lang: sv
+    holdout: true
+  - request: jag är klar med tvätten
+    expected: [complete_todo]
+    lang: sv
+    holdout: true
+  - request: säg till mig om tjugo minuter att ta ut pizzan
+    expected: [add_reminder]
+    lang: sv
+    holdout: true
+  - request: kom ihåg att parkeringen kostar tjugo kronor i timmen
+    expected: [add_note, add_reminder]
+    lang: sv
+    holdout: true
+  - request: har jag några möten i eftermiddag?
+    expected: [todays_agenda, upcoming_events]
+    lang: sv
+    holdout: true
+  - request: lägg in tandläkaren på fredag klockan tio
+    expected: [create_event]
+    lang: sv
+    holdout: true
+  - request: har någon skrivit till mig?
+    expected: [list_unread_email, read_messages, summarize_inbox]
+    lang: sv
+    holdout: true
+  - request: vad säger nyheterna om valet?
+    expected: [web_search]
+    lang: sv
+    holdout: true
+  - request: pausa musiken
+    expected: [music_control]
+    lang: sv
+    holdout: true
+  - request: vad heter artisten som spelas nu?
+    expected: [now_playing]
+    lang: sv
+    holdout: true
+  - request: var ligger filen jag jobbade med senast?
+    expected: [recent_files]
+    lang: sv
+    holdout: true
+  - request: vad betyder felet på skärmen?
+    expected: [explain_screen_error, ask_about_screen]
+    lang: sv
+    holdout: true
+  - request: tänd lampan i vardagsrummet
+    expected: [set_device]
+    lang: sv
+    holdout: true
+  - request: vad står det i urklippet?
+    expected: [clipboard_get]
+    lang: sv
+    holdout: true
+  - request: hur ser git-statusen ut?
+    expected: [git_status]
+    lang: sv
+    holdout: true

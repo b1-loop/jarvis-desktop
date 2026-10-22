@@ -79,3 +79,21 @@ TEST_CASE("a history limit of zero still keeps the newest line", "[overlay][hud-
     REQUIRE(model.snapshot().history->size() == 1);
     REQUIRE(model.snapshot().history->front().text == "b");
 }
+
+TEST_CASE("minimize requests and the minimize options travel as data", "[overlay][hud][orb]") {
+    HudDataModel model;
+    REQUIRE_FALSE(model.snapshot().minimizeRequest.has_value());
+    REQUIRE(model.snapshot().hideInFullscreen);
+    model.requestMinimized(true);
+    model.requestMinimized(false);
+    model.setAutoMinimize(-5.0F);
+    model.setHideInFullscreen(false);
+
+    const auto data = model.snapshot();
+    REQUIRE(data.minimizeRequest == false);
+    REQUIRE(data.minimizeRequestId == 2);
+    REQUIRE(data.autoMinimizeSeconds == 0.0F);
+    REQUIRE_FALSE(data.hideInFullscreen);
+    model.setAutoMinimize(30.0F);
+    REQUIRE(model.snapshot().autoMinimizeSeconds == 30.0F);
+}

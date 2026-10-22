@@ -74,6 +74,19 @@ void defineEnums(const py::module_& module) {
         .value("MAX", anim::Intensity::Max);
 }
 
+/// The minimize-to-orb options of OverlayConfig (ADR-0024, update).
+void defineMinimizeConfig(py::class_<OverlayConfig>& config) {
+    config
+        .def_readwrite("start_minimized", &OverlayConfig::startMinimized,
+                       "Start as the orb (after the boot, if one plays).")
+        .def_readwrite("orb_position", &OverlayConfig::orbPosition,
+                       "Remembered orb position (SavedPlacement) or None to dock by the HUD.")
+        .def_readwrite("auto_minimize_seconds", &OverlayConfig::autoMinimizeSeconds,
+                       "Shrink to the orb after this many quiet seconds; 0 is off.")
+        .def_readwrite("hide_in_fullscreen", &OverlayConfig::hideInFullscreen,
+                       "Hide while a full-screen application is in front on the HUD's monitor.");
+}
+
 void defineConfig(const py::module_& module) {
     py::class_<ModelLimits>(module, "ModelLimits",
                             "Bounds that keep the overlay's memory independent of its input.")
@@ -83,9 +96,9 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("wake_flash", &ModelLimits::wakeFlashDuration,
                        "datetime.timedelta the wake-word flash stays visible.");
 
-    py::class_<OverlayConfig>(module, "OverlayConfig",
-                              "Geometry and behaviour of the window (sizes at 96 DPI).")
-        .def(py::init<>())
+    py::class_<OverlayConfig> config(module, "OverlayConfig",
+                                     "Geometry and behaviour of the window (sizes at 96 DPI).");
+    config.def(py::init<>())
         .def_readwrite("corner", &OverlayConfig::corner)
         .def_readwrite("size", &OverlayConfig::size)
         .def_readwrite("width", &OverlayConfig::width, "Explicit width; 0 takes the size preset's.")
@@ -110,6 +123,7 @@ void defineConfig(const py::module_& module) {
                        "Remembered corner-HUD position (SavedPlacement) or None.")
         .def_readwrite("expanded_bounds", &OverlayConfig::expandedBounds,
                        "Remembered expanded-panel position and size (SavedPlacement) or None.");
+    defineMinimizeConfig(config);
 }
 
 void definePlacement(const py::module_& module) {
@@ -296,7 +310,13 @@ py::dict eventToDict(const UiEvent& event) {
     if (const auto* moved = std::get_if<PlacementChanged>(&event)) {
         return py::dict("kind"_a = kind, "expanded"_a = moved->expanded, "custom"_a = moved->custom,
                         "monitor"_a = moved->monitor, "x"_a = moved->x, "y"_a = moved->y,
-                        "width"_a = moved->width, "height"_a = moved->height);
+                        "width"_a = moved->width, "height"_a = moved->height, "orb"_a = moved->orb);
+    }
+    if (const auto* minimized = std::get_if<Minimized>(&event)) {
+        return py::dict("kind"_a = kind, "automatic"_a = minimized->automatic);
+    }
+    if (const auto* restored = std::get_if<Restored>(&event)) {
+        return py::dict("kind"_a = kind, "automatic"_a = restored->automatic);
     }
     return py::dict("kind"_a = kind);
 }
@@ -313,6 +333,12 @@ UiEvent eventFromDict(const py::dict& event) {
     if (kind == "setting_changed") {
         return SettingChanged{.key = field<std::string>(event, "key"),
                               .value = field<std::string>(event, "value")};
+    }
+    if (kind == "minimize") {
+        return Minimized{.automatic = field<bool>(event, "automatic")};
+    }
+    if (kind == "restore") {
+        return Restored{.automatic = field<bool>(event, "automatic")};
     }
     const std::vector<std::pair<std::string_view, UiEvent>> simple{
         {"close", CloseRequested{}},     {"quit", QuitRequested{}},
@@ -349,7 +375,10 @@ py::dict hudSnapshot(const OverlayWindow& window) {
                     "restart_pending"_a = data.settings->restartPending,
                     "theme"_a = std::string{toString(data.appearance.theme)},
                     "intensity"_a = std::string{anim::toString(data.appearance.intensity)},
-                    "size"_a = std::string{toString(data.appearance.size)});
+                    "size"_a = std::string{toString(data.appearance.size)},
+                    "minimized"_a = window.minimized(),
+                    "auto_minimize_seconds"_a = data.autoMinimizeSeconds,
+                    "hide_in_fullscreen"_a = data.hideInFullscreen);
 }
 
 void setDemo(OverlayWindow& window, bool hover, std::optional<std::string> input) {
@@ -363,7 +392,8 @@ void defineWindowHud(WindowClass& window) {
         .def("poll_ui_events", &pollUiEvents,
              "Everything the user did since the last call, oldest first, as dicts\n"
              "with a 'kind' key (submit_text, close, quit, toggle_mute, set_expanded,\n"
-             "setting_changed, open_log, restart, settings_opened, placement_changed).")
+             "setting_changed, open_log, restart, settings_opened, placement_changed,\n"
+             "minimize, restore).")
         .def("dropped_ui_events", &OverlayWindow::droppedUiEvents,
              "Events lost to the queue's drop-oldest overflow policy.")
         .def(
@@ -395,6 +425,19 @@ void defineWindowHud(WindowClass& window) {
              "moving the mouse or taking the keyboard focus.");
 }
 
+void defineWindowMinimize(WindowClass& window) {
+    window
+        .def("set_minimized", &OverlayWindow::setMinimized, py::arg("minimized"),
+             "Shrink the HUD into the orb (True) or grow it back (False), animated.")
+        .def("minimized", &OverlayWindow::minimized,
+             "Whether the HUD is (or is animating towards) the orb.")
+        .def("set_auto_minimize", &OverlayWindow::setAutoMinimize, py::arg("seconds"),
+             "Shrink to the orb after this many quiet seconds; 0 switches it off.")
+        .def("set_hide_in_fullscreen", &OverlayWindow::setHideInFullscreen, py::arg("hide"))
+        .def("fullscreen_hidden", &OverlayWindow::fullscreenHidden,
+             "True while hidden because a full-screen application is in front.");
+}
+
 void defineWindowAnimation(WindowClass& window) {
     window
         .def("wake_pulse", &OverlayWindow::flashWakeWord,
@@ -421,6 +464,7 @@ void defineWindow(const py::module_& module) {
                        "Always-on-top status panel rendered on a native UI thread.");
     defineWindowAnimation(window);
     defineWindowHud(window);
+    defineWindowMinimize(window);
     window
         .def(py::init<OverlayConfig>(), py::arg("config") = OverlayConfig{},
              py::call_guard<py::gil_scoped_release>(),

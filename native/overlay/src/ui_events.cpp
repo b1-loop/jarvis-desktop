@@ -17,7 +17,8 @@ namespace {
 /// Names in the order of the UiEvent alternatives.
 constexpr std::array<std::string_view, std::variant_size_v<UiEvent>> kKindNames{
     "submit_text",     "close",    "quit",    "toggle_mute",     "set_expanded",
-    "setting_changed", "open_log", "restart", "settings_opened", "placement_changed"};
+    "setting_changed", "open_log", "restart", "settings_opened", "placement_changed",
+    "minimize",        "restore"};
 
 }  // namespace
 
@@ -32,7 +33,8 @@ bool coalesces(const UiEvent& newest, const UiEvent& next) noexcept {
     }
     if (const auto* placement = std::get_if<PlacementChanged>(&next); placement != nullptr) {
         const auto* previous = std::get_if<PlacementChanged>(&newest);
-        return previous != nullptr && previous->expanded == placement->expanded;
+        return previous != nullptr && previous->expanded == placement->expanded &&
+               previous->orb == placement->orb;
     }
     return false;
 }

@@ -39,6 +39,7 @@ class SwitchWindowTool(Tool[SwitchWindowInput]):
     )
     Input = SwitchWindowInput
     category = ToolCategory.SYSTEM
+    keywords = ("växla", "byt", "fönster")
 
     async def run(self, params: SwitchWindowInput, context: ToolContext) -> ToolResult:
         """Focus by title; a miss is a normal failed result the LLM can recover from."""

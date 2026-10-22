@@ -67,6 +67,7 @@ class SummarizeInboxTool(Tool[SummarizeInboxInput]):
     )
     Input = SummarizeInboxInput
     category = ToolCategory.COMMUNICATION
+    keywords = ("mail", "mejl", "inkorg", "inkorgen", "sammanfatta")
 
     async def run(self, params: SummarizeInboxInput, context: ToolContext) -> ToolResult:
         """List unread mail, fetch bodies, and package it with an instruction."""

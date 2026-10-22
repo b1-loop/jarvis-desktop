@@ -5,6 +5,11 @@ with tool calling (``POST /api/chat``, ``stream=true``). It is the middle
 ground between Claude and the fully offline llama.cpp wrapper: private and
 free, but an extra server to run and a smaller model. Only ``httpx`` is
 needed, and tests drive the client through ``httpx.MockTransport``.
+
+Thinking models (``qwen3``) reason before answering when Ollama's ``think``
+field is on, which is their default. The client sends ``think`` as
+configured (``Settings.ollama_think``, off by default for spoken turns) and
+never turns streamed ``thinking`` text into answer text.
 """
 
 from __future__ import annotations
@@ -12,8 +17,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Sequence
-from contextlib import AsyncExitStack
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
+from contextlib import AsyncExitStack, aclosing
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
@@ -47,23 +52,37 @@ DEFAULT_TIMEOUT: Final = httpx.Timeout(120.0, connect=5.0)
 
 _SERVER_ERROR_STATUS: Final = 500
 _NOT_FOUND_STATUS: Final = 404
+_BAD_REQUEST_STATUS: Final = 400
+
+EMPTY_REPLY_RETRIES: Final = 1
+"""Extra requests when the model stops before writing anything (seen with qwen3, think off)."""
 
 log = get_logger(__name__)
 
 
 class OllamaClient(LLMClient):
-    """``LLMClient`` over Ollama's streaming chat endpoint."""
+    """``LLMClient`` over Ollama's streaming chat endpoint.
+
+    Args:
+        http: Client whose ``base_url`` is the Ollama server.
+        model: Chat model tag.
+        think: Ollama's ``think`` field; ``None`` omits it (the model's default).
+        policy: Retry policy for opening the stream.
+        sleep: Back-off sleep, replaced in tests.
+    """
 
     def __init__(
         self,
         http: httpx.AsyncClient,
         *,
         model: str,
+        think: bool | None = None,
         policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         sleep: SleepFn = asyncio.sleep,
     ) -> None:
         self._http = http
         self._model = model
+        self._think = think
         self._policy = policy
         self._sleep = sleep
 
@@ -71,7 +90,7 @@ class OllamaClient(LLMClient):
     def from_settings(cls, settings: Settings) -> OllamaClient:
         """Build the real client pointed at ``settings.ollama_base_url``."""
         http = httpx.AsyncClient(base_url=settings.ollama_base_url, timeout=DEFAULT_TIMEOUT)
-        return cls(http, model=settings.ollama_model)
+        return cls(http, model=settings.ollama_model, think=settings.ollama_think)
 
     @property
     def model(self) -> str:
@@ -85,8 +104,25 @@ class OllamaClient(LLMClient):
     async def stream(
         self, messages: Sequence[Message], tools: Sequence[ToolDefinition] = ()
     ) -> AsyncIterator[LLMEvent]:
-        """Stream one turn; see :meth:`LLMClient.stream`."""
+        """Stream one turn; see :meth:`LLMClient.stream`.
+
+        A reply that ends at once with neither text nor tool calls is asked
+        for again, once (see the design notes); nothing was yielded before
+        its final event, so the retry is invisible to the caller.
+        """
         payload = self._payload(messages, tools)
+        retries = EMPTY_REPLY_RETRIES if self._think is False else 0
+        for attempt in range(retries + 1):
+            async with aclosing(self._stream_once(payload)) as events:
+                async for event in events:
+                    if isinstance(event, Done) and attempt < retries and _empty(event):
+                        log.warning("llm.empty_reply_retried", provider="ollama", model=self._model)
+                        break
+                    yield event
+                else:
+                    return
+
+    async def _stream_once(self, payload: dict[str, Any]) -> AsyncGenerator[LLMEvent]:
         translator = _ChunkTranslator()
         try:
             async with AsyncExitStack() as stack:
@@ -114,6 +150,8 @@ class OllamaClient(LLMClient):
             "messages": [param for message in messages for param in to_message_params(message)],
             "stream": True,
         }
+        if self._think is not None:
+            payload["think"] = self._think
         if tools:
             payload["tools"] = [to_tool_param(tool) for tool in tools]
         return payload
@@ -133,11 +171,21 @@ class OllamaClient(LLMClient):
                     f"Ollama does not have the model '{self._model}'; "
                     f"run 'ollama pull {self._model}' or change JARVIS_OLLAMA_MODEL"
                 )
+            if self._think and error.response.status_code == _BAD_REQUEST_STATUS:
+                return (
+                    f"Ollama rejected the request to '{self._model}' with thinking on "
+                    f"({error.response.text}); set JARVIS_OLLAMA_THINK=false for this model"
+                )
             return f"Ollama returned HTTP {error.response.status_code}: {error.response.text}"
         return (
             f"could not reach Ollama at {self._http.base_url}: {error}. "
             "Is it running? Start it with 'ollama serve' or fix JARVIS_OLLAMA_BASE_URL."
         )
+
+
+def _empty(done: Done) -> bool:
+    """A final event carrying no answer at all: no text and no tool call."""
+    return not done.message.text.strip() and not done.message.tool_calls
 
 
 def is_retryable(error: Exception) -> bool:
@@ -205,12 +253,15 @@ class _ChunkTranslator:
     def __init__(self) -> None:
         self._text_parts: list[str] = []
         self._calls: list[ToolCall] = []
+        self._thinking_chars = 0
         self.finished = False
 
     def translate(self, chunk: dict[str, Any]) -> list[LLMEvent]:
         """Events for one chunk; the final chunk yields ``Done``."""
         events: list[LLMEvent] = []
         message = chunk.get("message") or {}
+        # Reasoning arrives in its own field; it is counted, never answered with.
+        self._thinking_chars += len(message.get("thinking") or "")
         text = message.get("content") or ""
         if text:
             self._text_parts.append(text)
@@ -230,6 +281,8 @@ class _ChunkTranslator:
             output_tokens=int(chunk.get("eval_count") or 0),
         )
         stop_reason = _stop_reason(chunk.get("done_reason"), has_tool_calls=bool(self._calls))
+        if self._thinking_chars:
+            log.debug("llm.thinking", provider="ollama", chars=self._thinking_chars)
         log.info(
             "llm.turn_done",
             provider="ollama",
@@ -282,3 +335,17 @@ def _stop_reason(done_reason: object, *, has_tool_calls: bool) -> StopReason:
 #   to the text deltas.
 # - A 404 almost always means the model was never pulled, so the error
 #   message says exactly which command fixes it.
+# - ``thinking`` deltas are dropped from the answer on purpose: they are the
+#   model's scratchpad, not something to speak or show, and may contain
+#   half-formed claims. Only their length is logged (at debug), never the
+#   text. ``think=False`` is accepted by non-thinking models too, so the
+#   default is safe for any model; ``think=True`` on one is a 400, reported
+#   with the setting that fixes it.
+# - Empty-reply retry: in a measured run qwen3:8b with think=false answered
+#   a plain question ("vad är 17 gånger 23?") three times out of four with a
+#   single final chunk (done_reason "stop", no content, no thinking, no
+#   tool call); the same request asked again answered correctly. Nothing
+#   was streamed before that final chunk, so one transparent retry is safe.
+#   It is bounded to one, logged as a warning, and a second empty reply is
+#   passed on so the agent's own fallback sentence still applies. It only
+#   applies with think=false, the one setting where it was observed.

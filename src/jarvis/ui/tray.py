@@ -2,7 +2,8 @@
 
 The icon is a coloured disc, one colour per ``AssistantState`` in the same
 palette as the native overlay, with a tooltip naming the state. Its menu
-(Show dashboard, Toggle overlay, Mute microphone, Quit) contains no logic:
+(Show dashboard, Toggle overlay, Minimize/Restore HUD, Mute microphone,
+Quit) contains no logic:
 each entry hops back onto the asyncio loop with ``call_soon_threadsafe``
 and calls one method of the injected :class:`TrayCallbacks`. The tray only
 observes the bus; it never publishes and never drives the pipeline.
@@ -40,6 +41,7 @@ _DISC_INSET_FRACTION: Final = 0.2
 START_TIMEOUT_S: Final = 5.0
 STOP_TIMEOUT_S: Final = 5.0
 _APP_NAME: Final = "jarvis"
+RESTORE_HUD_LABEL: Final = "Restore HUD"
 TOOLTIP_MAX_CHARS: Final = 127
 """``NOTIFYICONDATAW.szTip`` holds 128 UTF-16 units including the terminator."""
 _ELLIPSIS: Final = "..."
@@ -54,6 +56,7 @@ class TrayAction(StrEnum):
 
     SHOW_DASHBOARD = "Show dashboard"
     TOGGLE_OVERLAY = "Toggle overlay"
+    TOGGLE_HUD_MINIMIZED = "Minimize HUD"
     TOGGLE_MICROPHONE = "Mute microphone"
     QUIT = "Quit"
 
@@ -66,6 +69,9 @@ class TrayCallbacks(Protocol):
 
     def toggle_overlay(self) -> None:
         """Show the overlay if hidden, hide it if shown."""
+
+    def toggle_hud_minimized(self) -> None:
+        """Shrink the HUD to its orb or restore it; report back with ``set_hud_minimized``."""
 
     def toggle_microphone(self) -> None:
         """Mute or unmute the microphone; report back with ``set_microphone_muted``."""
@@ -90,11 +96,19 @@ class TrayMenuEntry:
         checked: Evaluated by the backend when the menu is drawn; ``None``
             for entries without a check mark.
         default: The entry a double-click on the icon triggers.
+        label: Evaluated when the menu is drawn, for entries whose text
+            follows the state ("Minimize HUD" / "Restore HUD"); ``None``
+            shows the action's value.
     """
 
     action: TrayAction
     checked: Callable[[], bool] | None = None
     default: bool = False
+    label: Callable[[], str] | None = None
+
+    def text(self) -> str:
+        """What the entry says right now."""
+        return self.label() if self.label is not None else self.action.value
 
 
 class TrayBackend(Protocol):
@@ -168,10 +182,12 @@ class TrayIcon:
         self._icons = render_state_icons()
         self._state = AssistantState.IDLE
         self._muted = False
+        self._hud_minimized = False
         self._notice: str | None = None
         self._actions: Mapping[TrayAction, Callable[[], None]] = {
             TrayAction.SHOW_DASHBOARD: callbacks.show_dashboard,
             TrayAction.TOGGLE_OVERLAY: callbacks.toggle_overlay,
+            TrayAction.TOGGLE_HUD_MINIMIZED: callbacks.toggle_hud_minimized,
             TrayAction.TOGGLE_MICROPHONE: callbacks.toggle_microphone,
             TrayAction.QUIT: callbacks.quit,
         }
@@ -196,6 +212,15 @@ class TrayIcon:
         """Whether the menu shows the microphone as muted."""
         return self._muted
 
+    @property
+    def hud_minimized(self) -> bool:
+        """Whether the menu offers "Restore HUD" (the HUD is an orb)."""
+        return self._hud_minimized
+
+    def hud_minimize_label(self) -> str:
+        """The minimize entry's text for the HUD's current state."""
+        return RESTORE_HUD_LABEL if self._hud_minimized else TrayAction.TOGGLE_HUD_MINIMIZED.value
+
     def set_notice(self, notice: str | None) -> None:
         """Append a standing problem (voice unavailable, Ollama down) to the tooltip.
 
@@ -215,6 +240,7 @@ class TrayIcon:
         return (
             TrayMenuEntry(TrayAction.SHOW_DASHBOARD, default=True),
             TrayMenuEntry(TrayAction.TOGGLE_OVERLAY),
+            TrayMenuEntry(TrayAction.TOGGLE_HUD_MINIMIZED, label=self.hud_minimize_label),
             TrayMenuEntry(TrayAction.TOGGLE_MICROPHONE, checked=lambda: self._muted),
             TrayMenuEntry(TrayAction.QUIT),
         )
@@ -263,6 +289,11 @@ class TrayIcon:
         self._backend.set_tooltip(self.tooltip)
         self._backend.refresh_menu()
 
+    def set_hud_minimized(self, minimized: bool) -> None:
+        """Reflect the HUD's state in the menu, after the application changed it."""
+        self._hud_minimized = minimized
+        self._backend.refresh_menu()
+
     def activate(self, action: TrayAction) -> None:
         """Menu sink, called on the tray thread: forward ``action`` to the loop."""
         log.debug("tray.menu", action=action.value)
@@ -301,6 +332,7 @@ class StubTray:
         self._bus = bus
         self._state = AssistantState.IDLE
         self._muted = False
+        self._hud_minimized = False
         self._notice: str | None = None
         self._unsubscribe: Unsubscribe | None = None
 
@@ -343,6 +375,15 @@ class StubTray:
         """Record the microphone state."""
         self._muted = muted
 
+    @property
+    def hud_minimized(self) -> bool:
+        """The last value passed to :meth:`set_hud_minimized`."""
+        return self._hud_minimized
+
+    def set_hud_minimized(self, minimized: bool) -> None:
+        """Record the HUD's state."""
+        self._hud_minimized = minimized
+
     def _on_state_changed(self, event: StateChanged) -> None:
         self._state = event.new
         log.debug("tray.stub.state", state=event.new.value)
@@ -367,6 +408,9 @@ class TraySurface(Protocol):
 
     def set_microphone_muted(self, muted: bool) -> None:
         """Reflect the microphone state."""
+
+    def set_hud_minimized(self, minimized: bool) -> None:
+        """Offer "Restore HUD" (True) or "Minimize HUD" (False)."""
 
     def set_notice(self, notice: str | None) -> None:
         """Show a standing problem in the tooltip; ``None`` clears it."""
@@ -427,7 +471,7 @@ def pystray_backend_factory(
 def _pystray_item(pystray: Any, entry: TrayMenuEntry, sink: Callable[[TrayAction], None]) -> Any:
     checked = entry.checked
     return pystray.MenuItem(
-        entry.action.value,
+        lambda _item: entry.text(),
         lambda _icon, _item: sink(entry.action),
         checked=(lambda _item: checked()) if checked is not None else None,
         default=entry.default,
@@ -475,5 +519,9 @@ async def create_tray(
 #   the microphone and the application reports the result through
 #   set_microphone_muted, so the check mark can never disagree with the
 #   audio engine.
+# - The minimize entry's text is evaluated when the menu opens, like the
+#   mute check mark, and follows set_hud_minimized: the HUD (its control,
+#   a click on the orb, auto-minimize, the hotkey) changes the state, the
+#   tray only shows it.
 # - Icons are pre-rendered at construction (four 64x64 images), so a state
 #   transition costs a reference swap, not a Pillow draw on the loop.

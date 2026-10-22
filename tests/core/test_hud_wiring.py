@@ -22,6 +22,17 @@ class FakeOverlay:
         self.transcripts: list[str] = []
         self.history: list[tuple[HistoryRole, str]] = []
         self.pages: list[SettingsPage] = []
+        self.is_minimized = False
+
+    @property
+    def minimized(self) -> bool:
+        return self.is_minimized
+
+    def minimize(self) -> None:
+        self.is_minimized = True
+
+    def restore(self) -> None:
+        self.is_minimized = False
 
     def hide(self) -> None:
         self.hidden += 1

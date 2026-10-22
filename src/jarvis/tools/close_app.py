@@ -51,6 +51,7 @@ class CloseAppTool(Tool[CloseAppInput]):
     Input = CloseAppInput
     category = ToolCategory.SYSTEM
     requires_confirmation = True
+    keywords = ("quit", "stäng", "stänga", "avsluta")
 
     def confirmation_prompt(self, params: CloseAppInput) -> str:
         """Make the cost of forcing explicit; a plain close gets a plain question."""

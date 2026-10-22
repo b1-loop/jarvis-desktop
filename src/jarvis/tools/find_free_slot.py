@@ -79,6 +79,7 @@ class FindFreeSlotTool(Tool[FindFreeSlotInput]):
     )
     Input = FindFreeSlotInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("ledig", "ledigt")
 
     async def run(self, params: FindFreeSlotInput, context: ToolContext) -> ToolResult:
         """Ask every calendar for its free slots and intersect them."""
