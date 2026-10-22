@@ -44,8 +44,9 @@ struct InteractFrame {
     float hover{0.0F};
     float scale{1.0F};
     float textScale{1.0F};
-    /// Current accent (state colour) and global opacity.
+    /// Current accent (state colour), the theme's warning light and global opacity.
     Rgba accent;
+    Rgba warning;
     float opacity{1.0F};
 };
 
@@ -115,6 +116,7 @@ private:
     void drawToggle(SettingItem& item);
     void drawSlider(SettingItem& item, float width);
     void drawAction(const SettingItem& item);
+    void drawColour(SettingItem& item);
     void drawSettingsFooter(const InteractFrame& in, const Theme& theme);
 
     UiEventQueue& events_;
@@ -127,6 +129,8 @@ private:
     bool focusField_{false};
     bool confirming_{false};
     bool editing_{false};
+    /// The colour picker changed the value and the mouse is still down.
+    bool colourDirty_{false};
     Page page_{Page::Conversation};
     std::uint64_t seenExpandRequest_{0};
     std::uint64_t seenHistory_{0};

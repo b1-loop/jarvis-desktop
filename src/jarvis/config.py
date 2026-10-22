@@ -27,12 +27,13 @@ from jarvis.inference.models import PIPER_VOICE_EN_GB, QWEN2_5_0_5B_INSTRUCT, WH
 from jarvis.integrations.documents import default_document_roots
 from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.user_settings import UserSettingsSource
+from jarvis.utils.colour import DEFAULT_ACCENT, HexColour
 from jarvis.utils.errors import ConfigError
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 LLMProvider = Literal["anthropic", "ollama", "local"]
-OverlayThemeName = Literal["cyan", "amber"]
+OverlayThemeName = Literal["cyan", "amber", "red", "green", "violet", "ice", "pink", "custom"]
 OverlayIntensityName = Literal["calm", "normal", "max"]
 OverlaySizeName = Literal["compact", "normal", "large"]
 """Which ``LLMClient`` answers: Claude, a local Ollama server, or in-process llama.cpp."""
@@ -376,6 +377,9 @@ class Settings(BaseSettings):
     # Overlay animations
     overlay_boot_animation: bool = True
     overlay_theme: OverlayThemeName = "cyan"
+    """HUD palette; ``custom`` derives one from ``overlay_accent`` (ADR-0028)."""
+    overlay_accent: HexColour = DEFAULT_ACCENT
+    """The custom theme's accent as ``#rrggbb``; any spelling of six hex digits is accepted."""
 
     # Overlay richness
     overlay_intensity: OverlayIntensityName = "normal"

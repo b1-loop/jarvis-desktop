@@ -36,12 +36,12 @@ jarvis-desktop/
     core/                   composition root (bootstrap, voice_bootstrap, providers, ui_wiring,
                             proactive_wiring), event bus, state machine, orchestrator,
                             voice I/O, triggers, barge-in, latency probes, overlay bridge
-    audio/                  asyncio facade over jarvis_audio, model manifest
+    audio/                  asyncio facade over jarvis_audio, capture watchdog, model manifest
     os_integration/         Platform interface, WindowsPlatform over jarvis_os, StubPlatform
     stt/ tts/ llm/          interfaces + providers
     inference/              loader and model manifest for jarvis_inference
     agent/                  loop, tool base, registry, confirmation, chaining, tool selection, persona
-    tools/                  62 tool plugins, one module each (helpers start with "_")
+    tools/                  63 tool plugins, one module each (helpers start with "_")
     memory/                 SQLite store, vector stores, memory manager, user profile
     proactive/              scheduler, triggers, YAML routines
     integrations/           email, calendar, chat, music, smart home, web, documents; Stub* providers
@@ -201,7 +201,8 @@ moment it is published, such as the latency benchmark.
 | Executor threads | Python (`asyncio.to_thread`) | STT, Piper, native OS calls, screenshots and imaging, document parsing, ChromaDB, token waits for llama.cpp | none beyond their call |
 | SQLite connection | aiosqlite | one thread per connection runs every query | its request queue |
 | Terminal input | `TerminalInput` (text mode) | blocking `input()`; lines go back with `call_soon_threadsafe` | none |
-| Capture callback | miniaudio (C++) | push device frames into the SPSC ring buffer, nothing else | ring buffer (producer) |
+| Capture callback | miniaudio (C++) | push device frames into the SPSC ring buffer and bump the received-sample counter, nothing else | ring buffer (producer), atomic counter |
+| Device notifications | miniaudio (C++, WASAPI notification client) | forward stopped / rerouted / interruption to the engine as events | engine mutex (brief) |
 | Audio worker | `AudioEngine` (C++) | pop frames, run `AudioPipeline` (Silero VAD, openWakeWord, segmentation, pre-roll), append events, trigger barge-in | ring buffer (consumer), engine mutex |
 | Playback callback | miniaudio (C++) | drain the `Playback` chunk queue under `try_lock`; silence when contended or empty | playback mutex (never blocks) |
 | Hotkey loop | `HotkeyManager` (C++) | `RegisterHotKey` is thread-affine; registers and pumps `WM_HOTKEY` into a queue Python polls | event queue mutex |
@@ -233,6 +234,13 @@ Rules that keep this safe:
   model: the loop pushes immutable snapshots (dashboard) or swaps a
   pre-rendered image (tray), and user actions come back only through
   `call_soon_threadsafe` (ADR-0015).
+- A capture that stops delivering is reopened from the event loop, never
+  from a device thread: the `CaptureWatchdog` task reads the lock-free
+  `samplesReceived()` counter every 250 ms and calls `restartCapture()`
+  through `asyncio.to_thread` after 2.5 s without samples or after a
+  `DeviceStopped` event. A lifecycle mutex serialises the restart with
+  `start()`/`stop()`, and the engine mutex is never held while the device
+  opens or closes (ADR-0027).
 - Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
   when a barge-in target is set, so it takes effect on the next device
   period without waiting for the event loop. Python learns about it
@@ -314,8 +322,9 @@ ADR-0017).
 
 **The loop.** `agent/loop.py` runs one request: a system prompt from
 `agent/persona.py` (name, tone, language from the TTS voice, spoken-style
-rules) plus the `MemoryManager.recall` context, the user's words and the
-tool definitions chosen by `agent/tool_selection.py` go to
+rules, the rule that live data comes from a tool call, and the current local
+date and time from the injected clock, ADR-0029) plus the
+`MemoryManager.recall` context, the user's words and the tool definitions chosen by `agent/tool_selection.py` go to
 `LLMClient.stream`; text deltas become sentences for the sink as they
 complete; requested tools run and their results go back to the model until
 it stops or `JARVIS_MAX_TOOL_ROUNDS` is reached. A turn with tools always
@@ -352,9 +361,14 @@ durations, failures, limits hit) for the dashboard (ADR-0014).
 | `VectorStore` Protocol: `ChromaVectorStore` / `InMemoryVectorStore` | embeddings of turns and notes | recall by meaning; rebuildable from SQLite |
 
 `UserProfile` is a view over `profile.*` facts. `recall()` returns profile,
-facts, recent turns and semantic hits trimmed to a character budget. A
-conversation's summary is written when the session ends. All data stays
-under `Settings.data_dir` (ADR-0008).
+facts, recent turns and semantic hits trimmed to a character budget.
+Answers that came from tools are never part of it: those exchanges are left
+out of the recent turns and their answers are cut off semantic hits, so live
+data is always fetched again (ADR-0029). Recalled turns are framed as history,
+not instructions; the profile's name travels separately (`user_name`) and the
+persona states it as the form of address above them. A conversation's
+summary is written when the session ends. All data stays under
+`Settings.data_dir` (ADR-0008).
 
 ## 8. Proactive behaviour and routines
 
@@ -463,6 +477,7 @@ ladder, as implemented:
 | --- | --- | --- |
 | `jarvis_audio` not built, VAD model missing, no microphone or output device | voice mode says why and starts text mode | `voice_bootstrap.run_voice_mode` |
 | Wake-word models missing or broken | warning once, hotkey only, greeting says so | `VoiceFrontEndBuilder._create_engine` |
+| Microphone stops delivering (sleep/resume, system stall, device invalidated or unplugged) | reopened on the current default device with backoff (1 s up to 30 s); one notification if three attempts fail, another when it is back | `audio/watchdog.py` |
 | Hotkey taken by another app | wake word only; fatal only if neither exists | `VoiceFrontEndBuilder._trigger` |
 | TTS fails at runtime | one notice, answers printed | `VoiceOutput._report_failure` |
 | Nothing usable heard | "didn't catch that", back to IDLE | `VoiceInput._next_request` |

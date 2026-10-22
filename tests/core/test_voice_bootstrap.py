@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from structlog.testing import capture_logs
 
 from jarvis.audio.engine import AudioModelError
 from jarvis.audio.models import AudioModelPaths
@@ -15,11 +16,13 @@ from jarvis.core.combined_input import CombinedInput
 from jarvis.core.events import EventBus
 from jarvis.core.state_machine import StateMachine
 from jarvis.core.voice_bootstrap import (
+    MICROPHONE_NOTIFICATION_TITLE,
     VoiceFactories,
     VoiceFrontEndBuilder,
     VoiceUnavailableError,
     build_stt,
     build_tts,
+    microphone_notifier,
     native_audio_error,
     run_voice_mode,
 )
@@ -250,7 +253,14 @@ async def test_the_hud_gets_a_settings_page_and_follows_mute(make_settings: Make
         # ScriptedTTS cannot switch voices live, so the voice is restart-only.
         assert rows["tts_voice"]["restart_required"] is True
         assert rows["overlay_theme"]["restart_required"] is False
+        assert rows["overlay_accent"]["restart_required"] is False
         assert front.bind_controls is not None
+        assert front.hud_appearance is not None
+
+        await front.hud_appearance.set_colour("custom", "#ff3b30")
+        assert native.appearance is not None
+        assert native.appearance[0] == "custom"
+        assert native.appearance[3] == "#ff3b30"
 
         assert front.microphone is not None
         await front.microphone.toggle()
@@ -278,6 +288,27 @@ async def test_overlay_toggle_flips_visibility(make_settings: MakeSettings) -> N
         assert overlay.visible is not was_visible
         front.toggle_overlay()
         assert overlay.visible is was_visible
+
+
+async def test_microphone_notifier_raises_a_system_notification() -> None:
+    platform = StubPlatform()
+
+    await microphone_notifier(platform)("Microphone stopped; trying again.")
+
+    assert platform.notifications == [
+        (MICROPHONE_NOTIFICATION_TITLE, "Microphone stopped; trying again.")
+    ]
+
+
+async def test_a_failing_microphone_notification_is_logged_not_raised() -> None:
+    class BrokenPlatform(StubPlatform):
+        async def notify(self, title: str, message: str) -> None:
+            raise PlatformError("no notification area")
+
+    with capture_logs() as logs:
+        await microphone_notifier(BrokenPlatform())("Microphone stopped; trying again.")
+
+    assert any(e["event"] == "voice.microphone.notify_failed" for e in logs)
 
 
 def test_native_audio_error_reports_a_missing_build(monkeypatch: pytest.MonkeyPatch) -> None:

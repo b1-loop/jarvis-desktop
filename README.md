@@ -9,7 +9,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 Say "Hey Jarvis", ask for something, and Jarvis transcribes you, lets an LLM
-agent pick from 62 tool plugins, and answers out loud, sentence by sentence,
+agent pick from 63 tool plugins, and answers out loud, sentence by sentence,
 while you can still talk over it. It runs on a free local model (Ollama
 `qwen2.5:7b`) by default, can switch to Claude, and has a fully offline mode.
 
@@ -38,7 +38,7 @@ scheduling. No native thread ever takes the GIL.
 - **Barge-in.** Talk over Jarvis and the C++ engine silences playback on
   the VAD's speech onset, without a round trip through Python; the agent
   turn is cancelled and what you are saying becomes the next request.
-- **An agent with 62 tools.** Plugins discovered from `src/jarvis/tools/`:
+- **An agent with 63 tools.** Plugins discovered from `src/jarvis/tools/`:
   computer control (apps, windows, volume, brightness, screenshots, lock,
   typing at the cursor, clipboard), sandboxed shell commands, files and
   documents, dev mode (git, tests, stack traces, VS Code, dev servers),
@@ -62,7 +62,9 @@ scheduling. No native thread ever takes the GIL.
 - **Honest degradation.** No audio build, models or microphone: text mode,
   with the reason. No wake-word models: hotkey only. TTS failing: printed
   answers. No CUDA libraries: CPU speech recognition. No credentials:
-  clearly named `Stub*` providers.
+  clearly named `Stub*` providers. A microphone that goes quiet after sleep,
+  a system stall or an unplugged device is reopened on the current default
+  within a few seconds (ADR-0027).
 
 Integrations (Gmail, Outlook, Google Calendar, Slack, Discord, Teams,
 Spotify, Home Assistant) are implemented against their real APIs and need
@@ -92,7 +94,7 @@ flowchart LR
         STT --> ORCH{{Orchestrator +<br/>state machine}}
         ORCH --> AG[agent.loop + chaining<br/>tool_selection, confirmation]
         AG <--> LLM[llm: Ollama, Claude<br/>or llama.cpp]
-        AG <--> TOOLS[tools/*<br/>62 plugins]
+        AG <--> TOOLS[tools/*<br/>63 plugins]
         TOOLS --> PLAT[os_integration.Platform]
         PLAT --> OSN
         TOOLS --> INTEG[integrations<br/>email, calendar, chat,<br/>music, smart home, web]
@@ -127,8 +129,12 @@ Trade-offs of each: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
 Small local models get a short, relevant tool list per request, ranked by
 keywords and by a multilingual embedding model so Swedish requests find
 English tool descriptions, and never get to claim success for a tool that
-failed: [ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). Full design,
-threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
+failed: [ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). They are
+told the current time every turn, can set "in five minutes" reminders without
+date arithmetic, never see an old tool answer in memory, so live data is
+always fetched again, and take the user's name from the profile rather than
+from a misheard turn: [ADR-0029](docs/adr/0029-grounding-time-and-live-data.md).
+Full design, threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
 decision with its reasons: [the ADRs](docs/adr/README.md).
 
 ## Latency
@@ -413,6 +419,13 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
 - **Text mode.** `--text-only` types instead of talks. Voice mode falls
   back to it, with the reason, when the audio build, the models or a
   microphone are missing.
+- **Microphone recovery.** Jarvis follows the Windows default input
+  device: plug in a headset and it listens there. If the microphone stops
+  delivering audio (after sleep, a long system stall, or a device that was
+  unplugged), Jarvis reopens the default device, retrying with backoff from
+  1 s up to every 30 s. If three attempts fail it shows one notification,
+  "Microphone stopped; trying again", and another when it works again. The
+  log has `audio.capture.stalled` and `audio.capture.recovered`.
 - **Swedish and other languages.** Pick a voice and tell the recogniser
   the language, e.g. in `.env`:
   `JARVIS_TTS_VOICE=sv-SE-MattiasNeural` and `JARVIS_STT_LANGUAGE=sv`.
@@ -455,12 +468,26 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
     field. Escape collapses it.
   - **Settings** (gear): voice (Swedish and English edge-tts voices),
     speech language, LLM provider and Ollama model (listed live from
-    Ollama), wake word on/off and threshold, HUD size, theme and intensity,
+    Ollama), wake word on/off and threshold, HUD size, colour and intensity,
     "speak replies" (off for a silent typed conversation), start with
     Windows, and the log file. Changes are saved to
     `data/user_settings.json` and applied at once where possible; the rest
     is marked "applies after restart" with a Restart button (windowless
     app).
+  - **Colours.** Eight themes: cyan and amber, plus red ("Mark"), green,
+    violet, ice white, pink, and a custom colour. Pick "Custom colour" in
+    the settings to choose any hue from a hue bar and saturation square.
+    Every palette (the state colours, text, glass plate, warning light and
+    bloom strength) is derived from that one accent in OKLCH. Its contrast
+    and the separation between the states are unit-tested for every hue
+    ([ADR-0028](docs/adr/0028-hud-colour-themes.md)). Very dark or very
+    pale picks are clamped into a range that glows: black becomes steel
+    blue and white an icy tint. You can also say it: "byt färg till röd",
+    "make the HUD purple", "change the colour to #ff8800". Or set it in
+    `.env` with `JARVIS_OVERLAY_THEME=custom` and
+    `JARVIS_OVERLAY_ACCENT=#ff3b30`. The HUD and the orb recolour at once.
+
+    ![Every HUD theme: state rings, text on the glass plate and the warning light](docs/media/overlay-themes.png)
 
   - **Minimize.** When the HUD is in the way, the minimize control (next
     to the cross), the tray's "Minimize HUD" or `Ctrl+Alt+H`

@@ -5,6 +5,7 @@ Usage::
     uv run python scripts/compare_models.py qwen2.5:7b qwen3:8b@off qwen3:8b@on
     uv run python scripts/compare_models.py qwen3:8b --embedding-model none
     uv run python scripts/compare_models.py qwen2.5:7b qwen3:8b --repeat 3
+    uv run python scripts/compare_models.py qwen2.5:7b --case "name from profile"
 
 Each argument is an Ollama model tag, optionally with ``@off``, ``@on`` or
 ``@default`` for Ollama's ``think`` field (``JARVIS_OLLAMA_THINK``; off when
@@ -88,6 +89,11 @@ PERCENT_TOLERANCE: Final = 5.0
 GIGABYTE_TOLERANCE: Final = 0.8
 BYTES_PER_GB: Final = 1024**3
 MILK: Final = ("mjölk", "milk")
+BREAD: Final = ("bröd", "bread")
+LAUNDRY: Final = ("tvätt", "laundry", "washing")
+MUM: Final = ("mamma", "mum", "mom", "mother")
+PROFILE_NAME: Final = "Bozhi"
+MISHEARD_NAME: Final = "Ravel"
 WARM_UP_REQUEST: Final = "Hej!"
 VOICE: Final = "sv-SE-MattiasNeural"
 """The user's voice; the persona answers in the voice's language (Swedish)."""
@@ -184,7 +190,51 @@ async def check_todo_listed(probe: Probe) -> bool:
 
 def mentions_milk(text: str) -> bool:
     """Whether ``text`` names the todo item; a model may store it translated."""
-    return any(word in text.lower() for word in MILK)
+    return mentions_any(text, MILK)
+
+
+def mentions_any(text: str, words: Sequence[str]) -> bool:
+    """Whether ``text`` contains any of ``words`` (case-insensitive)."""
+    return any(word in text.lower() for word in words)
+
+
+async def add_bread_behind_the_models_back(memory: MemoryManager) -> None:
+    """Change the list between two "what's on my list" turns, as another device would.
+
+    The second answer is right only if it comes from a fresh ``list_todos``
+    call: the earlier turn in memory cannot know about the bread.
+    """
+    await memory.add_todo("bröd")
+
+
+async def check_todo_relisted(probe: Probe) -> bool:
+    """The answer reads the current list: the milk and the bread added since."""
+    return mentions_milk(probe.answer) and mentions_any(probe.answer, BREAD)
+
+
+async def plant_a_misheard_name(memory: MemoryManager) -> None:
+    """The profile says Bozhi; history holds a misrecognised "Ravel" and replies using it.
+
+    Reproduces a real session: an early speech-recognition error was stored
+    as a turn, and the model then called the user Ravel in every reply.
+    """
+    await memory.remember("profile.name", PROFILE_NAME)
+    await memory.record_turn(
+        "Hello, Jervis. I'm speaking with Ravel.", "Hej Ravel! Vad kan jag göra?"
+    )
+    await memory.record_turn("hej igen", "Hej igen, Ravel! Vad vill du göra?")
+    await memory.record_turn("tack", "Varsågod, Ravel.")
+
+
+async def check_no_misheard_name(probe: Probe) -> bool:
+    """The answer never calls the user by the misheard name."""
+    return MISHEARD_NAME.lower() not in probe.answer.lower()
+
+
+async def check_profile_name(probe: Probe) -> bool:
+    """The answer uses the profile's name and never the misheard one."""
+    answer = probe.answer.lower()
+    return PROFILE_NAME.lower() in answer and await check_no_misheard_name(probe)
 
 
 async def check_product(probe: Probe) -> bool:
@@ -192,11 +242,22 @@ async def check_product(probe: Probe) -> bool:
     return "391" in probe.answer.replace(" ", "")
 
 
-async def check_reminder(probe: Probe) -> bool:
-    """A reminder is due about five minutes after the request."""
-    expected = probe.asked_at + REMINDER_DELAY
-    reminders = await probe.memory.list_reminders()
-    return any(abs(reminder.due_at - expected) <= REMINDER_TOLERANCE for reminder in reminders)
+def reminder_check(words: Sequence[str]) -> Check:
+    """A reminder about ``words`` is due about five minutes after the request."""
+
+    async def check(probe: Probe) -> bool:
+        expected = probe.asked_at + REMINDER_DELAY
+        return any(
+            abs(reminder.due_at - expected) <= REMINDER_TOLERANCE
+            and mentions_any(reminder.text, words)
+            for reminder in await probe.memory.list_reminders()
+        )
+
+    return check
+
+
+Setup = Callable[[MemoryManager], Awaitable[None]]
+"""Changes the temporary memory store just before a request is sent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +268,7 @@ class Case:
     request: str
     tools: frozenset[str]
     check: Check
+    setup: Setup | None = None
 
 
 CASES: Final = (
@@ -230,12 +292,39 @@ CASES: Final = (
         frozenset({"list_todos"}),
         check_todo_listed,
     ),
+    Case(
+        "list todos again",
+        "vad står på min att-göra-lista?",
+        frozenset({"list_todos"}),
+        check_todo_relisted,
+        setup=add_bread_behind_the_models_back,
+    ),
     Case("calculation", "vad är 17 gånger 23?", frozenset(), check_product),
     Case(
         "reminder in 5 min",
         "påminn mig om fem minuter att ta ut tvätten",
         frozenset({"add_reminder"}),
-        check_reminder,
+        reminder_check(LAUNDRY),
+    ),
+    Case(
+        "remind call mum",
+        "påminn mig om fem minuter att ringa mamma",
+        frozenset({"add_reminder"}),
+        reminder_check(MUM),
+    ),
+    Case(
+        "greeting by name",
+        "hej Jarvis, hur mår du idag?",
+        frozenset(),
+        check_no_misheard_name,
+        setup=plant_a_misheard_name,
+    ),
+    Case(
+        "name from profile",
+        "vad heter jag?",
+        frozenset(),
+        check_profile_name,
+        setup=plant_a_misheard_name,
     ),
 )
 
@@ -384,6 +473,8 @@ async def silent(sentence: str) -> None:
 
 async def measure(agent: Agent, llm: TimedLLM, memory: MemoryManager, case: Case) -> Outcome:
     """Run one request and check its answer against ground truth."""
+    if case.setup is not None:
+        await case.setup(memory)
     asked_at = datetime.now().astimezone()
     llm.start_turn()
     report = await agent.respond(case.request, silent)
@@ -401,7 +492,7 @@ async def run_model(spec: str, args: argparse.Namespace) -> RunResult:
             settings = comparison_settings(Path(data_dir), args, think)
             agent, llm, memory = await build_agent(settings, model, stack)
             await agent.respond(WARM_UP_REQUEST, silent)
-            for case in CASES:
+            for case in selected_cases(args):
                 outcome = await measure(agent, llm, memory, case)
                 result.outcomes.append(outcome)
                 print_outcome(outcome)
@@ -486,7 +577,20 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--repeat", type=int, default=1, help="rounds over all models (answers vary run to run)"
     )
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=[case.label for case in CASES],
+        help="run only this request (repeatable); default: all of them",
+    )
     return parser.parse_args(argv)
+
+
+def selected_cases(args: argparse.Namespace) -> tuple[Case, ...]:
+    """The cases named with ``--case``, in their usual order, or every case."""
+    if not args.case:
+        return CASES
+    return tuple(case for case in CASES if case.label in args.case)
 
 
 async def main(argv: Sequence[str]) -> int:
@@ -543,5 +647,9 @@ if __name__ == "__main__":
 #   one shows up as a wrong tool, which is what it would be.
 # - Time to first token is measured on the first non-blank text delta of
 #   the turn, after any tool round, because that is when speech can start.
+# - "list todos again" adds a todo straight to the store before it is asked,
+#   so an answer repeated from the earlier turn in memory is wrong; only a
+#   fresh list_todos call can name the new item. The two reminder checks
+#   match the reminder's text, so the second cannot pass on the first's row.
 # - Checks are deliberately lenient about phrasing (any number close to the
 #   truth, either HH:MM or HH.MM) and strict about facts.

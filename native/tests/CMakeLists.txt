@@ -72,6 +72,7 @@ if(JARVIS_BUILD_OVERLAY)
         overlay/minimize_window_test.cpp
         overlay/model_test.cpp
         overlay/orb_test.cpp
+        overlay/palette_test.cpp
         overlay/particles_test.cpp
         overlay/placement_test.cpp
         overlay/scene_test.cpp

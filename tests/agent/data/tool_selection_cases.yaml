@@ -20,6 +20,8 @@ cases:
     expected: [set_volume]
   - request: make the screen dimmer
     expected: [set_brightness]
+  - request: change the HUD colour to purple
+    expected: [set_hud_colour]
   - request: open Spotify
     expected: [open_app]
   - request: play some jazz
@@ -113,6 +115,9 @@ cases:
     lang: sv
   - request: gör skärmen ljusare
     expected: [set_brightness]
+    lang: sv
+  - request: byt färg till röd
+    expected: [set_hud_colour]
     lang: sv
   - request: ta en skärmdump
     expected: [take_screenshot]

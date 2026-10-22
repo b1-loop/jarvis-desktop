@@ -29,6 +29,7 @@ dark backdrop window behind the transparent overlay).
 | `particles.hpp` | `curlNoise`, `ParticleSystem` | seeded fixed-step particle simulation (breathe, pull, burst, swirl) |
 | `effects.hpp` | `Intensity`, `intensityScale`, `GlitchSpike`, `glitchAmount`, `AudioReactor` | richness presets, glitch envelope, attack/decay audio energy and onsets |
 | `layout.hpp` | `Theme`, `PanelSize`, `panelMetrics`, `HudGeometry`, `formatClock`, `truncateUtf8Head`, ... | pure decisions about where and in which colours to draw |
+| `palette.hpp` | `ThemeName`, `themeFor`, `deriveTheme`, `Oklch`, `contrastRatio`, `parseHexColour` | the named themes and the whole palette derived from one accent in OKLCH, with contrast, state separation and bloom gain tested for any colour ([ADR-0028](../../docs/adr/0028-hud-colour-themes.md)) |
 | `shaders.hpp` | `ShaderSource`, `shaderSources` | the embedded HLSL of the post-processing passes |
 | `system_info.hpp` | `defaultMicrophoneName` | Core Audio query for the boot readout |
 | `window.hpp` | `OverlayConfig`, `OverlayWindow` | the UI thread: window, device, surface, post-processing, render loop (pimpl) |
@@ -123,7 +124,7 @@ when there is text and stay up for 8 s after Jarvis returns to Idle.
 | Header / file | Type | Role |
 | --- | --- | --- |
 | `ui_events.hpp` | `UiEvent`, `UiEventQueue` | typed user actions; bounded queue (adjacent setting/placement edits coalesce, overflow drops the oldest) polled by Python |
-| `hud_data.hpp` | `HudDataModel`, `SettingsPage`, `HistoryEntry`, `Appearance` | what Python pushes as data: settings rows, history, mute, theme/intensity/size |
+| `hud_data.hpp` | `HudDataModel`, `SettingsPage`, `HistoryEntry`, `Appearance` | what Python pushes as data: settings rows (choice, toggle, slider, action, colour), history, mute, theme/accent/intensity/size |
 | `hud_layout.hpp` | `CollapsedLayout`, `ExpandedLayout`, `HitMap`, `approach` | where the controls, field, panel and grip are, and what each point does |
 | `placement.hpp` | `snapToEdges`, `clampInto`, `monitorFor`, `restorePlacement`, `DragAnchor` | dragging maths: snapping, clamping, monitors, DPI-safe anchors |
 | `src/hud_interact.*`, `hud_expanded_ui.cpp`, `hud_settings_ui.cpp`, `hud_icons.cpp` | `HudInteraction` | private: ImGui widgets for controls, field, quit confirmation, history and settings |

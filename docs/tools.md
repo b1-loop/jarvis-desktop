@@ -38,6 +38,7 @@ all confirmation off.
 | `clipboard_get` | Read the clipboard text for the LLM | no | `Platform.get_clipboard_text` |
 | `clipboard_set` | Put text on the clipboard | no | `Platform.set_clipboard_text` |
 | `notify` | Show a desktop notification | no | `Platform.notify` |
+| `set_hud_colour` | Recolour the HUD and its orb: a preset (red, green, violet, ice, pink ...), any colour word in English or Swedish, or a hex code as a custom accent; applied live and remembered ([ADR-0028](adr/0028-hud-colour-themes.md)) | no | `ToolContext.hud` (the HUD settings page) |
 
 ## Files
 
@@ -74,7 +75,7 @@ root (`JARVIS_SHELL_WORKING_ROOT`), scrubbed environment, timeout, output cap.
 | `add_todo` | Add a todo item | no | `MemoryManager.add_todo` |
 | `list_todos` | Open (or all) todos with ids | no | `MemoryManager.list_todos` |
 | `complete_todo` | Tick off a todo by id or by an unambiguous text fragment | no | `MemoryManager.complete_todo` |
-| `add_reminder` | Reminder at an ISO datetime (from the LLM); naive means local, past times rejected | no | `MemoryManager.add_reminder` |
+| `add_reminder` | Reminder `in_minutes` from now (resolved against the clock) or at an ISO `due_at`; exactly one, naive means local, past and far-future times rejected with the current time in the error | no | `MemoryManager.add_reminder` |
 | `list_reminders` | Pending (or all) reminders in local time | no | `MemoryManager.list_reminders` |
 
 ## System and information

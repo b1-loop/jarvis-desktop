@@ -31,7 +31,7 @@ from jarvis.agent.confirmation import ConfirmationPolicy
 from jarvis.agent.loop import Agent, AgentLimits
 from jarvis.agent.persona import Persona
 from jarvis.agent.registry import ToolRegistry
-from jarvis.agent.tool import ConfirmationAsker, ToolContext
+from jarvis.agent.tool import ConfirmationAsker, HudAppearance, ToolContext
 from jarvis.agent.tool_embeddings import EmbeddingToolRanker, ToolVectorCache
 from jarvis.agent.tool_selection import ALL_TOOLS, RelevanceToolSelector, ToolSelector
 from jarvis.config import Settings
@@ -143,6 +143,8 @@ class FrontEnd:
         bring_hud_forward: Shows the HUD in full and replays its boot
             animation, for a launch while Jarvis runs (ADR-0025), if there
             is a HUD.
+        hud_appearance: The HUD's palette for the ``set_hud_colour`` tool,
+            if there is a HUD (ADR-0028).
     """
 
     source: InputSource
@@ -156,6 +158,7 @@ class FrontEnd:
     bind_controls: Callable[[AppControls], None] | None = None
     toggle_hud_minimized: Callable[[], Awaitable[None]] | None = None
     bring_hud_forward: Callable[[], Awaitable[None]] | None = None
+    hud_appearance: HudAppearance | None = None
 
 
 FrontEndBuilder = Callable[[FrontEndRequest], Awaitable[FrontEnd]]
@@ -276,7 +279,7 @@ async def _assemble(settings: Settings, overrides: Overrides, stack: AsyncExitSt
     state = StateMachine(bus)
     request = FrontEndRequest(settings, bus, state, platform, llm, stack)
     front = await (overrides.front_end or _text_front_end(overrides))(request)
-    context = build_tool_context(settings, bus, front.ask, services)
+    context = build_tool_context(settings, bus, front.ask, services, hud=front.hud_appearance)
     selector = build_tool_selector(settings, stack, registry)
     agent = build_agent(settings, front.llm or llm, registry, context, memory, selector=selector)
     routines = build_routines(settings)
@@ -509,6 +512,8 @@ def build_tool_context(
     bus: EventBus,
     ask: ConfirmationAsker,
     services: ToolServices,
+    *,
+    hud: HudAppearance | None = None,
 ) -> ToolContext:
     """The services every tool call receives."""
     return ToolContext(
@@ -520,6 +525,7 @@ def build_tool_context(
         integrations=services.integrations,
         vision=services.vision,
         jobs=services.jobs,
+        hud=hud,
     )
 
 

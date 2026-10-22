@@ -120,7 +120,7 @@ do that." while the model's own closing text was dropped and logged.
   A prompt sentence calling remembered answers stale did not change that
   in repeated runs, so it was not kept. The fix belongs in how memory
   renders recent turns (timestamps, or leaving out answers derived from
-  tools), which is outside this decision.
+  tools), which is outside this decision. Done in ADR-0029.
 
 ## Update 2026-10-22: multilingual selection, and thinking models
 
@@ -271,3 +271,4 @@ system RAM apart from each process's memory.)
 - Not solved here: relative reminders with thinking off. The fix is
   probably to give `add_reminder` an "in N minutes" field or to put the
   current local time in the system prompt; either is its own change.
+  Both were done in ADR-0029.

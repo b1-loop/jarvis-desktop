@@ -19,7 +19,7 @@ import asyncio
 import json
 import re
 import sqlite3
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -588,6 +588,19 @@ class SqliteStore:
                 (*params, limit),
             )
         return [_message(row) for row in rows]
+
+    async def tool_answer_ids(self, message_ids: Sequence[int]) -> set[int]:
+        """Which of ``message_ids`` are assistant replies that called tools.
+
+        Recall uses this to drop stale tool-derived answers from semantic hits.
+        """
+        placeholders = ", ".join("?" for _ in message_ids)
+        rows = await self._fetch_all(
+            f"SELECT id FROM messages WHERE id IN ({placeholders}) "  # noqa: S608
+            "AND role = ? AND tool_calls != '[]'",
+            (*message_ids, Role.ASSISTANT.value),
+        )
+        return {int(row["id"]) for row in rows}
 
     # -- notes ------------------------------------------------------------------
 

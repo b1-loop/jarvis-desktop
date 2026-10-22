@@ -131,7 +131,7 @@ def test_the_facade_forwards_hud_data_and_polls_typed_events() -> None:
     assert native.muted
     assert native.history == [("jarvis", "Two meetings.", "14:05")]
     assert native.settings == PAGE.to_native()
-    assert native.appearance == ("amber", "max", "compact")
+    assert native.appearance == ("amber", "max", "compact", "#4dd9ff")
     assert overlay.expanded
     assert overlay.poll_ui_events() == [SubmitText("hej")]
     assert overlay.poll_ui_events() == []
@@ -166,6 +166,35 @@ def open_native(config: OverlayConfig) -> Overlay:
 
 
 @pytest.mark.native
+def test_native_palettes_exist_for_every_theme_and_follow_the_accent(
+    jarvis_overlay: ModuleType,
+) -> None:
+    for theme in OverlayTheme:
+        palette = jarvis_overlay.palette(theme.value)
+        assert set(palette) >= {"accent", "listening", "thinking", "speaking", "text", "warning"}
+        assert 0.6 <= palette["bloom"] <= 1.0
+
+    red = jarvis_overlay.palette("custom", "#ff3b30")["accent"]
+    green = jarvis_overlay.palette("custom", "#40ff8c")["accent"]
+    assert red[0] > red[1]
+    assert green[1] > green[0]
+    with pytest.raises(ValueError, match="accent"):
+        jarvis_overlay.palette("custom", "orange")
+    with pytest.raises(ValueError, match="theme"):
+        jarvis_overlay.palette("purple")
+
+
+@pytest.mark.native
+def test_native_config_takes_the_accent(jarvis_overlay: ModuleType) -> None:
+    config = jarvis_overlay.OverlayConfig()
+    config.accent = "#FF3B30"
+
+    assert config.accent == "#ff3b30"
+    with pytest.raises(ValueError, match="accent"):
+        config.accent = "red"
+
+
+@pytest.mark.native
 def test_native_smoke_a_typed_request_reaches_python(jarvis_overlay: ModuleType) -> None:
     del jarvis_overlay
     overlay = open_native(OverlayConfig(corner=OverlayCorner.TOP_LEFT, boot_animation=False))
@@ -194,7 +223,9 @@ def test_native_hud_data_is_accepted_and_rendered(jarvis_overlay: ModuleType) ->
         overlay.add_history(HistoryRole.USER, "hej")
         overlay.add_history(HistoryRole.TOOL, "calendar_agenda · 120 ms")
         overlay.set_settings(PAGE)
-        overlay.set_appearance(OverlayTheme.AMBER, OverlayIntensity.CALM, OverlaySize.NORMAL)
+        overlay.set_appearance(
+            OverlayTheme.CUSTOM, OverlayIntensity.CALM, OverlaySize.NORMAL, "#ff3b30"
+        )
         overlay.set_expanded(True)
         time.sleep(0.6)  # the morph runs about 0.4 s
 
@@ -205,6 +236,7 @@ def test_native_hud_data_is_accepted_and_rendered(jarvis_overlay: ModuleType) ->
             "calendar_agenda · 120 ms",
         ]
         assert hud["setting_keys"] == ["overlay_theme", "wake_word_threshold"]
-        assert (hud["theme"], hud["intensity"], hud["size"]) == ("amber", "calm", "normal")
+        assert (hud["theme"], hud["intensity"], hud["size"]) == ("custom", "calm", "normal")
+        assert hud["accent"] == "#ff3b30"
         assert overlay.expanded
         assert overlay.running

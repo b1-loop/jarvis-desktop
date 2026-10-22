@@ -104,6 +104,7 @@ class ScriptedLLM(LLMClient):
 @dataclass
 class FakeRecollection:
     text: str
+    user_name: str | None = None
 
     def render(self) -> str:
         return self.text
@@ -114,6 +115,7 @@ class FakeMemory:
     """Records turns; can be told to fail on recall or on recording."""
 
     context: str = "User name: Bozhidar"
+    user_name: str | None = None
     fail_recall: bool = False
     fail_record: bool = False
     recalled: list[str] = field(default_factory=list)
@@ -123,7 +125,7 @@ class FakeMemory:
         self.recalled.append(user_text)
         if self.fail_recall:
             raise MemoryStoreError("database is locked")
-        return FakeRecollection(self.context)
+        return FakeRecollection(self.context, self.user_name)
 
     async def record_turn(
         self, user_text: str, assistant_text: str, tool_calls: Iterable[dict[str, Any]] = ()

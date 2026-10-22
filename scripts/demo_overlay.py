@@ -31,6 +31,13 @@ looks with synthetic levels, then grows back into the HUD.
 is never moved: minimize and restore go through ``Overlay.minimize()`` and
 ``Overlay.restore()``.
 
+``--theme-sheet`` writes a static PNG of every theme's palette (accent,
+the four state colours as rings, text on the glass plate, the warning
+light), straight from the native palette code (``jarvis_overlay.palette``)
+and drawn with Pillow: no window opens, so it also works on a locked
+desktop. ``--accent`` sets the custom theme's colour, for the sheet and
+for ``--theme custom``.
+
 Usage::
 
     uv run python scripts/demo_overlay.py
@@ -39,6 +46,8 @@ Usage::
     uv run python scripts/demo_overlay.py --minimize
     uv run python scripts/demo_overlay.py --record-minimize docs/media/overlay-minimize.gif
     uv run python scripts/demo_overlay.py --theme amber --intensity max
+    uv run python scripts/demo_overlay.py --theme custom --accent "#ff8a1f"
+    uv run python scripts/demo_overlay.py --theme-sheet docs/media/overlay-themes.png
     uv run python scripts/demo_overlay.py --record docs/media/overlay-boot.gif
     uv run python scripts/demo_overlay.py --record-states docs/media/overlay-states.gif
 """
@@ -54,9 +63,9 @@ import tkinter as tk
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
-from PIL import Image, ImageGrab
+from PIL import Image, ImageDraw, ImageFont, ImageGrab
 
 from jarvis import _native
 from jarvis.ui.hud_protocol import HistoryRole, SubmitText
@@ -70,6 +79,7 @@ from jarvis.ui.overlay import (
     OverlayTheme,
     create_native_overlay,
 )
+from jarvis.utils.colour import DEFAULT_ACCENT, normalise_hex
 from jarvis.utils.errors import NativeUnavailableError
 
 _PER_MONITOR_AWARE_V2: Final = -4
@@ -161,6 +171,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--intensity", choices=[i.value for i in OverlayIntensity], default="normal"
     )
     parser.add_argument("--size", choices=[s.value for s in OverlaySize], default="large")
+    parser.add_argument("--accent", default=DEFAULT_ACCENT, help="custom theme colour, #rrggbb")
+    parser.add_argument(
+        "--theme-sheet", type=Path, metavar="OUT.png", help="write a PNG of every theme"
+    )
     parser.add_argument("--record", type=Path, metavar="OUT.gif", help="capture the boot")
     parser.add_argument(
         "--record-states", type=Path, metavar="OUT.gif", help="capture the states cycle"
@@ -529,11 +543,14 @@ def main(argv: list[str] | None = None) -> int:
     if sys.platform != "win32":
         print("The overlay is Windows-only.", file=sys.stderr)
         return 1
+    if args.theme_sheet is not None:
+        return write_theme_sheet(args.theme_sheet, normalise_hex(args.accent))
     ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_ssize_t(_PER_MONITOR_AWARE_V2))
     config = OverlayConfig(
         theme=OverlayTheme(args.theme),
         intensity=OverlayIntensity(args.intensity),
         size=OverlaySize(args.size),
+        accent=normalise_hex(args.accent),
         transparent=not args.opaque,
     )
     if args.interactive or args.record_interactive is not None:
@@ -577,6 +594,77 @@ def run_states(args: argparse.Namespace, config: OverlayConfig) -> int:
         if recorder is not None and output is not None:
             size = recorder.save(output)
             print(f"wrote {output} ({size / 1e6:.2f} MB)")
+    return 0
+
+
+SHEET_CARD: Final = (300, 220)
+SHEET_COLUMNS: Final = 4
+SHEET_RING_RADII: Final = (70, 56, 42, 28)
+SHEET_STATES: Final = ("idle", "listening", "thinking", "speaking")
+SHEET_FONT: Final = "segoeui.ttf"
+SHEET_FONT_SIZE: Final = 15
+
+
+def _rgb(colour: tuple[float, ...], alpha: float = 1.0) -> tuple[int, int, int, int]:
+    """A native (r, g, b, a) float colour as 8-bit RGBA."""
+    r, g, b, a = (round(channel * 255) for channel in colour)
+    return r, g, b, round(a * alpha)
+
+
+def _sheet_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    try:
+        return ImageFont.truetype(SHEET_FONT, SHEET_FONT_SIZE)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def _draw_card(
+    draw: ImageDraw.ImageDraw,
+    origin: tuple[int, int],
+    title: tuple[str, str],
+    palette: dict[str, Any],
+) -> None:
+    """One theme: state rings around the accent, text on the plate, the warning dot."""
+    x, y = origin
+    width, height = SHEET_CARD
+    draw.rectangle((x, y, x + width - 1, y + height - 1), fill=_rgb(palette["background"]))
+    centre = (x + 90, y + height // 2)
+    for radius, state in zip(SHEET_RING_RADII, SHEET_STATES, strict=True):
+        box = (centre[0] - radius, centre[1] - radius, centre[0] + radius, centre[1] + radius)
+        draw.ellipse(box, outline=_rgb(palette[state]), width=5)
+    draw.ellipse(
+        (centre[0] - 12, centre[1] - 12, centre[0] + 12, centre[1] + 12),
+        fill=_rgb(palette["accent"]),
+    )
+    plate = (x + 175, y + 60, x + width - 15, y + 160)
+    draw.rectangle(plate, fill=_rgb(palette["plate"], 1.0 / palette["plate"][3]))
+    font = _sheet_font()
+    name, subtitle = title
+    draw.text((plate[0] + 10, plate[1] + 10), name.upper(), fill=_rgb(palette["text"]), font=font)
+    draw.text((plate[0] + 10, plate[1] + 38), subtitle, fill=_rgb(palette["muted_text"]), font=font)
+    draw.ellipse(
+        (plate[0] + 10, plate[1] + 70, plate[0] + 24, plate[1] + 84), fill=_rgb(palette["warning"])
+    )
+
+
+def write_theme_sheet(path: Path, accent: str) -> int:
+    """Draw every theme's palette into ``path`` (PNG); returns an exit code."""
+    try:
+        module = _native.load("jarvis_overlay")
+    except NativeUnavailableError as error:
+        print(f"Overlay unavailable: {error}", file=sys.stderr)
+        return 1
+    themes = list(OverlayTheme)
+    rows = -(-len(themes) // SHEET_COLUMNS)
+    sheet = Image.new("RGBA", (SHEET_CARD[0] * SHEET_COLUMNS, SHEET_CARD[1] * rows))
+    draw = ImageDraw.Draw(sheet)
+    for index, theme in enumerate(themes):
+        origin = (SHEET_CARD[0] * (index % SHEET_COLUMNS), SHEET_CARD[1] * (index // SHEET_COLUMNS))
+        subtitle = accent if theme is OverlayTheme.CUSTOM else "standby"
+        _draw_card(draw, origin, (theme.value, subtitle), module.palette(theme.value, accent))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path, optimize=True)
+    print(f"wrote {path}")
     return 0
 
 

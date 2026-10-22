@@ -20,7 +20,7 @@ headphones, and only the wake word (or hotkey, or typing) does on speakers.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Final, Protocol, runtime_checkable
 
@@ -31,6 +31,7 @@ from jarvis.app.autostart import StartupShortcut
 from jarvis.audio.engine import (
     AudioEngine,
     AudioModelError,
+    CaptureRecovery,
     NativeEngine,
     NativePlayback,
     Speaker,
@@ -68,7 +69,7 @@ from jarvis.core.voice_io import (
 from jarvis.core.voice_latency import FirstTokenProbe, TurnTimeline
 from jarvis.core.voice_triggers import AnyTrigger, HotkeyTrigger, TurnTrigger, WakeWordTrigger
 from jarvis.os_integration.audio_endpoint import default_output_endpoint
-from jarvis.os_integration.base import OutputEndpoint
+from jarvis.os_integration.base import OutputEndpoint, Platform
 from jarvis.os_integration.errors import PlatformError
 from jarvis.stt.base import STT
 from jarvis.tts.base import TTS
@@ -101,6 +102,7 @@ TEXT_FALLBACK: Final = (
     "Voice mode is unavailable: {reason}\nStarting text mode instead; type your requests.\n"
 )
 STT_LOADING: Final = "[Loading the speech recognition model...]\n"
+MICROPHONE_NOTIFICATION_TITLE: Final = "Jarvis: microphone"
 
 
 class VoiceUnavailableError(JarvisError):
@@ -165,6 +167,23 @@ def build_tts(settings: Settings) -> TTS:
         raise VoiceUnavailableError(f"speech output unavailable: {error}") from error
 
 
+def microphone_notifier(platform: Platform) -> Callable[[str], Awaitable[None]]:
+    """Shows the capture watchdog's "Microphone stopped" as a system notification.
+
+    The tray and HUD may be hidden (Jarvis runs windowless), and a user whose
+    wake word stopped working looks at neither; a notification is what they see.
+    """
+
+    async def notify(text: str) -> None:
+        try:
+            await platform.notify(MICROPHONE_NOTIFICATION_TITLE, text)
+        except PlatformError:
+            # The log still carries the outage; a lost balloon is not fatal.
+            log.exception("voice.microphone.notify_failed", text=text)
+
+    return notify
+
+
 def boot_readout(settings: Settings) -> dict[str, str]:
     """The real values the overlay's boot sequence shows in its systems check.
 
@@ -200,6 +219,7 @@ def overlay_config(settings: Settings) -> OverlayConfig:
     """The overlay's configuration from the settings, remembered positions included."""
     return OverlayConfig(
         theme=OverlayTheme(settings.overlay_theme),
+        accent=settings.overlay_accent,
         boot_animation=settings.overlay_boot_animation,
         intensity=OverlayIntensity(settings.overlay_intensity),
         size=OverlaySize(settings.overlay_size),
@@ -324,6 +344,7 @@ def live_appliers(overlay: Overlay, settings: Settings, parts: _HudParts) -> dic
     appliers: dict[str, Applier] = {
         "overlay_size": appearance.set_size,
         "overlay_theme": appearance.set_theme,
+        "overlay_accent": appearance.set_accent,
         "overlay_intensity": appearance.set_intensity,
         "speak_replies": parts.replies.set_speak,
         "hud_auto_minimize_seconds": lambda seconds: overlay.set_auto_minimize(float(seconds)),
@@ -433,6 +454,11 @@ class VoiceFrontEndBuilder:
             poll_interval=self._factories.poll_interval,
             max_utterance_seconds=settings.max_utterance_seconds,
             silence_end_ms=settings.vad_silence_end_ms,
+            recovery=CaptureRecovery(
+                notify=microphone_notifier(request.platform),
+                device_name=self._factories.microphone_name,
+                restart_errors=(native_error,),
+            ),
         )
         try:
             await request.stack.enter_async_context(engine)
@@ -629,7 +655,7 @@ class VoiceFrontEndBuilder:
         microphone = VoiceMicrophone(
             parts.audio.engine, inputs.voice, on_change=overlay.overlay.set_muted
         )
-        hud = self._hud(request, overlay, parts, microphone)
+        hud, settings_page = self._hud(request, overlay, parts, microphone)
 
         def attach(orchestrator: Orchestrator) -> None:
             inputs.barge_in.attach(turns=orchestrator, capture=inputs.voice)
@@ -648,6 +674,7 @@ class VoiceFrontEndBuilder:
             bind_controls=hud.bind_controls,
             toggle_hud_minimized=hud.toggle_minimized,
             bring_hud_forward=hud.bring_forward,
+            hud_appearance=settings_page,
         )
 
     def _hud(
@@ -656,8 +683,8 @@ class VoiceFrontEndBuilder:
         overlay: _OverlayParts,
         parts: _HudParts,
         microphone: VoiceMicrophone,
-    ) -> HudActions:
-        """The settings page and the HUD's actions, connected to the bridge."""
+    ) -> tuple[HudActions, SettingsController]:
+        """The HUD's actions, connected to the bridge, and its settings page."""
         settings = request.settings
         store = UserSettingsStore(user_settings_path(settings.data_dir))
         http = httpx.AsyncClient()
@@ -682,7 +709,7 @@ class VoiceFrontEndBuilder:
             boot_readout=lambda: boot_readout(settings),
         )
         overlay.bridge.attach_handlers(actions)
-        return actions
+        return actions, controller
 
     def _input(
         self,
@@ -778,4 +805,5 @@ async def run_voice_mode(
 #   greeting can already say how to interrupt in this session.
 # - Muting stops the audio engine (the device is really closed, which
 #   Windows shows in its microphone indicator) and makes the input ignore
-#   hotkey presses until unmuted.
+#   hotkey presses until unmuted. The capture watchdog (ADR-0027) stops and
+#   starts with the engine, so a muted microphone is never "recovered".

@@ -34,7 +34,16 @@ def overlay(native: FakeNativeOverlay) -> Overlay:
 
 def test_state_names_mirror_the_native_enum() -> None:
     assert [state.value for state in OverlayState] == ["IDLE", "LISTENING", "THINKING", "SPEAKING"]
-    assert [theme.value for theme in OverlayTheme] == ["cyan", "amber"]
+    assert [theme.value for theme in OverlayTheme] == [
+        "cyan",
+        "amber",
+        "red",
+        "green",
+        "violet",
+        "ice",
+        "pink",
+        "custom",
+    ]
     assert [corner.value for corner in OverlayCorner] == [
         "TOP_LEFT",
         "TOP_RIGHT",

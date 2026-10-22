@@ -173,6 +173,22 @@ class BackgroundJobTracker(Protocol):
         """Start watching ``process``; returns a job id."""
 
 
+class HudAppearance(Protocol):
+    """The running HUD's palette, as the ``set_hud_colour`` tool changes it.
+
+    Implemented by ``ui.hud_settings.SettingsController``, so a spoken
+    change is validated, saved and applied exactly like one picked on the
+    HUD's settings page.
+    """
+
+    async def set_colour(self, theme: str, accent: str | None = None) -> None:
+        """Switch to ``theme``; with ``accent`` (``#rrggbb``) set the custom accent first.
+
+        Raises:
+            JarvisError: If a value is rejected.
+        """
+
+
 ConfirmationAsker = Callable[[str], Awaitable[bool]]
 """Asks the user a yes/no question (spoken or typed) and returns their answer."""
 
@@ -200,6 +216,7 @@ class ToolContext:
         vision: Screen understanding, ``None`` when it is not wired in.
         jobs: Tracker for detached processes such as dev servers, ``None``
             when nothing consumes their completion.
+        hud: The HUD's palette, ``None`` without a HUD (text-only mode).
     """
 
     settings: Settings
@@ -211,6 +228,7 @@ class ToolContext:
     integrations: IntegrationServices | None = None
     vision: ScreenReaderProtocol | None = None
     jobs: BackgroundJobTracker | None = None
+    hud: HudAppearance | None = None
 
 
 class Tool[InputT: BaseModel](ABC):
