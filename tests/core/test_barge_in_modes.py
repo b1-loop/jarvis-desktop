@@ -411,7 +411,7 @@ async def test_on_speakers_echo_is_ignored_and_the_wake_word_interrupts(
     calls = len(session.native.listening_calls)
     session.native.script(native_event("WAKE_WORD_DETECTED", 0.95))
     await eventually(lambda: application.orchestrator.state is AssistantState.LISTENING)
-    session.playback.hold = False  # lets the earcon finish
+    session.playback.release()  # the earcon may already be queued behind the hold
     # LISTENING is published before the earcon and before the capture clears
     # stale events; speech scripted in between would be discarded with them.
     await eventually(lambda: True in session.native.listening_calls[calls:])
