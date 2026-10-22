@@ -602,6 +602,7 @@ def create_native_engine(
     wake_word: bool = True,
     min_speech_ms: int | None = None,
     wake_word_threshold: float | None = None,
+    silence_end_ms: int | None = None,
 ) -> NativeEngine:
     """Construct the real ``jarvis_audio.AudioEngine``.
 
@@ -615,6 +616,10 @@ def create_native_engine(
         min_speech_ms: How long speech must last before the engine reports
             ``SPEECH_STARTED`` (and triggers native barge-in); ``None`` keeps
             the native default.
+        silence_end_ms: Silence that ends an utterance (the segmenter's
+            hangover); ``None`` keeps the native default (700 ms). Pass the
+            same value to :class:`AudioEngine`, which uses it to tell a lone
+            wake phrase from a request spoken in the same breath.
 
     Raises:
         ConfigError: If a needed model file is missing.
@@ -634,6 +639,8 @@ def create_native_engine(
         config.pipeline.segmenter.min_speech_ms = min_speech_ms
     if wake_word_threshold is not None:
         config.pipeline.wake_word_threshold = wake_word_threshold
+    if silence_end_ms is not None:
+        config.pipeline.segmenter.silence_end_ms = silence_end_ms
     try:
         return cast(NativeEngine, module.AudioEngine(paths.vad, wake_word_models, config))
     except module.ModelError as error:

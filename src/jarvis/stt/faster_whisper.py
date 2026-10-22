@@ -17,6 +17,13 @@ back once to the CPU model (``stt_model_cpu``, small) in int8, with one
 warning that names what is missing; an explicit ``cuda`` device still
 fails loudly. ``stt_hotwords`` bias decoding towards names Whisper
 otherwise mishears ("Jarvis", "Discord").
+
+Decoding is tuned for short spoken commands (ADR-0030): greedy search
+(``stt_beam_size`` 1), no timestamp tokens and no conditioning on earlier
+windows, which transcribed the Swedish benchmark clips word for word like
+beam search did, only faster. ``warm_up`` also runs one silent decode, because
+the first CUDA decode after a load costs seconds of kernel set-up that
+otherwise land on the user's first request.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import math
 import re
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from types import ModuleType
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
@@ -50,8 +58,11 @@ if TYPE_CHECKING:
 WHISPER_SAMPLE_RATE: Final = 16_000
 """Whisper models are trained on 16 kHz audio and accept nothing else."""
 
-DEFAULT_BEAM_SIZE: Final = 5
-"""faster-whisper's own default; wider beams cost latency for little accuracy."""
+DEFAULT_BEAM_SIZE: Final = 1
+"""Greedy decoding: on short commands it matched beam 5 word for word, faster (ADR-0030)."""
+
+WARM_UP_SECONDS: Final = 1.0
+"""Length of the silent clip ``warm_up`` decodes to initialise the CUDA kernels."""
 
 AUTO_DEVICE: Final = "auto"
 AUTO_COMPUTE_TYPE: Final = "auto"
@@ -114,6 +125,8 @@ class WhisperModel(Protocol):
         beam_size: int,
         vad_filter: bool,
         hotwords: str | None,
+        without_timestamps: bool,
+        condition_on_previous_text: bool,
     ) -> tuple[Iterable[WhisperSegment], WhisperInfo]:
         """Return a lazy segment iterator and the utterance metadata."""
 
@@ -126,6 +139,30 @@ ModelFactory = Callable[[], WhisperModel]
 """Builds the model on demand; the real one downloads and loads weights."""
 
 
+@dataclass(frozen=True, slots=True)
+class DecodeOptions:
+    """How faster-whisper decodes one utterance.
+
+    Attributes:
+        beam_size: 1 is greedy search; wider beams cost latency on every request.
+        vad_filter: faster-whisper's own Silero pass. Off because the native
+            engine already cut the utterance with the same VAD model; running
+            it again only adds time.
+        without_timestamps: Skip timestamp tokens; the pipeline never uses
+            segment times beyond the confidence weighting, which one segment
+            spanning the whole clip serves just as well.
+        condition_on_previous_text: Feed one window's text into the next.
+            Utterances are single windows (under 30 s), so it only matters
+            for long dictation, where it is also Whisper's main source of
+            repetition loops.
+    """
+
+    beam_size: int = DEFAULT_BEAM_SIZE
+    vad_filter: bool = False
+    without_timestamps: bool = True
+    condition_on_previous_text: bool = False
+
+
 class FasterWhisperSTT(STT):
     """``STT`` over faster-whisper with lazy loading and off-loop inference."""
 
@@ -134,16 +171,14 @@ class FasterWhisperSTT(STT):
         model_factory: ModelFactory,
         *,
         language: str | None = None,
-        beam_size: int = DEFAULT_BEAM_SIZE,
-        vad_filter: bool = False,
+        decode: DecodeOptions | None = None,
         cpu_fallback: ModelFactory | None = None,
         hotwords: str | None = None,
     ) -> None:
         self._model_factory = model_factory
         self._cpu_fallback = cpu_fallback
         self._language = language
-        self._beam_size = beam_size
-        self._vad_filter = vad_filter
+        self._decode = decode or DecodeOptions()
         self._hotwords = hotwords.strip() if hotwords and hotwords.strip() else None
         self._model: WhisperModel | None = None
         self._load_lock = asyncio.Lock()
@@ -174,7 +209,11 @@ class FasterWhisperSTT(STT):
                 download_root=root,
             )
         return cls(
-            factory, language=language, cpu_fallback=fallback, hotwords=settings.stt_hotwords
+            factory,
+            language=language,
+            decode=DecodeOptions(beam_size=settings.stt_beam_size),
+            cpu_fallback=fallback,
+            hotwords=settings.stt_hotwords,
         )
 
     @property
@@ -183,8 +222,23 @@ class FasterWhisperSTT(STT):
         return self._model is not None
 
     async def warm_up(self) -> None:
-        """Load the model now so the first utterance is not slowed by it."""
+        """Load the model and decode a moment of silence, so the first request is fast.
+
+        The silent decode initialises the CUDA kernels (seconds on the first
+        call after a load) and is also where a missing cuBLAS shows up, so
+        the CPU fallback happens here rather than on the user's first
+        sentence. A failure is logged, not raised: the same error will be
+        reported, and degraded to "didn't catch that", on the first request.
+        """
         await self._get_model()
+        started = time.perf_counter()
+        silence = np.zeros(round(WARM_UP_SECONDS * WHISPER_SAMPLE_RATE), dtype=np.float32)
+        try:
+            await self.transcribe(silence, WHISPER_SAMPLE_RATE)
+        except TranscriptionError as error:
+            log.warning("stt.warm_up_failed", error=str(error))
+            return
+        log.info("stt.warmed_up", elapsed_ms=round((time.perf_counter() - started) * 1000))
 
     async def transcribe(
         self, samples: Samples, sample_rate: int = ENGINE_SAMPLE_RATE
@@ -268,9 +322,11 @@ class FasterWhisperSTT(STT):
         segments, info = model.transcribe(
             audio,
             language=self._language,
-            beam_size=self._beam_size,
-            vad_filter=self._vad_filter,
+            beam_size=self._decode.beam_size,
+            vad_filter=self._decode.vad_filter,
             hotwords=self._hotwords,
+            without_timestamps=self._decode.without_timestamps,
+            condition_on_previous_text=self._decode.condition_on_previous_text,
         )
         return list(segments), info
 
@@ -416,6 +472,14 @@ def _faster_whisper_factory(
 #   sentence, which an initial prompt can do on very short utterances.
 # - The load lock prevents two concurrent first calls from loading the
 #   weights twice; after that it is uncontended.
+# - Decoding options (ADR-0030), measured on 20 Swedish edge-tts commands on
+#   the RTX 4070 Laptop GPU, interleaved so clock changes hit every variant:
+#   greedy + no timestamps + no conditioning gave the same transcripts as
+#   beam 5 and was faster at the median and much tighter at p90; the
+#   built-in vad_filter added time and changed nothing; a forced language
+#   (JARVIS_STT_LANGUAGE=sv) roughly halved the time against auto-detection,
+#   which runs the encoder a second time. The first decode after a load
+#   took about 2 s against about 0.4 s warm, hence the silent warm-up decode.
 # - Confidence is exp(avg_logprob): a well-known approximation, not a
 #   calibrated probability. It is exposed so the agent can ask "did you say
 #   ...?" below a threshold rather than act on a bad transcript.

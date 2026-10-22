@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import importlib.util
 import json
@@ -274,3 +275,54 @@ def test_barge_in_metrics_require_an_observed_interruption() -> None:
 
     with pytest.raises(bench.BenchmarkError):
         bench.barge_in_metrics(recorder, 0, push, speech_start_s=0.0)
+
+
+# --- stage parts from provider log events (ADR-0030) ---------------------------
+
+
+def test_log_metrics_take_the_first_provider_event_of_the_turn() -> None:
+    recorder = bench.Recorder()
+    recorder.add("log", ("stt.transcribed", {"elapsed_ms": 410}))
+    start = recorder.position()
+    recorder.add("log", ("stt.transcribed", {"elapsed_ms": 380}))
+    first_round = {"load_ms": 12.5, "prompt_eval_ms": 300.0, "input_tokens": 1500}
+    recorder.add("log", ("llm.turn_done", first_round))
+    recorder.add("log", ("llm.turn_done", {"load_ms": 0.0, "prompt_eval_ms": 90.0}))
+    recorder.add("log", ("tts.synthesized", {"first_chunk_ms": 640}))
+
+    assert bench.log_metrics(recorder, start) == {
+        "stt_decode": 380.0,
+        "llm_load": 12.5,
+        "llm_prompt_eval": 300.0,
+        "llm_prompt_tokens": 1500.0,
+        "tts_first_chunk": 640.0,
+    }
+
+
+def test_the_log_tap_copies_tapped_events_and_drops_quiet_ones() -> None:
+    tap = bench.LogTap(show_level=bench.logging.WARNING)
+    tap.recorder = bench.Recorder()
+
+    with pytest.raises(bench.structlog.DropEvent):
+        tap(None, "info", {"event": "stt.transcribed", "elapsed_ms": 400})
+    passed = tap(None, "warning", {"event": "llm.model_was_not_loaded"})
+
+    assert passed == {"event": "llm.model_was_not_loaded"}
+    assert [mark.value[0] for mark in tap.recorder.marks] == ["stt.transcribed"]
+    assert bench.method_level("exception") == bench.logging.ERROR
+
+
+def test_set_overrides_reach_the_session_settings() -> None:
+    options = bench.parse_args(["--set", "stt_beam_size=5", "--set", "tts_provider = piper"])
+    (spec,) = [s for s in bench.scenarios_for(options) if (s.mode, s.language) == ("cloud", "en")]
+
+    settings = bench.session_settings(spec)
+
+    assert options.overrides == (("stt_beam_size", "5"), ("tts_provider", "piper"))
+    assert settings.stt_beam_size == 5
+    assert bench.providers_of(settings)["tts"].startswith("Piper ")
+
+
+def test_a_set_without_a_value_is_rejected() -> None:
+    with pytest.raises(argparse.ArgumentTypeError):
+        bench.parse_override("stt_beam_size")

@@ -197,6 +197,61 @@ How to read it:
   JSON, restarts the assistant and continues; the fix belongs to the LLM
   provider and is tracked separately.
 
+### Swedish on the GPU, after the latency work (ADR-0030)
+
+The same benchmark, now with faster-whisper `large-v3-turbo` on CUDA
+(int8_float16), Ollama `qwen2.5:7b` on the GPU and the stages broken into
+their parts. Swedish prompts, null sink, median / p90 ms of six measured
+turns, `main` before the change against this change:
+
+| Stage | before, edge-tts | after, edge-tts | after, Piper (`JARVIS_TTS_PROVIDER=piper`) |
+| --- | ---: | ---: | ---: |
+| End of speech -> transcript | 544 / 581 | 512 / 586 | 488 / 564 |
+| Transcript -> first LLM token | 940 / 1340 | 791 / 1246 | 846 / 1225 |
+| of which: Ollama prompt evaluation | - | 30 / 491 | 198 / 465 |
+| First sentence -> first audio | 1356 / 2628 | 1564 / 3046 | 173 / 232 |
+| **End of speech -> first audio** | **4057 / 4763** | **3772 / 4528** | **2727 / 3592** |
+| Last word -> first audio (700 ms hangover) | 4791 / 5489 | 4510 / 5252 | 3465 / 4330 |
+
+With `JARVIS_VAD_SILENCE_END_MS=500` the last row drops by another 200 ms
+(3022 / 3504 with Piper). edge-tts is a network service and its first
+byte alone took 641 ms at the median and 1.8 s at p90 that day; Piper's
+first chunk takes about 0.1 s on the CPU. What the table cannot show,
+because its warm-up turn and closely spaced turns hide it: the first
+request after a start no longer waits for the Whisper kernels (1.9 s ->
+0.4 s) or the LLM load, and a quiet half hour no longer unloads the model
+(Ollama's own default is five minutes). Details and every measurement:
+[ADR-0030](docs/adr/0030-voice-latency-budget.md).
+
+Recommended `.env` for Swedish on this kind of machine:
+
+```
+JARVIS_STT_LANGUAGE=sv            # auto-detection doubles the STT time
+JARVIS_OLLAMA_KEEP_ALIVE=30m      # or -1 while Jarvis runs all day
+JARVIS_TTS_PROVIDER=piper         # optional: local voice, under 3 s end to end
+JARVIS_LOCAL_TTS_MODEL=models/sv_SE-nst-medium.onnx  # download_models.py --piper-sv
+JARVIS_VAD_SILENCE_END_MS=600     # optional: a little quicker, still tolerates short pauses
+```
+
+### When answers are slow
+
+- **Another Ollama model evicted Jarvis's model.** On an 8 GB GPU,
+  `qwen2.5:7b` (4.75 GB), `bge-m3` (0.7 GB), Whisper (about 1 GB) and the
+  desktop fill the card; loading any other model (`ollama run llama3`, a
+  vision model) unloads Jarvis's, and the next turn waits for a reload
+  (12 s was seen). The log then says `llm.model_was_not_loaded`. Use one
+  chat model at a time, or `ollama ps` to see what is loaded.
+- **Two Whisper instances on the GPU** (a benchmark or a second Jarvis next
+  to the running one) spill video memory: prompt evaluation fell from
+  about 2100 to 640 tokens per second.
+- **On battery** the laptop caps the GPU (28 W here) and speech
+  recognition varies between 0.4 and 4 s; plug in for consistent latency.
+- **`JARVIS_STT_LANGUAGE` empty** means language detection on every
+  utterance: a second encoder pass, about twice the STT time.
+- **`localhost` in `JARVIS_OLLAMA_BASE_URL`** is rewritten to `127.0.0.1`:
+  Windows tries IPv6 first and Ollama does not listen there, which cost
+  0.25 s per connection (2.4 s for blocking clients).
+
 ## Setup (Windows 11)
 
 Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), CMake 3.28 or

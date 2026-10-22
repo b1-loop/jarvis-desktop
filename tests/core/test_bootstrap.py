@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from structlog.testing import CapturingLogger
 
 from jarvis.agent.registry import ToolRegistry
 from jarvis.agent.tool_embeddings import EmbeddingToolRanker
@@ -23,6 +24,7 @@ from jarvis.core.bootstrap import (
     build_registry,
     build_vector_store,
     consent_notifier,
+    start_llm_warm_up,
 )
 from jarvis.core.events import EventBus
 from jarvis.integrations.base import ConsentRequiredError
@@ -172,6 +174,65 @@ async def test_llm_comes_from_the_factory_and_is_closed(
         http = client._http
 
     assert http.is_closed
+
+
+class WarmingLLM(ScriptedLLM):
+    """A scripted LLM that records (or fails) its start-up warm-up."""
+
+    def __init__(self, failure: Exception | None = None) -> None:
+        super().__init__()
+        self.warmed = asyncio.Event()
+        self.failure = failure
+
+    async def warm_up(self) -> None:
+        self.warmed.set()
+        if self.failure is not None:
+            raise self.failure
+
+
+async def test_the_llm_warms_up_in_the_background() -> None:
+    llm = WarmingLLM()
+    async with AsyncExitStack() as stack:
+        task = start_llm_warm_up(llm, stack)
+        assert task is not None
+        await asyncio.wait_for(llm.warmed.wait(), timeout=1.0)
+
+
+async def test_a_failed_warm_up_is_logged_and_a_pending_one_cancelled_on_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger = CapturingLogger()
+    monkeypatch.setattr(bootstrap, "log", logger)
+    async with AsyncExitStack() as stack:
+        failing = start_llm_warm_up(WarmingLLM(RuntimeError("model file missing")), stack)
+        assert failing is not None
+        await asyncio.gather(failing, return_exceptions=True)
+        pending = start_llm_warm_up(WarmingLLM(), stack)
+    assert pending is not None
+    await asyncio.gather(pending, return_exceptions=True)
+    assert pending.cancelled()
+    (warning,) = [call for call in logger.calls if call.method_name == "warning"]
+    assert warning.args[0] == "llm.warm_up_failed"
+
+
+async def test_a_client_without_warm_up_is_left_alone() -> None:
+    async with AsyncExitStack() as stack:
+        assert start_llm_warm_up(ScriptedLLM(), stack) is None
+
+
+async def test_build_llm_starts_the_warm_up_only_when_enabled(
+    monkeypatch: pytest.MonkeyPatch, make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    started: list[object] = []
+    monkeypatch.setattr(
+        bootstrap, "start_llm_warm_up", lambda client, _stack: started.append(client)
+    )
+    async with AsyncExitStack() as stack:
+        off = build_llm(ollama_settings(make_settings, tmp_path), stack)
+        on = build_llm(ollama_settings(make_settings, tmp_path, llm_warm_up=True), stack)
+
+    assert started == [on]
+    assert off is not on
 
 
 def test_registry_discovers_the_bundled_tools() -> None:

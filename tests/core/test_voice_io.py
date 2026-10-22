@@ -353,11 +353,44 @@ async def test_synthesis_of_the_next_sentence_overlaps_playback_of_the_current()
     # Sentence one is still on the device (held) while sentence two is
     # already fully synthesised: the two stages overlap.
     assert playback.is_playing()
-    assert len(playback.played) == 2
+    assert 1 <= len(playback.played) <= 2  # only sentence one's chunks so far
     playback.release()
     await eventually(lambda: len(playback.played) == 4)
     playback.release()
     assert await asyncio.wait_for(flushed, WAIT)
+    await output.aclose()
+
+
+async def test_sentences_are_synthesised_concurrently_not_one_after_another() -> None:
+    log: list[str] = []
+    playback = DevicePlayback()
+    output, _ = voice_output(ScriptedTTS(chunks=2, delay=0.05, log=log), playback, EventBus(), [])
+
+    for sentence in ("One.", "Two.", "Three."):
+        await output.say(sentence)
+    await eventually(lambda: "synth:Three." in log)
+
+    # Every request started before the first one finished: a slow round
+    # trip for one sentence no longer delays the ones after it.
+    assert log[:3] == ["synth:One.", "synth:Two.", "synth:Three."]
+    assert await asyncio.wait_for(output.flush(), WAIT)
+    assert len(playback.played) == 6
+    await output.aclose()
+
+
+async def test_an_interruption_cancels_every_synthesis_in_flight() -> None:
+    tts = ScriptedTTS(chunks=50, delay=0.05)
+    playback = DevicePlayback()
+    output, _ = voice_output(tts, playback, EventBus(), [])
+
+    for sentence in ("One.", "Two.", "Three."):
+        await output.say(sentence)
+    flushed = asyncio.create_task(output.flush())
+    await eventually(lambda: playback.played)
+    playback.stop()
+
+    assert not await asyncio.wait_for(flushed, WAIT)
+    await eventually(lambda: set(tts.cancelled) == {"One.", "Two.", "Three."})
     await output.aclose()
 
 

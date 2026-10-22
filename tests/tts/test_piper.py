@@ -156,6 +156,51 @@ async def test_config_errors_from_the_factory_pass_through() -> None:
 # --- voice files and construction ---------------------------------------------------
 
 
+class FakeLocale:
+    """Stands in for ``locale``: one process-wide LC_CTYPE that espeak-ng overwrites."""
+
+    LC_CTYPE = 0
+
+    def __init__(self) -> None:
+        self.current = "Swedish_Sweden.1252"
+
+    def setlocale(self, _category: int, value: str | None = None) -> str:
+        if value is not None:
+            self.current = value
+        return self.current
+
+
+class LocaleChangingSynthesizer(FakeSynthesizer):
+    """Changes the locale on every call, as espeak-ng does while phonemising."""
+
+    def __init__(self, fake_locale: FakeLocale) -> None:
+        super().__init__([sentence(0.1)])
+        self._locale = fake_locale
+
+    def synthesize(self, text: str) -> Iterator[FakePiperChunk]:
+        self._locale.current = "en_US.UTF-8"
+        yield from super().synthesize(text)
+
+
+async def test_the_character_locale_survives_loading_and_speaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_locale = FakeLocale()
+    monkeypatch.setattr(piper_module, "locale", fake_locale)
+
+    def load() -> FakeSynthesizer:
+        fake_locale.current = "en_US.UTF-8"
+        return LocaleChangingSynthesizer(fake_locale)
+
+    tts = PiperTTS(load, voice="sv_SE-test-medium", sample_rate=RATE)
+    await tts.warm_up()
+    assert fake_locale.current == "Swedish_Sweden.1252"
+
+    await collect(tts, "Hej.")
+
+    assert fake_locale.current == "Swedish_Sweden.1252"
+
+
 def write_voice(directory: Path, config: Any) -> Path:
     voice = directory / "en_GB-test-medium.onnx"
     voice.write_bytes(b"onnx")

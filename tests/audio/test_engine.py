@@ -381,17 +381,21 @@ async def test_speech_without_a_wake_phrase_is_the_request_itself(
     assert utterance.speech_detected
 
 
-def test_wake_word_threshold_reaches_the_native_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_wake_word_threshold_and_hangover_reach_the_native_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, float] = {}
 
     class FakeConfig:
         def __init__(self) -> None:
             self.pipeline = SimpleNamespace(
-                wake_word_threshold=0.5, segmenter=SimpleNamespace(min_speech_ms=200)
+                wake_word_threshold=0.5,
+                segmenter=SimpleNamespace(min_speech_ms=200, silence_end_ms=700),
             )
 
     def fake_engine(_vad: object, _wake: object, config: FakeConfig) -> object:
         captured["threshold"] = config.pipeline.wake_word_threshold
+        captured["silence_end_ms"] = config.pipeline.segmenter.silence_end_ms
         return object()
 
     module = SimpleNamespace(
@@ -400,6 +404,9 @@ def test_wake_word_threshold_reaches_the_native_config(monkeypatch: pytest.Monke
     monkeypatch.setattr("jarvis.audio.engine._native.load", lambda _name: module)
     monkeypatch.setattr(AudioModelPaths, "missing", lambda _self: ())
 
-    create_native_engine(AudioModelPaths.in_directory(Path()), wake_word_threshold=0.8)
+    create_native_engine(
+        AudioModelPaths.in_directory(Path()), wake_word_threshold=0.8, silence_end_ms=500
+    )
 
     assert captured["threshold"] == pytest.approx(0.8)
+    assert captured["silence_end_ms"] == 500

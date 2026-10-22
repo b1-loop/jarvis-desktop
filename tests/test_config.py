@@ -245,3 +245,61 @@ def test_ollama_think_accepts_the_model_default(
     monkeypatch.setenv("JARVIS_OLLAMA_THINK", value)
 
     assert Settings(_env_file=None).ollama_think is expected
+
+
+def test_voice_latency_defaults(make_settings: Callable[..., Settings]) -> None:
+    settings = make_settings()
+
+    assert settings.stt_beam_size == 1
+    assert settings.vad_silence_end_ms == 700
+    assert settings.ollama_keep_alive == "30m"
+    assert settings.ollama_num_ctx is None
+    assert settings.tts_provider == "auto"
+
+
+@pytest.mark.parametrize("value", ["30m", "-1", "600", "1h30m", "0", "-1m"])
+def test_ollama_keep_alive_accepts_seconds_and_durations(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("JARVIS_OLLAMA_KEEP_ALIVE", value)
+
+    assert Settings(_env_file=None).ollama_keep_alive == value
+
+
+@pytest.mark.parametrize("value", ["30 min", "forever", "m30"])
+def test_ollama_keep_alive_rejects_what_ollama_cannot_parse(
+    make_settings: Callable[..., Settings], value: str
+) -> None:
+    with pytest.raises(ValidationError, match="ollama_keep_alive"):
+        make_settings(ollama_keep_alive=value)
+
+
+def test_the_silence_hangover_is_read_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JARVIS_VAD_SILENCE_END_MS", "500")
+
+    assert Settings(_env_file=None).vad_silence_end_ms == 500
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, vad_silence_end_ms=50)
+
+
+@pytest.mark.parametrize(
+    ("configured", "used"),
+    [
+        ("http://localhost:11434", "http://127.0.0.1:11434"),
+        ("http://LOCALHOST:11434/", "http://127.0.0.1:11434/"),
+        ("http://127.0.0.1:11434", "http://127.0.0.1:11434"),
+        ("http://gpu-box:11434", "http://gpu-box:11434"),
+        ("http://[::1]:11434", "http://[::1]:11434"),
+    ],
+)
+def test_ollama_on_localhost_is_reached_over_ipv4(
+    make_settings: Callable[..., Settings], configured: str, used: str
+) -> None:
+    # Windows tries ::1 first and Ollama listens on 127.0.0.1: +2 s per connection.
+    assert make_settings(ollama_base_url=configured).ollama_base_url == used
+
+
+def test_the_default_ollama_url_is_ipv4(make_settings: Callable[..., Settings]) -> None:
+    assert make_settings().ollama_base_url == "http://127.0.0.1:11434"

@@ -4,6 +4,7 @@ Usage::
 
     uv run python scripts/download_models.py            # audio models into JARVIS_MODELS_DIR
     uv run python scripts/download_models.py --local    # plus whisper.cpp, llama.cpp, Piper models
+    uv run python scripts/download_models.py --piper-sv # plus the Swedish Piper voice (63 MB)
     uv run python scripts/download_models.py --force    # re-download everything
     uv run python scripts/download_models.py --models-dir C:/models
 
@@ -24,7 +25,7 @@ import httpx
 
 from jarvis.audio.models import AUDIO_MODELS, ModelFile
 from jarvis.config import Settings
-from jarvis.inference.models import INFERENCE_MODELS
+from jarvis.inference.models import INFERENCE_MODELS, SWEDISH_VOICE_MODELS
 from jarvis.utils.downloads import DownloadError, download_verified, is_verified
 
 
@@ -43,12 +44,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="also fetch the whisper.cpp, llama.cpp and Piper models for LOCAL mode (630 MB)",
     )
+    parser.add_argument(
+        "--piper-sv",
+        action="store_true",
+        help="also fetch the Swedish Piper voice (sv_SE-nst-medium, 63 MB)",
+    )
     return parser.parse_args(argv)
 
 
-def selected_models(*, local: bool) -> tuple[ModelFile, ...]:
+def selected_models(*, local: bool, swedish_voice: bool = False) -> tuple[ModelFile, ...]:
     """The manifest entries a run should fetch."""
-    return AUDIO_MODELS + INFERENCE_MODELS if local else AUDIO_MODELS
+    models = AUDIO_MODELS + INFERENCE_MODELS if local else AUDIO_MODELS
+    return models + SWEDISH_VOICE_MODELS if swedish_voice else models
 
 
 async def fetch(
@@ -64,11 +71,11 @@ async def fetch(
     print(f"  {model.name}: ok")
 
 
-async def run(models_dir: Path, *, force: bool, local: bool) -> int:
+async def run(models_dir: Path, *, force: bool, local: bool, swedish_voice: bool = False) -> int:
     """Download every selected model; return a process exit code."""
     async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
         try:
-            for model in selected_models(local=local):
+            for model in selected_models(local=local, swedish_voice=swedish_voice):
                 await fetch(client, model, models_dir, force=force)
         except DownloadError as error:
             print(f"error: {error}", file=sys.stderr)
@@ -80,7 +87,9 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point."""
     args = parse_args(argv)
     print(f"models directory: {args.models_dir.resolve()}")
-    return asyncio.run(run(args.models_dir, force=args.force, local=args.local))
+    return asyncio.run(
+        run(args.models_dir, force=args.force, local=args.local, swedish_voice=args.piper_sv)
+    )
 
 
 if __name__ == "__main__":

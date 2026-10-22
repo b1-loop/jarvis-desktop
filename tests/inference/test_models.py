@@ -7,6 +7,7 @@ from jarvis.inference.models import (
     PIPER_VOICE_EN_GB,
     PIPER_VOICE_EN_GB_CONFIG,
     QWEN2_5_0_5B_INSTRUCT,
+    SWEDISH_VOICE_MODELS,
     WHISPER_TINY,
     InferenceModelPaths,
     piper_config_path,
@@ -14,7 +15,7 @@ from jarvis.inference.models import (
 
 
 def test_every_model_is_pinned_by_revision_and_full_sha256() -> None:
-    for model in INFERENCE_MODELS:
+    for model in INFERENCE_MODELS + SWEDISH_VOICE_MODELS:
         assert len(model.sha256) == 64
         assert model.url.startswith("https://huggingface.co/")
         assert "/resolve/main/" not in model.url  # pinned to a revision, not a branch
@@ -22,7 +23,7 @@ def test_every_model_is_pinned_by_revision_and_full_sha256() -> None:
 
 
 def test_model_names_do_not_collide_with_the_audio_manifest() -> None:
-    names = [model.name for model in AUDIO_MODELS + INFERENCE_MODELS]
+    names = [model.name for model in AUDIO_MODELS + INFERENCE_MODELS + SWEDISH_VOICE_MODELS]
     assert len(names) == len(set(names))
 
 
@@ -55,3 +56,9 @@ def test_settings_defaults_point_at_the_pinned_manifest_files() -> None:
     assert settings.local_stt_model == expected.whisper
     assert settings.local_llm_model == expected.llama
     assert settings.local_tts_model == expected.piper_voice
+
+
+def test_the_swedish_voice_and_its_config_are_one_download_pair(tmp_path: Path) -> None:
+    voice, config = SWEDISH_VOICE_MODELS
+
+    assert piper_config_path(voice.path(tmp_path)) == config.path(tmp_path)

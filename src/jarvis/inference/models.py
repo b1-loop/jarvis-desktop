@@ -68,6 +68,35 @@ PIPER_VOICE_EN_GB_CONFIG: Final = ModelFile(
 """The voice's config (sample rate, espeak voice, phoneme map); Piper looks
 for it next to the ``.onnx`` file under the same name plus ``.json``."""
 
+_PIPER_VOICE_SV_DIR: Final = (
+    f"https://huggingface.co/rhasspy/piper-voices/resolve/{_PIPER_VOICES_REVISION}"
+    "/sv/sv_SE/nst/medium"
+)
+
+PIPER_VOICE_SV_SE: Final = ModelFile(
+    name="sv_SE-nst-medium.onnx",
+    url=f"{_PIPER_VOICE_SV_DIR}/sv_SE-nst-medium.onnx",
+    sha256="df011f56825a59dd1efc080c38a65a1ef70407e60f63050e9246f43a3d7e471e",
+    size_bytes=63_104_526,
+)
+"""Piper voice "nst", Swedish, medium quality, 22.05 kHz (63 MB).
+
+The voice for ``JARVIS_TTS_PROVIDER=piper`` with Swedish replies (ADR-0030):
+its first audio chunk took about 0.1 s on the development laptop's CPU,
+against 0.6 s (p90 1.8 s) for edge-tts. Trained on the NST Swedish corpus,
+which Spraakbanken publishes under CC0."""
+
+PIPER_VOICE_SV_SE_CONFIG: Final = ModelFile(
+    name="sv_SE-nst-medium.onnx.json",
+    url=f"{_PIPER_VOICE_SV_DIR}/sv_SE-nst-medium.onnx.json",
+    sha256="d45dd74cbb4eca58694bf04a97e243044092476f28a55ae26424f0653086980a",
+    size_bytes=4_157,
+)
+"""The Swedish voice's config, next to the ``.onnx`` file."""
+
+SWEDISH_VOICE_MODELS: Final[tuple[ModelFile, ...]] = (PIPER_VOICE_SV_SE, PIPER_VOICE_SV_SE_CONFIG)
+"""What ``scripts/download_models.py --piper-sv`` fetches."""
+
 INFERENCE_MODELS: Final[tuple[ModelFile, ...]] = (
     WHISPER_TINY,
     QWEN2_5_0_5B_INSTRUCT,
