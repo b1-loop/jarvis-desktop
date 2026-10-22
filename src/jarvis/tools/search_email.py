@@ -63,6 +63,7 @@ class SearchEmailTool(Tool[SearchEmailInput]):
     )
     Input = SearchEmailInput
     category = ToolCategory.COMMUNICATION
+    keywords = ("mail", "mejl", "mejlen", "epost", "sök")
 
     async def run(self, params: SearchEmailInput, context: ToolContext) -> ToolResult:
         """Search each provider, merge, and fetch the leading bodies."""

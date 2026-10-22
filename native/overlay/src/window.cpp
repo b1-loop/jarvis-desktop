@@ -188,7 +188,13 @@ OverlayWindow::Impl::Impl(OverlayConfig initial)
       appearance(
           Appearance{.theme = config.theme, .intensity = config.intensity, .size = config.size}),
       cornerSaved(config.position),
-      expandedSaved(config.expandedBounds) {
+      expandedSaved(config.expandedBounds),
+      orbSaved(config.orbPosition),
+      orbTarget(config.startMinimized),
+      autoMinimizer(config.autoMinimizeSeconds) {
+    minimizedNow.store(config.startMinimized);
+    hudData.setAutoMinimize(config.autoMinimizeSeconds);
+    hudData.setHideInFullscreen(config.hideInFullscreen);
     std::future<void> started = ready.get_future();
     uiThread = std::jthread([this] { threadMain(); });
     started.get();  // rethrows OverlayError from the UI thread
@@ -388,11 +394,14 @@ void OverlayWindow::Impl::messageLoop() {
         }
         const Clock::time_point now = Clock::now();
         const OverlaySnapshot snapshot = model.snapshot(now);
-        updateVisibility(snapshot.visible);
-        if (snapshot.visible) {
-            renderFrame(snapshot, now);
+        const HudData data = hudData.snapshot();
+        checkFullscreen(now, data.hideInFullscreen);
+        const bool visible = snapshot.visible && !fullscreenHidden;
+        updateVisibility(visible);
+        if (visible) {
+            renderFrame(snapshot, data, now);
         }
-        nextFrame = std::max(nextFrame + framePeriodFor(snapshot), Clock::now());
+        nextFrame = std::max(nextFrame + framePeriodFor(snapshot, visible), Clock::now());
         waitUntil(nextFrame);
     }
 }
@@ -435,19 +444,22 @@ void OverlayWindow::Impl::updateVisibility(bool visible) {
     shown = visible;
 }
 
-void OverlayWindow::Impl::renderFrame(const OverlaySnapshot& snapshot, Clock::time_point now) {
-    const HudData data = hudData.snapshot();
+void OverlayWindow::Impl::renderFrame(const OverlaySnapshot& snapshot, const HudData& data,
+                                      Clock::time_point now) {
     applyHudData(data);
     applyDemo();
+    applyMinimizeRequest(data);
     const anim::AnimationFrame& frame = animator.advance(snapshot, now);
     const bool booting = frame.boot.has_value();
     syncBootClickThrough(booting);
-    advanceInteraction(now);
+    runAutoMinimize(snapshot, data, booting, now);
+    advanceInteraction(now, booting);
     if (placementDirty) {
         resolvePlacements();
     }
     const FrameLayout layout = layoutFor(frame);
     applyPlacement(layout.window);
+    syncWindowRegion(layout);
     updateHitMap(layout, booting);
     pollCursor();
     drawFrame(snapshot, frame, layout, data);
@@ -484,7 +496,7 @@ void OverlayWindow::Impl::applyDemo() {
     }
 }
 
-void OverlayWindow::Impl::advanceInteraction(Clock::time_point now) {
+void OverlayWindow::Impl::advanceInteraction(Clock::time_point now, bool booting) {
     const float dt = lastAdvance.has_value()
                          ? std::min(std::chrono::duration<float>(now - *lastAdvance).count(),
                                     kMaxInteractionStep)
@@ -497,9 +509,12 @@ void OverlayWindow::Impl::advanceInteraction(Clock::time_point now) {
     }
     const bool linger = std::chrono::duration<float>(now - hoverSeen).count() < kHoverLingerSeconds;
     hover = approach(hover, linger ? 1.0F : 0.0F, dt, kHoverFadeSeconds);
-    const bool expandTarget = interaction.expanded();
+    advanceOrb(dt, booting);
+    // The two morphs run one after the other, never together: the panel
+    // collapses before the HUD shrinks, and the orb grows back first.
+    const bool expandTarget = interaction.expanded() && orbLinear <= 0.0F;
     expandLinear = approach(expandLinear, expandTarget ? 1.0F : 0.0F, dt, kMorphSeconds);
-    expandedNow.store(expandTarget);
+    expandedNow.store(interaction.expanded());
 }
 
 void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
@@ -528,12 +543,15 @@ void OverlayWindow::Impl::drawFrame(const OverlaySnapshot& snapshot,
                               .panelFrame = layout.frame,
                               .hover = config.interactive ? hover : 0.0F,
                               .inputOpen = collapsed && interaction.inputOpen(),
-                              .confirming = collapsed && interaction.confirming()};
+                              .confirming = collapsed && interaction.confirming(),
+                              .orb = layout.orb};
     if (post != nullptr) {
         post->setFrame(postSettings(frame, layout));
     }
     hud->draw(*ImGui::GetBackgroundDrawList(), scene, fonts);
-    if (config.interactive && !frame.boot.has_value()) {
+    // The orb and the morph towards it have no widgets: the window only
+    // answers clicks on the orb's disc (window_input.cpp).
+    if (config.interactive && !frame.boot.has_value() && layout.orb <= 0.0F) {
         runInteraction(scene, layout, data);
     }
     ImGui::Render();
@@ -557,6 +575,9 @@ void OverlayWindow::Impl::runInteraction(const hud::HudScene& scene, const Frame
     }
     if (result.releaseFocus) {
         releaseFocus();
+    }
+    if (result.minimize) {
+        setOrbTarget(true, false, true);
     }
 }
 
@@ -633,7 +654,8 @@ void OverlayWindow::Impl::recordFrame(Clock::time_point start, Clock::time_point
     stats.record(millisecondsBetween(start, end), interval);
 }
 
-std::chrono::microseconds OverlayWindow::Impl::framePeriodFor(const OverlaySnapshot& snapshot) {
+std::chrono::microseconds OverlayWindow::Impl::framePeriodFor(const OverlaySnapshot& snapshot,
+                                                              bool visible) {
     const auto now = Clock::now();
     const std::uint64_t hudRevision = hudData.snapshot().revision;
     if (snapshot.revision != lastRevision || hudRevision != lastHudRevision) {
@@ -646,12 +668,12 @@ std::chrono::microseconds OverlayWindow::Impl::framePeriodFor(const OverlaySnaps
     // stays at the idle rate (ADR-0023 budget).
     const bool fading = (hover > 0.0F && hover < 1.0F) ||
                         (expandLinear > 0.0F && expandLinear < 1.0F) ||
-                        expandLinear != (interaction.expanded() ? 1.0F : 0.0F);
+                        expandLinear != (interaction.expanded() ? 1.0F : 0.0F) || orbMorphing();
     const bool interacting =
         fading || drag.mode != DragMode::None || keyboardFocus || hoverKind != HitKind::None;
     const bool busy = animator.pace(snapshot) == anim::Pace::Active ||
                       (now - lastChange) < kActiveAfterChange || interacting;
-    return framePeriod(busy && snapshot.visible ? config.activeFps : config.idleFps);
+    return framePeriod(busy && visible ? config.activeFps : config.idleFps);
 }
 
 void OverlayWindow::Impl::shutdown() {
@@ -807,6 +829,27 @@ HudData OverlayWindow::hudData() const {
     return impl_->hudData.snapshot();
 }
 
+void OverlayWindow::setMinimized(bool minimized) {
+    impl_->hudData.requestMinimized(minimized);
+    impl_->minimizedNow.store(minimized);
+}
+
+bool OverlayWindow::minimized() const noexcept {
+    return impl_->minimizedNow.load();
+}
+
+void OverlayWindow::setAutoMinimize(float seconds) {
+    impl_->hudData.setAutoMinimize(seconds);
+}
+
+void OverlayWindow::setHideInFullscreen(bool hide) {
+    impl_->hudData.setHideInFullscreen(hide);
+}
+
+bool OverlayWindow::fullscreenHidden() const noexcept {
+    return impl_->fullscreenNow.load();
+}
+
 void OverlayWindow::setDemo(DemoOverrides demo) {
     {
         const std::scoped_lock lock(impl_->demoMutex);
@@ -847,6 +890,9 @@ const OverlayConfig& OverlayWindow::config() const noexcept {
 // - The interactive layer (ADR-0024) only adds work while it is used: the
 //   idle corner HUD with the cursor elsewhere costs one GetCursorPos and a
 //   hit test of a dozen shapes per frame, and stays at the idle rate.
+// - Minimized, the window shrinks to the orb and draws nothing else
+//   (window_orb.cpp, hud_orb.cpp): the idle orb keeps the idle rate and
+//   its frame is a few glows and one tiny bloom pass.
 // - User actions leave the UI thread only as UiEvents in a queue that
 //   Python polls; settings, history and appearance arrive as data. The
 //   UI thread therefore never waits for, or calls into, Python.

@@ -48,6 +48,7 @@ class OpenAppTool(Tool[OpenAppInput]):
     )
     Input = OpenAppInput
     category = ToolCategory.SYSTEM
+    keywords = ("öppna", "starta")
 
     async def run(self, params: OpenAppInput, context: ToolContext) -> ToolResult:
         """Hand the target to the OS launcher."""

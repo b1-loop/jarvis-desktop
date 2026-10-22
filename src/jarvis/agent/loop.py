@@ -169,14 +169,16 @@ class Agent:
         """
         return await _Turn(self, user_text, sink).run()
 
-    def tool_definitions(self, request: str, *, keep: Collection[str] = ()) -> list[ToolDefinition]:
+    async def tool_definitions(
+        self, request: str, *, keep: Collection[str] = ()
+    ) -> list[ToolDefinition]:
         """The tools offered for ``request`` in the provider-neutral shape.
 
         Args:
             request: The user's words, which the selector ranks tools against.
             keep: Tools already used this turn; they stay offered.
         """
-        tools = self.selector.select(request, self.registry.tools(), keep=keep)
+        tools = await self.selector.select(request, self.registry.tools(), keep=keep)
         return [
             ToolDefinition.from_model(tool.name, tool.description, tool.Input) for tool in tools
         ]
@@ -261,7 +263,7 @@ class _Turn:
         splitter = SentenceSplitter()
         done: Done | None = None
         self.held = [] if self._every_call_failed() else None
-        stream = self.agent.llm.stream(self.messages, self._offered_tools())
+        stream = self.agent.llm.stream(self.messages, await self._offered_tools())
         try:
             async for event in stream:
                 done = await self._handle(event, splitter) or done
@@ -278,10 +280,10 @@ class _Turn:
         await self._release_held(done)
         return done
 
-    def _offered_tools(self) -> list[ToolDefinition]:
+    async def _offered_tools(self) -> list[ToolDefinition]:
         """This round's tools: re-selected so tools used earlier stay offered."""
         used = {record.name for record in self.chain.records}
-        tools = self.agent.tool_definitions(self.user_text, keep=used)
+        tools = await self.agent.tool_definitions(self.user_text, keep=used)
         log.debug("agent.tools.offered", count=len(tools), tools=[tool.name for tool in tools])
         return tools
 

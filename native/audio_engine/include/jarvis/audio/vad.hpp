@@ -37,7 +37,9 @@ struct SegmenterConfig {
     /// not split an utterance.
     float endThreshold = 0.35F;
     /// Speech must persist this long before SpeechStarted is reported, which
-    /// filters out clicks and single-frame false positives.
+    /// filters out clicks and single-frame false positives. Frames between
+    /// the two thresholds pause the count; only a frame below endThreshold
+    /// restarts it.
     int minSpeechMs = 200;
     /// Silence must persist this long before SpeechEnded is reported, which
     /// lets the user pause mid-sentence.

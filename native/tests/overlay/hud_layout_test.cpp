@@ -41,12 +41,19 @@ constexpr RectF kFrame{.x = 100.0F, .y = 100.0F, .width = 900.0F, .height = 640.
 TEST_CASE("the control bar is right-aligned, in order, without overlaps", "[overlay][hud]") {
     const auto bar = controlBar(500.0F, 20.0F, 24.0F, 6.0F);
     REQUIRE(bar.buttons.back().right() == Approx(500.0F));
-    REQUIRE(bar.bounds.width == Approx((6.0F * 24.0F) + (5.0F * 6.0F)));
+    REQUIRE(bar.bounds.width == Approx((7.0F * 24.0F) + (6.0F * 6.0F)));
     for (std::size_t i = 1; i < kHudControlCount; ++i) {
         REQUIRE(bar.buttons.at(i).x > bar.buttons.at(i - 1).right());
     }
     REQUIRE(bar.button(kHudControls.front()) == bar.buttons.front());
     REQUIRE(bar.button(HudControl::Close) == bar.buttons.back());
+}
+
+TEST_CASE("minimize sits right next to close", "[overlay][hud]") {
+    const auto bar = controlBar(500.0F, 20.0F, 24.0F, 6.0F);
+    const RectF minimize = bar.button(HudControl::Minimize);
+    REQUIRE(bar.button(HudControl::Close).x - minimize.right() == Approx(6.0F));
+    REQUIRE_FALSE(jarvis::overlay::controlLabel(HudControl::Minimize).empty());
 }
 
 TEST_CASE("quit is kept away from close", "[overlay][hud]") {
@@ -119,6 +126,18 @@ TEST_CASE("the expanded hit map resizes at the grip and drags at the frame", "[o
     REQUIRE(map.test(layout.body.x + 10.0F, layout.body.y + 10.0F) == HitKind::Control);
     REQUIRE(map.test(kFrame.x + 2.0F, kFrame.y + 2.0F) == HitKind::Drag);
     REQUIRE(map.test(kFrame.x - 2.0F, kFrame.y) == HitKind::None);
+}
+
+TEST_CASE("the orb's hit map is its disc and nothing else", "[overlay][hud][orb]") {
+    HitMap map;
+    map.addRect(kPanel, HitKind::Control);  // left over from the HUD: cleared
+    jarvis::overlay::orbHitMap(map, 100.0F, 100.0F, 24.0F);
+    REQUIRE(map.test(100.0F, 100.0F) == HitKind::Drag);
+    REQUIRE(map.test(100.0F, 123.0F) == HitKind::Drag);
+    REQUIRE(map.test(100.0F, 126.0F) == HitKind::None);
+    // The corners of the bounding square (the halo) fall through.
+    REQUIRE(map.test(78.0F, 78.0F) == HitKind::None);
+    REQUIRE(map.test(kPanel.x + 1.0F, kPanel.y + 1.0F) == HitKind::None);
 }
 
 TEST_CASE("approach moves at a frame-rate independent pace and never overshoots",

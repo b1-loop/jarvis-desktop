@@ -200,6 +200,11 @@ void HudInteraction::act(HudControl control) {
         case HudControl::Quit:
             confirming_ = true;
             return;
+        case HudControl::Minimize:
+            confirming_ = false;
+            closeInput();
+            pending_.minimize = true;
+            return;
         case HudControl::Close:
             break;
     }

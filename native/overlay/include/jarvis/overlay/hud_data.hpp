@@ -121,6 +121,14 @@ struct HudData {
     /// The latest expand/collapse request from Python and its sequence number.
     std::optional<bool> expandRequest;
     std::uint64_t expandRequestId{0};
+    /// The latest minimize (true) or restore (false) request from Python
+    /// and its sequence number.
+    std::optional<bool> minimizeRequest;
+    std::uint64_t minimizeRequestId{0};
+    /// Auto-minimize delay in seconds; 0 is off (minimize_policy.hpp).
+    float autoMinimizeSeconds{0.0F};
+    /// Hide while a full-screen application is in front on the HUD's monitor.
+    bool hideInFullscreen{true};
     /// Incremented by every mutation.
     std::uint64_t revision{0};
 };
@@ -139,6 +147,11 @@ public:
     void setAppearance(Appearance appearance);
     /// Ask the UI thread to expand (true) or collapse (false) the HUD.
     void requestExpanded(bool expanded);
+    /// Ask the UI thread to shrink the HUD to the orb (true) or restore it.
+    void requestMinimized(bool minimized);
+    /// Auto-minimize after @p seconds of quiet; 0 (or less) switches it off.
+    void setAutoMinimize(float seconds);
+    void setHideInFullscreen(bool hide);
 
     [[nodiscard]] HudData snapshot() const;
     [[nodiscard]] const HudDataLimits& limits() const noexcept { return limits_; }

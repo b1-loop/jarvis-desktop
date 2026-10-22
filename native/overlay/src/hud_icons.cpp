@@ -78,6 +78,12 @@ void power(ImDrawList& draw, RectF box, ImU32 colour, float thickness) {
     draw.AddLine(at(box, 0.5F, 0.0F), at(box, 0.5F, 0.45F), colour, thickness);
 }
 
+/// A bar along the bottom with a small orb above it: "shrink to the orb".
+void minimize(ImDrawList& draw, RectF box, ImU32 colour, float thickness) {
+    draw.AddLine(at(box, 0.12F, 0.86F), at(box, 0.88F, 0.86F), colour, thickness);
+    draw.AddCircle(at(box, 0.5F, 0.42F), box.width * 0.2F, colour, 0, thickness);
+}
+
 void cross(ImDrawList& draw, RectF box, ImU32 colour, float thickness) {
     draw.AddLine(at(box, 0.1F, 0.1F), at(box, 0.9F, 0.9F), colour, thickness);
     draw.AddLine(at(box, 0.9F, 0.1F), at(box, 0.1F, 0.9F), colour, thickness);
@@ -103,6 +109,9 @@ void drawControlIcon(ImDrawList& draw, HudControl control, RectF rect, Rgba colo
             return;
         case HudControl::Quit:
             power(draw, rect, packed, thickness);
+            return;
+        case HudControl::Minimize:
+            minimize(draw, rect, packed, thickness);
             return;
         case HudControl::Close:
             break;

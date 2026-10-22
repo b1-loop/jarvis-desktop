@@ -76,6 +76,7 @@ class BatteryStatusTool(Tool[BatteryStatusInput]):
     )
     Input = BatteryStatusInput
     category = ToolCategory.SYSTEM
+    keywords = ("battery", "charge", "charger", "batteri", "laddning", "laddare")
 
     def __init__(self, probe: BatteryProbe | None = None) -> None:
         self._probe = probe or PsutilBatteryProbe()

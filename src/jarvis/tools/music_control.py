@@ -44,7 +44,19 @@ class MusicControlTool(Tool[MusicControlInput]):
     )
     Input = MusicControlInput
     category = ToolCategory.MEDIA
-    keywords = ("pause", "resume", "skip", "next", "song", "track")
+    keywords = (
+        "pause",
+        "resume",
+        "skip",
+        "next",
+        "song",
+        "track",
+        "pausa",
+        "hoppa",
+        "nästa",
+        "fortsätt",
+        "låten",
+    )
 
     async def run(self, params: MusicControlInput, context: ToolContext) -> ToolResult:
         """Send the command to the first music provider."""

@@ -41,6 +41,7 @@ class SearchNotesTool(Tool[SearchNotesInput]):
     )
     Input = SearchNotesInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("anteckning", "anteckningar", "sök")
 
     async def run(self, params: SearchNotesInput, context: ToolContext) -> ToolResult:
         """Search and return the notes; speak the best one."""

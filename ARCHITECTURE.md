@@ -141,6 +141,7 @@ without a trigger.
 | STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off the loop; CPU int8 fallback when CUDA libraries are missing) | | `WhisperCppSTT` |
 | TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | | `PiperTTS` |
 | LLM | `llm.base.LLMClient` | `OllamaClient` (`qwen2.5:7b`) | `AnthropicClient` (`JARVIS_LLM_PROVIDER=anthropic`; streaming, tool use, vision) | `LocalLlamaClient` |
+| Embeddings (tool selection) | `llm.embeddings.TextEmbedder` | `OllamaEmbedder` (`bge-m3`) | none: word overlap only (`JARVIS_TOOL_EMBEDDING_MODEL=none`) | same as `cloud` when Ollama runs, else word overlap |
 
 `core/providers.py` picks the stack from `Settings.mode` and
 `llm.factory.create_llm_client` the LLM from `JARVIS_LLM_PROVIDER`; a
@@ -252,6 +253,14 @@ configured by Jarvis, 700 ms silence hangover, cooldown, pre-roll) live in
 `PipelineConfig` and are exposed to Python unchanged. ADR-0003 records why
 this layer is C++.
 
+Silero v5 scores each 512-sample frame together with the last 64 samples
+of the previous one, as the reference implementation does; without that
+context the probability flickered on short, quiet requests and the
+segmenter never saw enough speech frames after the wake word. While the
+segmenter counts towards `SpeechStarted`, a frame between the end and start
+thresholds pauses the count and only a frame below the end threshold
+restarts it, the same hysteresis that keeps speech alive once it has begun.
+
 ### OS integration
 
 Tools talk to the operating system only through
@@ -316,9 +325,14 @@ spoken as an apology with the provider's remedy and, for cloud providers,
 the LOCAL/Ollama hint. The turn is recorded in memory with its tool calls.
 
 **Tool selection.** For Ollama and llama.cpp each round offers at most
-`JARVIS_MAX_TOOLS_PER_TURN` (default 12) tools, ranked by word overlap with
-the request, plus a core set (`JARVIS_CORE_TOOLS`) and every tool already
-used this turn; Claude gets all tools. When every tool call of a turn
+`JARVIS_MAX_TOOLS_PER_TURN` (default 12) tools, plus a core set
+(`JARVIS_CORE_TOOLS`) and every tool already used this turn; Claude gets all
+tools. The ranking blends word overlap (English and Swedish keywords) with
+cosine similarity from a multilingual Ollama embedding model
+(`JARVIS_TOOL_EMBEDDING_MODEL`, default `bge-m3`): tool vectors are embedded
+once and cached under `data/cache/`, each request is embedded within 150 ms,
+and anything slower or failing falls back to word overlap
+(`agent/tool_embeddings.py`). When every tool call of a turn
 failed or was declined, the loop ends with the tools' own `spoken` sentences
 instead of the model's final text (ADR-0020).
 
@@ -405,6 +419,14 @@ orchestrator's one input (typing while Jarvis speaks barges in),
 `ui/hud_settings.py` validates, saves (`data_dir/user_settings.json`, read
 back at start by `jarvis/user_settings.py` between the environment and
 `.env`) and applies settings live or after a restart.
+
+It can also be minimized to a small glowing orb (ADR-0024, update): the
+docking, the morph, auto-minimize and full-screen hiding are pure native
+modules (`overlay/orb.hpp`, `overlay/minimize_policy.hpp`); Python
+remembers the user's choice (`core/hud_wiring.py`), offers it in the tray,
+and registers the `hud_toggle_hotkey` (`core/hud_hotkey.py`) through a
+`core/hotkey_router.py` shared with the voice hotkey so neither consumer
+steals the other's presses.
 
 ### Desktop app
 

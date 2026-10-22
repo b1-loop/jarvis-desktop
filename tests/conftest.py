@@ -58,6 +58,8 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
             monkeypatch.delenv(name, raising=False)
     for name in DESKTOP_SIDE_EFFECTS:
         monkeypatch.setenv(name, "false")
+    # No test talks to a real Ollama for tool embeddings unless it opts in.
+    monkeypatch.setenv("JARVIS_TOOL_EMBEDDING_MODEL", "none")
     yield
     # Loggers resolve the structlog configuration on every call, so one made
     # by a test (the CLI configures it with a captured, later closed stream)
