@@ -201,6 +201,11 @@ class Settings(BaseSettings):
         """An empty ``JARVIS_WEB_USER_AGENT=`` line keeps the default."""
         return DEFAULT_USER_AGENT if value == "" else value
 
+    # Agent loop (step 6b)
+    assistant_name: str = Field(default="Jarvis", min_length=1)
+    persona_tone: str = "calm, concise and dryly witty, like a capable butler"
+    max_tool_rounds: int = Field(default=6, ge=1)
+
 
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can

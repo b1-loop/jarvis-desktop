@@ -1,14 +1,14 @@
 """Command-line entry point: ``python -m jarvis`` or ``uv run jarvis``.
 
-This module is the composition root. It is the one place that is allowed to
-know about concrete providers, because it is where they are chosen from the
-configuration and injected into the orchestrator. Until the orchestrator
-lands (step 6) it resolves the configuration, configures logging and exits
-with an explicit message rather than pretending to run.
+Parses the launch flags, loads settings, configures logging and hands
+over to the composition root in :mod:`jarvis.core.bootstrap`, which builds
+and runs the assistant. This module stays thin on purpose: every
+construction decision lives in a small, tested builder there.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Annotated, Final
 
@@ -16,10 +16,17 @@ import typer
 
 from jarvis import __version__
 from jarvis.config import RuntimeMode, Settings
+from jarvis.core.bootstrap import run_text_mode
+from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import configure_logging, get_logger
 
-EXIT_NOT_IMPLEMENTED: Final = 2
-"""Exit code used while the pipeline is still being built; never 0, never silent."""
+EXIT_STARTUP_FAILED: Final = 2
+"""Exit code when the assistant cannot be assembled (missing key, broken database)."""
+
+VOICE_MODE_NOTICE: Final = (
+    "Voice mode (wake word, speech in and out) arrives in step 7. "
+    "Starting text mode instead; type your requests."
+)
 
 app = typer.Typer(
     add_completion=False,
@@ -80,6 +87,17 @@ def run(
     options = LaunchOptions(
         mode=settings.mode, text_only=text_only, wake_word_enabled=not no_wakeword
     )
+    _announce(options)
+    try:
+        asyncio.run(run_text_mode(settings))
+    except JarvisError as error:
+        typer.echo(f"Jarvis could not start: {error}", err=True)
+        raise typer.Exit(code=EXIT_STARTUP_FAILED) from error
+    except KeyboardInterrupt:
+        typer.echo("\nInterrupted. Goodbye.")
+
+
+def _announce(options: LaunchOptions) -> None:
     get_logger(__name__).info(
         "jarvis.start",
         mode=options.mode.value,
@@ -87,11 +105,11 @@ def run(
         wake_word=options.wake_word_enabled,
     )
     typer.echo(
-        f"Configuration resolved (mode={options.mode.value}, text_only={options.text_only}, "
-        f"wake_word={options.wake_word_enabled}). The pipeline arrives in step 6; "
-        "nothing runs yet."
+        f"Starting Jarvis (mode={options.mode.value}, text_only={options.text_only}, "
+        f"wake_word={options.wake_word_enabled})."
     )
-    raise typer.Exit(code=EXIT_NOT_IMPLEMENTED)
+    if not options.text_only:
+        typer.echo(VOICE_MODE_NOTICE)
 
 
 def main() -> None:
@@ -107,5 +125,8 @@ if __name__ == "__main__":
 # - Typer over argparse: typed options, enum validation and --help for free,
 #   and the same declaration serves ``python -m jarvis`` and ``uv run jarvis``.
 # - LaunchOptions is separate from Settings on purpose: command-line flags
-#   describe this launch, settings describe the environment. The orchestrator
-#   will take both.
+#   describe this launch, settings describe the environment.
+# - Without --text-only the CLI says plainly that voice mode is not built
+#   yet and runs text mode, rather than pretending to listen.
+# - Ctrl+C cancels the main task; the bootstrap's exit stack still closes
+#   the database and connections before KeyboardInterrupt reaches here.

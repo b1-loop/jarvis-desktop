@@ -57,6 +57,28 @@ Each stage is a class behind an abstract base in its package's `base.py`.
 Stages never call each other; the orchestrator moves data between them over
 `asyncio.Queue`s and publishes progress on the event bus.
 
+### Text path *(step 6)*
+
+```
+TerminalInput ─line─▶ Orchestrator ─text─▶ Agent ─messages─▶ LLMClient.stream
+  (daemon thread)       │  IDLE→LISTENING→THINKING   │  ◀── TextDelta / ToolCall / Done
+                        │                            ├─ SentenceSplitter ─sentence─▶ sink
+                        │                            └─ ToolChain ─▶ ConfirmationPolicy ─▶ Tool.execute
+                        ◀── sentences (THINKING→SPEAKING) ──┘
+TerminalOutput ◀─say─┘  SPEAKING→IDLE when the turn ends
+```
+
+`core/bootstrap.py` builds everything from `Settings` (event bus, memory,
+LLM, tool registry, platform, integrations, agent, orchestrator) and owns
+cleanup in one `AsyncExitStack`; `__main__` only calls it. The orchestrator
+speaks to two Protocols, `InputSource` and `OutputSink`, so the voice path
+(step 7) replaces the terminal with STT and TTS and keeps the rest,
+including `cancel_current_turn()` for barge-in. Typed input passes through
+LISTENING because the state table has no IDLE → THINKING edge, which keeps
+the state sequence identical in both modes. Confirmation questions are read
+from the same input source (`TerminalConfirmation`, y/n, unclear answers
+count as no). See ADR-0014.
+
 ### Providers *(step 5)*
 
 | Stage | Interface | CLOUD | Ollama option | LOCAL *(step 12)* |
@@ -163,7 +185,7 @@ clipboard) runs on the calling executor thread with per-call COM
 initialisation. ADR-0004 records the interface split and the notification
 and brightness choices.
 
-## 6. Agent and tools *(agent loop: step 6, pending)*
+## 6. Agent and tools *(step 6)*
 
 A tool is one module in `jarvis/tools/` defining a `Tool` subclass: `name`,
 `description`, a pydantic `Input` model, a `category`, a risk declaration
@@ -182,9 +204,25 @@ results, never exceptions in the agent loop.
 user: the tool's declaration, a list of always-confirm categories and the
 `JARVIS_CONFIRM_DESTRUCTIVE` trusted-mode flag. Shell commands additionally
 pass through `utils/sandbox.py` (argv only, denylist, allowlist, working
-root, scrubbed environment, timeout, output cap). The agent loop that turns
-a transcript into tool calls and a spoken summary (`agent/loop.py`) depends
-on the LLM interface and lands with it. See ADR-0006.
+root, scrubbed environment, timeout, output cap). See ADR-0006.
+
+`agent/loop.py` runs one request: a system prompt from `agent/persona.py`
+(name, tone, language from the TTS voice, spoken-style rules) plus the
+`MemoryManager.recall` context, the user's words and the registry's tool
+definitions go to `LLMClient.stream`; text deltas become sentences for the
+sink as they complete; requested tools run and their results go back to the
+model until it stops or `JARVIS_MAX_TOOL_ROUNDS` is reached. A turn with
+tools always ends with a spoken summary (asked for once if the model is
+silent, otherwise built from the tools' own `spoken` results). LLM failures
+are spoken as an apology with the provider's remedy and, for cloud
+providers, the LOCAL/Ollama hint. The turn is recorded in memory with its
+tool calls.
+
+`agent/chaining.py` makes the chain robust: one `ToolChain` per request
+with a tool-call budget, bounded parallel execution of the calls in one
+model message (confirmation prompts serialised behind a lock),
+de-duplication of identical calls, and a `TurnReport` (tools used, rounds,
+durations, failures, limits hit) for the dashboard. See ADR-0014.
 
 ## 7. Memory *(step 9)*
 

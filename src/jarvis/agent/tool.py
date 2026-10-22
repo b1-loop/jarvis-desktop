@@ -24,6 +24,13 @@ from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from jarvis.config import Settings
 from jarvis.core.events import EventBus, ToolCallFinished, ToolCallStarted
+from jarvis.integrations.base import (
+    CalendarProvider,
+    ChatProvider,
+    EmailProvider,
+    MusicProvider,
+    SmartHomeProvider,
+)
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 from jarvis.utils.timing import Clock, SystemClock
@@ -141,6 +148,21 @@ ConfirmationAsker = Callable[[str], Awaitable[bool]]
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationProviders:
+    """The external-service providers chosen at startup (real or ``Stub*``).
+
+    Built once by the composition root from ``IntegrationFactory``; tools
+    see only the provider interfaces, never which implementation it is.
+    """
+
+    email: tuple[EmailProvider, ...] = ()
+    calendar: tuple[CalendarProvider, ...] = ()
+    music: tuple[MusicProvider, ...] = ()
+    chat: tuple[ChatProvider, ...] = ()
+    smart_home: tuple[SmartHomeProvider, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ToolContext:
     """Everything a tool may use, injected per conversation turn.
 
@@ -152,6 +174,8 @@ class ToolContext:
         clock: Time source; a fake in tests.
         platform: OS facade, ``None`` in text-only runs without a backend.
         memory: Long-term memory, ``None`` until the memory step lands.
+        integrations: Email, calendar, music, chat and smart-home
+            providers; ``None`` in tests that do not need them.
     """
 
     settings: Settings
@@ -160,6 +184,7 @@ class ToolContext:
     clock: Clock = field(default_factory=SystemClock)
     platform: PlatformFacade | None = None
     memory: MemoryFacade | None = None
+    integrations: IntegrationProviders | None = None
 
 
 class Tool[InputT: BaseModel](ABC):
