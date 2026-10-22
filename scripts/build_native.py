@@ -11,6 +11,8 @@ Usage::
     uv run python scripts/build_native.py                 # windows-release
     uv run python scripts/build_native.py --preset windows-debug --clean
     uv run python scripts/build_native.py --skip-tests
+    uv run python scripts/build_native.py --tidy               # build, test, then clang-tidy
+    uv run python scripts/build_native.py --tidy-only --jobs 4 # configure + clang-tidy only
 
 Why this is a script and not the package build backend: see
 ``docs/adr/0002-decoupled-native-build.md``.
@@ -25,6 +27,7 @@ import stat
 import subprocess
 import sys
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pybind11
@@ -43,6 +46,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-tests", action="store_true", help="build only, do not run ctest")
     parser.add_argument(
         "--tidy", action="store_true", help="run clang-tidy over the native sources after building"
+    )
+    parser.add_argument(
+        "--tidy-only",
+        action="store_true",
+        help="configure and run clang-tidy without building or testing (CI's lint job)",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=os.cpu_count() or 1,
+        help="clang-tidy processes to run in parallel (default: CPU count)",
     )
     return parser.parse_args(argv)
 
@@ -119,9 +133,29 @@ class CommandRunner:
     def run(self, args: list[str]) -> None:
         """Run ``args`` and raise ``CalledProcessError`` on a non-zero exit."""
         print("+", subprocess.list2cmdline(args))
+        subprocess.run(self._command(args), check=True, cwd=NATIVE_DIR)
+
+    def run_captured(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        """Run ``args`` with stdout and stderr captured together; never raises.
+
+        Used for commands that run concurrently, so their output can be
+        printed as one block per command instead of interleaved lines.
+        """
+        return subprocess.run(
+            self._command(args),
+            check=False,
+            cwd=NATIVE_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    def _command(self, args: list[str]) -> list[str] | str:
+        """``args`` as given, or wrapped in ``cmd.exe`` after ``VsDevCmd.bat``."""
         if self._vsdevcmd is None:
-            subprocess.run(args, check=True, cwd=NATIVE_DIR)
-            return
+            return args
         # Passed as one string: a list would make subprocess escape the inner
         # quotes with backslashes, which cmd.exe does not understand. /s makes
         # cmd strip exactly the outer pair of quotes. VsDevCmd expects vswhere
@@ -130,7 +164,7 @@ class CommandRunner:
             f'set "PATH=%PATH%;{vswhere_path().parent}" && '
             f'call "{self._vsdevcmd}" -arch=x64 -no_logo && {subprocess.list2cmdline(args)}'
         )
-        subprocess.run(f'cmd.exe /d /s /c "{inner}"', check=True, cwd=NATIVE_DIR)
+        return f'cmd.exe /d /s /c "{inner}"'
 
 
 def clear_readonly_and_retry(
@@ -171,22 +205,58 @@ def configure(runner: CommandRunner, preset: str, *, clean: bool) -> None:
     )
 
 
-def run_clang_tidy(runner: CommandRunner, preset: str) -> None:
+def clang_tidy_command(preset: str, source: Path) -> list[str]:
+    """clang-tidy invocation for one translation unit of ``preset``.
+
+    Unused-argument diagnostics are silenced because pybind11 adds MSVC-only
+    flags (``/MP``, ``/GL``) that clang-cl ignores. ``--quiet`` drops only
+    the "N warnings generated" summaries of suppressed third-party warnings;
+    every diagnostic from our code is still printed and still an error.
+    """
+    return [
+        "clang-tidy",
+        "-p",
+        str(build_dir(preset)),
+        "--quiet",
+        "--extra-arg=-Wno-unused-command-line-argument",
+        str(source),
+    ]
+
+
+def run_clang_tidy(runner: CommandRunner, preset: str, jobs: int) -> None:
     """Lint every native source against the compile database of ``preset``.
 
     Runs inside the MSVC environment so clang-tidy sees the same include
-    paths as the compiler. Unused-argument diagnostics are silenced because
-    pybind11 adds MSVC-only flags (``/MP``, ``/GL``) that clang-cl ignores.
+    paths as the compiler. One process per translation unit, ``jobs`` at a
+    time: a single clang-tidy process is single-threaded and took twelve
+    minutes for the whole tree in CI. Each file's output is printed as one
+    block, and any failing file fails the step after all files ran.
     """
-    runner.run(
-        [
-            "clang-tidy",
-            "-p",
-            str(build_dir(preset)),
-            "--extra-arg=-Wno-unused-command-line-argument",
-            *map(str, native_sources()),
-        ]
-    )
+    sources = native_sources()
+    print(f"+ clang-tidy over {len(sources)} files, {jobs} at a time")
+    failures: list[int] = []
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = {
+            pool.submit(runner.run_captured, clang_tidy_command(preset, source)): source
+            for source in sources
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            status = "ok" if result.returncode == 0 else f"FAILED ({result.returncode})"
+            print(f"clang-tidy {futures[future].relative_to(NATIVE_DIR)}: {status}")
+            print(result.stdout, end="", flush=True)
+            if result.returncode != 0:
+                failures.append(result.returncode)
+    if failures:
+        raise subprocess.CalledProcessError(failures[0], "clang-tidy")
+
+
+def build_and_test(runner: CommandRunner, preset: str, *, skip_tests: bool) -> None:
+    """Build every target of ``preset`` and run the Catch2 suite through ctest."""
+    runner.run(["cmake", "--build", "--preset", preset])
+    if not skip_tests:
+        runner.run(["ctest", "--preset", preset, "--output-on-failure"])
+    print(f"native modules written to {OUTPUT_DIR}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -200,15 +270,13 @@ def main(argv: list[str] | None = None) -> int:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     try:
         configure(runner, args.preset, clean=args.clean)
-        runner.run(["cmake", "--build", "--preset", args.preset])
-        if not args.skip_tests:
-            runner.run(["ctest", "--preset", args.preset, "--output-on-failure"])
-        if args.tidy:
-            run_clang_tidy(runner, args.preset)
+        if not args.tidy_only:
+            build_and_test(runner, args.preset, skip_tests=args.skip_tests)
+        if args.tidy or args.tidy_only:
+            run_clang_tidy(runner, args.preset, args.jobs)
     except subprocess.CalledProcessError as exc:
         print(f"error: step failed with exit code {exc.returncode}", file=sys.stderr)
         return exc.returncode
-    print(f"native modules written to {OUTPUT_DIR}")
     return 0
 
 
@@ -222,3 +290,6 @@ if __name__ == "__main__":
 #   running Python process portably.
 # - The preset owns generator, build type and warnings; this script only adds
 #   the three machine-specific paths (interpreter, pybind11, output directory).
+# - --tidy-only exists so CI can lint in a job parallel to the build: clang-tidy
+#   needs only the compile database and the sources FetchContent puts in place
+#   at configure time, never a compiled object.

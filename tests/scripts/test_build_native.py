@@ -1,5 +1,6 @@
 import importlib.util
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -67,3 +68,48 @@ def test_onexc_hook_clears_read_only_bit_before_retrying(tmp_path: Path) -> None
 
     assert retried == [str(target)]
     assert not target.exists()
+
+
+class FakeRunner:
+    def __init__(self, failing: set[str]) -> None:
+        self.failing = failing
+        self.commands: list[list[str]] = []
+
+    def run_captured(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        self.commands.append(args)
+        code = 1 if Path(args[-1]).name in self.failing else 0
+        return subprocess.CompletedProcess(args, code, stdout=f"output of {args[-1]}\n")
+
+
+def test_clang_tidy_runs_one_process_per_source(monkeypatch: pytest.MonkeyPatch) -> None:
+    sources = [build_native.NATIVE_DIR / "a.cpp", build_native.NATIVE_DIR / "b.cpp"]
+    monkeypatch.setattr(build_native, "native_sources", lambda: sources)
+    runner = FakeRunner(failing=set())
+
+    build_native.run_clang_tidy(runner, "ci-windows", jobs=2)
+
+    assert sorted(command[-1] for command in runner.commands) == [str(s) for s in sources]
+    assert all("--quiet" in command for command in runner.commands)
+
+
+def test_clang_tidy_lints_every_file_before_reporting_a_failure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    sources = [build_native.NATIVE_DIR / name for name in ("a.cpp", "b.cpp", "c.cpp")]
+    monkeypatch.setattr(build_native, "native_sources", lambda: sources)
+    runner = FakeRunner(failing={"a.cpp"})
+
+    with pytest.raises(subprocess.CalledProcessError):
+        build_native.run_clang_tidy(runner, "ci-windows", jobs=1)
+
+    assert len(runner.commands) == len(sources)
+    output = capsys.readouterr().out
+    assert "a.cpp: FAILED (1)" in output
+    assert "output of" in output
+
+
+def test_tidy_only_flag_parses() -> None:
+    args = build_native.parse_args(["--tidy-only", "--jobs", "3"])
+
+    assert args.tidy_only
+    assert args.jobs == 3
