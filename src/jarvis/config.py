@@ -13,8 +13,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
-from typing import Annotated, Literal
-
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -162,6 +160,12 @@ class Settings(BaseSettings):
     # Memory
     memory_recent_turns: int = 10
     memory_semantic_hits: int = 5
+
+    # Integrations (extra), added with the providers in ADR-0009
+    spotify_redirect_uri: str = Field(
+        default="http://127.0.0.1:8888/callback", validation_alias="SPOTIFY_REDIRECT_URI"
+    )
+    discord_guild_id: str | None = Field(default=None, validation_alias="DISCORD_GUILD_ID")
 
     # Web and documents
     document_roots: Annotated[list[Path], NoDecode] = Field(default_factory=default_document_roots)

@@ -29,7 +29,7 @@ is Python 3.12.
 | 5 | STT / TTS / LLM cloud providers | planned |
 | 6 | Agent core, text-only loop | framework done, agent loop pending |
 | 7 | Voice pipeline with barge-in | planned |
-| 8 | Phase 1 + 2 tools | planned |
+| 8 | Phase 1 + 2 tools | integration providers done, tools pending |
 | 9 | Memory | done |
 | 10 | Proactive and routines | done |
 | 11 | Vision | planned |
