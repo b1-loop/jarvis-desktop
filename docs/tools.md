@@ -38,6 +38,7 @@ all confirmation off.
 | `clipboard_get` | Read the clipboard text for the LLM | no | `Platform.get_clipboard_text` |
 | `clipboard_set` | Put text on the clipboard | no | `Platform.set_clipboard_text` |
 | `notify` | Show a desktop notification | no | `Platform.notify` |
+| `set_hud_colour` | Recolour the HUD and its orb: a preset (red, green, violet, ice, pink ...), any colour word in English or Swedish, or a hex code as a custom accent; applied live and remembered ([ADR-0028](adr/0028-hud-colour-themes.md)) | no | `ToolContext.hud` (the HUD settings page) |
 
 ## Files
 

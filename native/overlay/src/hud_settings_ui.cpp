@@ -1,5 +1,6 @@
 #include "jarvis/overlay/hud_data.hpp"
 #include "jarvis/overlay/layout.hpp"
+#include "jarvis/overlay/palette.hpp"
 #include "jarvis/overlay/ui_events.hpp"
 
 #include <imgui.h>
@@ -8,6 +9,7 @@
 #include "hud_interact.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
 #include <cstddef>
@@ -30,6 +32,12 @@ constexpr std::string_view kRestartNote = "applies after restart";
 constexpr std::string_view kOpenLogKey = "open_log";
 constexpr std::string_view kRestartKey = "restart";
 constexpr std::string_view kPressed = "pressed";
+// A swatch that opens a hue bar and saturation/value square; no numeric
+// inputs, since a typed half-hex would be reported on every keystroke.
+// NOLINTBEGIN(bugprone-signed-bitwise,hicpp-signed-bitwise) - ImGui flags are plain ints
+constexpr ImGuiColorEditFlags kColourFlags =
+    ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_PickerHueBar;
+// NOLINTEND(bugprone-signed-bitwise,hicpp-signed-bitwise)
 
 ImVec4 toVec4(Rgba colour) noexcept {
     return ImVec4{colour.r, colour.g, colour.b, colour.a};
@@ -115,6 +123,9 @@ void HudInteraction::drawSettingWidget(SettingItem& item, float width) {
         case SettingKind::Slider:
             drawSlider(item, width);
             return;
+        case SettingKind::Colour:
+            drawColour(item);
+            return;
         case SettingKind::Action:
             break;
     }
@@ -165,6 +176,24 @@ void HudInteraction::drawSlider(SettingItem& item, float width) {
     }
 }
 
+void HudInteraction::drawColour(SettingItem& item) {
+    const Rgba current = parseHexColour(item.value).value_or(kDefaultAccent);
+    std::array<float, 3> rgb{current.r, current.g, current.b};
+    if (ImGui::ColorEdit3("##colour", rgb.data(), kColourFlags)) {
+        item.value = toHex(Rgba{.r = rgb.at(0), .g = rgb.at(1), .b = rgb.at(2), .a = 1.0F});
+        colourDirty_ = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(item.value.c_str());
+    editing_ = editing_ || ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    // Reported once the drag ends, like a slider, so a sweep across the hue
+    // bar is one persisted value rather than one per frame.
+    if (colourDirty_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        colourDirty_ = false;
+        push(SettingChanged{.key = item.key, .value = item.value});
+    }
+}
+
 void HudInteraction::drawAction(const SettingItem& item) {
     if (!ImGui::Button(item.label.c_str())) {
         return;
@@ -205,3 +234,9 @@ void HudInteraction::drawSettingsFooter(const InteractFrame& in, const Theme& th
 //   native change.
 // - Sliders report on release (IsItemDeactivatedAfterEdit) and quantise to
 //   the item's step, so a drag produces one persisted value, not sixty.
+// - The colour picker lives in a popup, where IsItemDeactivatedAfterEdit
+//   does not see the picker's own widgets, so it reports when the mouse is
+//   released after an edit instead. The HUD recolours when Python answers
+//   (one bridge poll later); a native preview during the drag would need
+//   the window to undo it whenever Python rejects or never answers, which
+//   is more moving parts than a 30 ms delay is worth.

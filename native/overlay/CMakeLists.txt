@@ -90,6 +90,7 @@ add_library(jarvis_overlay_ui STATIC
     src/minimize_policy.cpp
     src/model.cpp
     src/orb.cpp
+    src/palette.cpp
     src/particles.cpp
     src/placement.cpp
     src/postfx.cpp

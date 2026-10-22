@@ -44,6 +44,7 @@ from jarvis.ui.hud_protocol import (
     event_to_native,
     parse_ui_event,
 )
+from jarvis.utils.colour import DEFAULT_ACCENT
 from jarvis.utils.errors import JarvisError, NativeUnavailableError
 from jarvis.utils.logging import get_logger
 
@@ -80,10 +81,20 @@ class OverlayCorner(StrEnum):
 
 
 class OverlayTheme(StrEnum):
-    """Palette of the HUD; values are the settings spelling, names the native enum."""
+    """Palette of the HUD; values are the settings spelling, names the native enum.
+
+    ``CUSTOM`` is derived natively from an accent colour (``overlay_accent``);
+    the others are fixed presets (ADR-0028).
+    """
 
     CYAN = "cyan"
     AMBER = "amber"
+    RED = "red"
+    GREEN = "green"
+    VIOLET = "violet"
+    ICE = "ice"
+    PINK = "pink"
+    CUSTOM = "custom"
 
 
 class OverlayIntensity(StrEnum):
@@ -147,6 +158,7 @@ class OverlayConfig:
         transparent: Prefer per-pixel transparency (DirectComposition); the
             whole-window-alpha fallback is used when it is off or unavailable.
         theme: Palette of the HUD.
+        accent: ``#rrggbb`` the CUSTOM theme is derived from.
         boot_animation: Whether :meth:`Overlay.play_boot` plays anything.
         intensity: Particle count, bloom strength and motion of the HUD.
         bloom: Run the GPU bloom pipeline (it falls back to plain additive
@@ -177,6 +189,7 @@ class OverlayConfig:
     max_text_chars: int = 240
     transparent: bool = True
     theme: OverlayTheme = OverlayTheme.CYAN
+    accent: str = DEFAULT_ACCENT
     boot_animation: bool = True
     intensity: OverlayIntensity = OverlayIntensity.NORMAL
     bloom: bool = True
@@ -259,8 +272,8 @@ class NativeOverlay(Protocol):
     def set_settings(self, page: dict[str, object]) -> None:
         """Replace the settings page (``SettingsPage.to_native()``)."""
 
-    def set_appearance(self, theme: str, intensity: str, size: str) -> None:
-        """Switch theme, intensity and size live (settings spellings)."""
+    def set_appearance(self, theme: str, intensity: str, size: str, accent: str = "") -> None:
+        """Switch theme, intensity and size live (settings spellings); ``accent`` is ``#rrggbb``."""
 
     def set_expanded(self, expanded: bool) -> None:
         """Expand to the panel or collapse to the corner HUD."""
@@ -303,7 +316,7 @@ class StubOverlay:
         self.muted = False
         self.history: list[tuple[str, str, str]] = []
         self.settings: dict[str, object] = {}
-        self.appearance: tuple[str, str, str] | None = None
+        self.appearance: tuple[str, str, str, str] | None = None
         self.auto_minimize_seconds = 0.0
         self.hide_in_fullscreen = True
         self._expanded = False
@@ -408,9 +421,9 @@ class StubOverlay:
         """Record the page."""
         self.settings = page
 
-    def set_appearance(self, theme: str, intensity: str, size: str) -> None:
+    def set_appearance(self, theme: str, intensity: str, size: str, accent: str = "") -> None:
         """Record the appearance."""
-        self.appearance = (theme, intensity, size)
+        self.appearance = (theme, intensity, size, accent)
 
     def set_expanded(self, expanded: bool) -> None:
         """Record the request."""
@@ -620,10 +633,20 @@ class Overlay:
         self._forward(lambda: self._native.set_settings(page.to_native()))
 
     def set_appearance(
-        self, theme: OverlayTheme, intensity: OverlayIntensity, size: OverlaySize
+        self,
+        theme: OverlayTheme,
+        intensity: OverlayIntensity,
+        size: OverlaySize,
+        accent: str = DEFAULT_ACCENT,
     ) -> None:
-        """Switch palette, richness and size without restarting."""
-        self._forward(lambda: self._native.set_appearance(theme.value, intensity.value, size.value))
+        """Switch palette, richness and size without restarting.
+
+        ``accent`` (``#rrggbb``) only shows with the CUSTOM theme, but it is
+        always sent so switching back to CUSTOM natively finds it.
+        """
+        self._forward(
+            lambda: self._native.set_appearance(theme.value, intensity.value, size.value, accent)
+        )
 
     def set_expanded(self, expanded: bool) -> None:
         """Expand to the panel or collapse to the corner HUD (animated)."""
@@ -694,6 +717,7 @@ def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
         "overlay.created",
         corner=config.corner.value,
         theme=config.theme.value,
+        accent=config.accent,
         size=config.size.value,
         intensity=config.intensity.value,
         interactive=config.interactive,
@@ -719,6 +743,7 @@ def _native_config(module: Any, config: OverlayConfig) -> Any:
     native_config.idle_fps = config.idle_fps
     native_config.transparent = config.transparent
     native_config.theme = module.Theme.__members__[config.theme.name]
+    native_config.accent = config.accent
     native_config.intensity = module.Intensity.__members__[config.intensity.name]
     native_config.bloom = config.bloom
     native_config.interactive = config.interactive

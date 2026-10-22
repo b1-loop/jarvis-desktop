@@ -58,7 +58,8 @@ TEST_CASE("settings, mute, appearance and expand requests bump the revision",
                          .key = "speak_replies", .kind = SettingKind::Toggle, .value = "true"}},
                      .restartPending = true,
                      .notice = "Saved."});
-    model.setAppearance(Appearance{.theme = ThemeName::Amber});
+    const jarvis::overlay::Rgba orange{.r = 1.0F, .g = 0.5F, .b = 0.0F, .a = 1.0F};
+    model.setAppearance(Appearance{.theme = ThemeName::Custom, .accent = orange});
     model.requestExpanded(true);
 
     const auto data = model.snapshot();
@@ -67,7 +68,8 @@ TEST_CASE("settings, mute, appearance and expand requests bump the revision",
     REQUIRE(data.settings->items.front().key == "speak_replies");
     REQUIRE(data.settings->restartPending);
     REQUIRE(data.settingsRevision == 1);
-    REQUIRE(data.appearance.theme == ThemeName::Amber);
+    REQUIRE(data.appearance.theme == ThemeName::Custom);
+    REQUIRE(data.appearance.accent == orange);
     REQUIRE(data.expandRequest == true);
     REQUIRE(data.expandRequestId == 1);
 }

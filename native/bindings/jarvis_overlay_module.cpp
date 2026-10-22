@@ -13,6 +13,7 @@
 #include "jarvis/overlay/hud_data.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/palette.hpp"
 #include "jarvis/overlay/placement.hpp"
 #include "jarvis/overlay/system_info.hpp"
 #include "jarvis/overlay/ui_events.hpp"
@@ -44,6 +45,40 @@ void defineExceptions(const py::module_& module) {
     py::register_local_exception<OverlayError>(module, "OverlayError", nativeError.ptr());
 }
 
+/// The accent for @p hex ("#rrggbb"); empty is the default accent.
+Rgba accentFrom(std::string_view hex) {
+    if (hex.empty()) {
+        return kDefaultAccent;
+    }
+    const std::optional<Rgba> parsed = parseHexColour(hex);
+    if (!parsed.has_value()) {
+        throw py::value_error("accent '" + std::string{hex} + "' is not a '#rrggbb' colour");
+    }
+    return *parsed;
+}
+
+py::tuple colourTuple(Rgba colour) {
+    return py::make_tuple(colour.r, colour.g, colour.b, colour.a);
+}
+
+/// What themeFor() resolves @p theme (and, for custom, @p accent) to.
+py::dict paletteOf(std::string_view theme, std::string_view accent) {
+    const std::optional<ThemeName> name = parseThemeName(theme);
+    if (!name.has_value()) {
+        throw py::value_error("unknown theme '" + std::string{theme} + "'");
+    }
+    const Theme palette = themeFor(*name, accentFrom(accent));
+    using py::literals::operator""_a;
+    return py::dict(
+        "accent"_a = colourTuple(palette.accent), "idle"_a = colourTuple(palette.idle),
+        "listening"_a = colourTuple(palette.listening),
+        "thinking"_a = colourTuple(palette.thinking), "speaking"_a = colourTuple(palette.speaking),
+        "wake_flash"_a = colourTuple(palette.wakeFlash), "text"_a = colourTuple(palette.text),
+        "muted_text"_a = colourTuple(palette.mutedText),
+        "background"_a = colourTuple(palette.background), "plate"_a = colourTuple(palette.plate),
+        "warning"_a = colourTuple(palette.warning), "bloom"_a = palette.bloom);
+}
+
 void defineEnums(const py::module_& module) {
     py::enum_<AssistantState>(module, "AssistantState",
                               "What Jarvis is doing; mirrors the Python state machine.")
@@ -58,9 +93,15 @@ void defineEnums(const py::module_& module) {
         .value("BOTTOM_LEFT", Corner::BottomLeft)
         .value("BOTTOM_RIGHT", Corner::BottomRight);
 
-    py::enum_<ThemeName>(module, "Theme", "Palette of the HUD.")
+    py::enum_<ThemeName>(module, "Theme", "Palette of the HUD; CUSTOM derives one from an accent.")
         .value("CYAN", ThemeName::Cyan)
-        .value("AMBER", ThemeName::Amber);
+        .value("AMBER", ThemeName::Amber)
+        .value("RED", ThemeName::Red)
+        .value("GREEN", ThemeName::Green)
+        .value("VIOLET", ThemeName::Violet)
+        .value("ICE", ThemeName::Ice)
+        .value("PINK", ThemeName::Pink)
+        .value("CUSTOM", ThemeName::Custom);
 
     py::enum_<PanelSize>(module, "PanelSize", "How big the corner HUD is.")
         .value("COMPACT", PanelSize::Compact)
@@ -87,6 +128,15 @@ void defineMinimizeConfig(py::class_<OverlayConfig>& config) {
                        "Hide while a full-screen application is in front on the HUD's monitor.");
 }
 
+/// The palette options of OverlayConfig (ADR-0028).
+void defineAppearanceConfig(py::class_<OverlayConfig>& config) {
+    config.def_readwrite("theme", &OverlayConfig::theme)
+        .def_property(
+            "accent", [](const OverlayConfig& self) { return toHex(self.accent); },
+            [](OverlayConfig& self, std::string_view hex) { self.accent = accentFrom(hex); },
+            "Accent of the CUSTOM theme as '#rrggbb'.");
+}
+
 void defineConfig(const py::module_& module) {
     py::class_<ModelLimits>(module, "ModelLimits",
                             "Bounds that keep the overlay's memory independent of its input.")
@@ -111,7 +161,6 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("idle_fps", &OverlayConfig::idleFps)
         .def_readwrite("transparent", &OverlayConfig::transparent,
                        "Prefer per-pixel transparency (DirectComposition).")
-        .def_readwrite("theme", &OverlayConfig::theme)
         .def_readwrite("intensity", &OverlayConfig::intensity)
         .def_readwrite("bloom", &OverlayConfig::bloom,
                        "Run the GPU bloom pipeline (falls back to plain additive light).")
@@ -124,6 +173,7 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("expanded_bounds", &OverlayConfig::expandedBounds,
                        "Remembered expanded-panel position and size (SavedPlacement) or None.");
     defineMinimizeConfig(config);
+    defineAppearanceConfig(config);
 }
 
 void definePlacement(const py::module_& module) {
@@ -236,8 +286,11 @@ SettingKind settingKindFrom(std::string_view name) {
     if (name == "action") {
         return SettingKind::Action;
     }
+    if (name == "colour") {
+        return SettingKind::Colour;
+    }
     throw py::value_error("unknown setting kind '" + std::string{name} +
-                          "'; expected choice, toggle, slider or action");
+                          "'; expected choice, toggle, slider, action or colour");
 }
 
 SettingItem settingFrom(const py::dict& item) {
@@ -295,9 +348,10 @@ Enum parsedOrThrow(std::optional<Enum> parsed, std::string_view name, std::strin
 }
 
 void setAppearance(OverlayWindow& window, std::string_view theme, std::string_view intensity,
-                   std::string_view size) {
+                   std::string_view size, std::string_view accent) {
     window.setAppearance(Appearance{
         .theme = parsedOrThrow(parseThemeName(theme), theme, "theme"),
+        .accent = accentFrom(accent),
         .intensity = parsedOrThrow(anim::parseIntensity(intensity), intensity, "intensity"),
         .size = parsedOrThrow(parsePanelSize(size), size, "panel size")});
 }
@@ -382,6 +436,7 @@ py::dict hudSnapshot(const OverlayWindow& window) {
     return py::dict("muted"_a = data.muted, "history"_a = history, "setting_keys"_a = keys,
                     "restart_pending"_a = data.settings->restartPending,
                     "theme"_a = std::string{toString(data.appearance.theme)},
+                    "accent"_a = toHex(data.appearance.accent),
                     "intensity"_a = std::string{anim::toString(data.appearance.intensity)},
                     "size"_a = std::string{toString(data.appearance.size)},
                     "minimized"_a = window.minimized(),
@@ -424,7 +479,9 @@ void defineWindowHud(WindowClass& window) {
         .def("set_settings", &setSettings, py::arg("page"),
              "Replace the settings page: {'items': [...], 'restart_pending', 'notice'}.")
         .def("set_appearance", &setAppearance, py::arg("theme"), py::arg("intensity"),
-             py::arg("size"), "Switch theme, intensity and size live (settings spellings).")
+             py::arg("size"), py::arg("accent") = "",
+             "Switch theme, intensity and size live (settings spellings); accent is\n"
+             "the CUSTOM theme's '#rrggbb', empty for the default.")
         .def("set_expanded", &OverlayWindow::setExpanded, py::arg("expanded"))
         .def("expanded", &OverlayWindow::expanded)
         .def("hud_snapshot", &hudSnapshot, "The HUD data pushed so far; for tests.")
@@ -518,6 +575,9 @@ PYBIND11_MODULE(jarvis_overlay, module) {
     module.attr("BOOT_DURATION_SECONDS") = anim::BootTimeline{}.duration();
     module.def("default_microphone_name", &defaultMicrophoneName,
                "Friendly name of the default capture device, or None.");
+    module.def("palette", &paletteOf, py::arg("theme"), py::arg("accent") = "",
+               "The colours a theme resolves to, {role: (r, g, b, a)} plus 'bloom'; for\n"
+               "the theme sheet and tests.");
 
     defineExceptions(module);
     defineEnums(module);

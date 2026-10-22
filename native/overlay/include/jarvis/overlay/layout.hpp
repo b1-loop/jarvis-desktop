@@ -33,7 +33,8 @@ struct Rgba {
 
 /// Palette of the HUD. One hue family per theme, with the state told apart
 /// by brightness and a small hue shift (and, above all, by motion), so the
-/// panel reads as one instrument rather than four traffic lights.
+/// panel reads as one instrument rather than four traffic lights. The named
+/// themes and the derivation from one accent are in palette.hpp.
 struct Theme {
     /// Clear colour of the opaque fallback (whole-window alpha) path.
     Rgba background{0.02F, 0.05F, 0.08F, 1.0F};
@@ -48,22 +49,15 @@ struct Theme {
     Rgba accent{0.30F, 0.85F, 1.00F, 1.0F};
     /// Glass plate behind the text so it stays readable over any desktop.
     Rgba plate{0.01F, 0.06F, 0.10F, 0.55F};
+    /// Danger and alert light (quit control, muted microphone, the quit
+    /// question); always a hue far from the accent so it never reads as a state.
+    Rgba warning{1.00F, 0.45F, 0.35F, 1.0F};
+    /// Multiplier on the bloom strength: pale accents carry light in all three
+    /// channels and would otherwise bloom into a white smear.
+    float bloom{1.0F};
 
     [[nodiscard]] bool operator==(const Theme&) const noexcept = default;
 };
-
-/// Named palettes selectable from settings.
-enum class ThemeName : std::uint8_t { Cyan, Amber };
-
-/// The palette for @p name. Cyan is Theme{}; Amber is the same design in
-/// warm light for users who find blue too cold on a dark wallpaper.
-[[nodiscard]] Theme themeFor(ThemeName name) noexcept;
-
-/// Lower-case name as used in settings ("cyan", "amber").
-[[nodiscard]] std::string_view toString(ThemeName name) noexcept;
-
-/// Inverse of toString(ThemeName); std::nullopt for anything else.
-[[nodiscard]] std::optional<ThemeName> parseThemeName(std::string_view name) noexcept;
 
 /// Accent colour for @p state.
 [[nodiscard]] Rgba stateColour(const Theme& theme, AssistantState state) noexcept;

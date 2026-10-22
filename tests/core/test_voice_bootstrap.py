@@ -232,7 +232,14 @@ async def test_the_hud_gets_a_settings_page_and_follows_mute(make_settings: Make
         # ScriptedTTS cannot switch voices live, so the voice is restart-only.
         assert rows["tts_voice"]["restart_required"] is True
         assert rows["overlay_theme"]["restart_required"] is False
+        assert rows["overlay_accent"]["restart_required"] is False
         assert front.bind_controls is not None
+        assert front.hud_appearance is not None
+
+        await front.hud_appearance.set_colour("custom", "#ff3b30")
+        assert native.appearance is not None
+        assert native.appearance[0] == "custom"
+        assert native.appearance[3] == "#ff3b30"
 
         assert front.microphone is not None
         await front.microphone.toggle()
