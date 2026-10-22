@@ -121,9 +121,10 @@ stay in sync without the orchestrator knowing about them.
 | `local` mode (`--mode local`) | llama.cpp, in process | whisper.cpp | Piper | none |
 
 Trade-offs of each: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
-Small local models get a short, relevant tool list per request and never
-get to claim success for a tool that failed:
-[ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). Full design,
+Small local models get a short, relevant tool list per request, ranked by
+keywords and by a multilingual embedding model so Swedish requests find
+English tool descriptions, and never get to claim success for a tool that
+failed: [ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). Full design,
 threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
 decision with its reasons: [the ADRs](docs/adr/README.md).
 
@@ -196,6 +197,7 @@ C++" workload, LLVM (clang-tidy), and [Ollama](https://ollama.com/download).
 # 1. The default LLM: free and local. Ollama must be running.
 winget install Ollama.Ollama
 ollama pull qwen2.5:7b
+ollama pull bge-m3      # multilingual embeddings for tool selection (Swedish requests); optional
 
 # 2. Code and Python dependencies
 git clone --recurse-submodules https://github.com/b1-loop/jarvis-desktop.git

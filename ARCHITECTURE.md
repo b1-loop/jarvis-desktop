@@ -139,6 +139,7 @@ without a trigger.
 | STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off the loop; CPU int8 fallback when CUDA libraries are missing) | | `WhisperCppSTT` |
 | TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | | `PiperTTS` |
 | LLM | `llm.base.LLMClient` | `OllamaClient` (`qwen2.5:7b`) | `AnthropicClient` (`JARVIS_LLM_PROVIDER=anthropic`; streaming, tool use, vision) | `LocalLlamaClient` |
+| Embeddings (tool selection) | `llm.embeddings.TextEmbedder` | `OllamaEmbedder` (`bge-m3`) | none: word overlap only (`JARVIS_TOOL_EMBEDDING_MODEL=none`) | same as `cloud` when Ollama runs, else word overlap |
 
 `core/providers.py` picks the stack from `Settings.mode` and
 `llm.factory.create_llm_client` the LLM from `JARVIS_LLM_PROVIDER`; a
@@ -314,9 +315,14 @@ spoken as an apology with the provider's remedy and, for cloud providers,
 the LOCAL/Ollama hint. The turn is recorded in memory with its tool calls.
 
 **Tool selection.** For Ollama and llama.cpp each round offers at most
-`JARVIS_MAX_TOOLS_PER_TURN` (default 12) tools, ranked by word overlap with
-the request, plus a core set (`JARVIS_CORE_TOOLS`) and every tool already
-used this turn; Claude gets all tools. When every tool call of a turn
+`JARVIS_MAX_TOOLS_PER_TURN` (default 12) tools, plus a core set
+(`JARVIS_CORE_TOOLS`) and every tool already used this turn; Claude gets all
+tools. The ranking blends word overlap (English and Swedish keywords) with
+cosine similarity from a multilingual Ollama embedding model
+(`JARVIS_TOOL_EMBEDDING_MODEL`, default `bge-m3`): tool vectors are embedded
+once and cached under `data/cache/`, each request is embedded within 150 ms,
+and anything slower or failing falls back to word overlap
+(`agent/tool_embeddings.py`). When every tool call of a turn
 failed or was declined, the loop ends with the tools' own `spoken` sentences
 instead of the model's final text (ADR-0020).
 
