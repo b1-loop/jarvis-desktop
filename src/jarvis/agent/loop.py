@@ -246,15 +246,19 @@ class _Turn:
             await self._request_summary()
 
     async def _system_prompt(self) -> str:
+        """Persona, this turn's clock reading and recalled memory (when it can be had)."""
+        return self.agent.persona.system_prompt(await self._recalled(), now=self.clock.now())
+
+    async def _recalled(self) -> str:
         memory = self.agent.memory
         if memory is None:
-            return self.agent.persona.system_prompt()
+            return ""
         try:
             recollection = await memory.recall(self.user_text)
         except JarvisError:
             log.exception("agent.memory.recall_failed")
-            return self.agent.persona.system_prompt()
-        return self.agent.persona.system_prompt(recollection.render())
+            return ""
+        return recollection.render()
 
     async def _stream_reply(self) -> Done:
         """One model request; sentences go to the sink as they complete."""
@@ -429,6 +433,10 @@ async def _close(stream: AsyncIterator[LLMEvent]) -> None:
 # - Memory is recalled into the system prompt instead of replaying an
 #   in-process history, so a new session continues where the last one
 #   ended and the agent itself stays stateless between turns.
+# - The system prompt states the current moment from the context's clock
+#   (ADR-0027), so the model resolves "tomorrow" against today rather than
+#   its training data, and tests see a fixed time. The clock is read even
+#   when memory recall fails; the two are independent.
 # - The tool-round limit answers any still-pending calls with an error
 #   result before the summary request; every tool_use must be answered or
 #   the provider rejects the next request. The summary request keeps the
