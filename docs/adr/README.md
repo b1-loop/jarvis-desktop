@@ -19,4 +19,4 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | [0011](0011-imgui-overlay.md) | Dear ImGui on DirectX 11 for the status overlay | Accepted |
 | [0012](0012-web-and-document-access.md) | Web search, article reading and local document access | Accepted |
 | 0013 | CLOUD vs LOCAL runtime modes *(planned, step 12)* | Proposed |
-
+| [0018](0018-integration-services-bundle.md) | One IntegrationServices bundle on ToolContext | Accepted |
