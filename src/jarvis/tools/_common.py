@@ -13,7 +13,10 @@ from typing import TYPE_CHECKING, Final
 from jarvis.agent.tool import ToolError
 
 if TYPE_CHECKING:
+    from pydantic import JsonValue
+
     from jarvis.agent.tool import MemoryFacade, ToolContext
+    from jarvis.integrations.documents import DocumentMatch
     from jarvis.os_integration.base import Platform
 
 ELLIPSIS: Final = "…"
@@ -46,6 +49,16 @@ def require_memory(context: ToolContext, tool_name: str) -> MemoryFacade:
     if context.memory is None:
         raise ServiceUnavailableError(tool_name, "memory store")
     return context.memory
+
+
+def document_row(match: DocumentMatch) -> dict[str, JsonValue]:
+    """JSON form of a found document; one shape for every file tool and the UI."""
+    return {
+        "path": str(match.path),
+        "name": match.path.name,
+        "modified": match.modified.isoformat(timespec="seconds"),
+        "size_bytes": match.size_bytes,
+    }
 
 
 def truncate(text: str, limit: int) -> str:
