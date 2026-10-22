@@ -20,8 +20,9 @@ from jarvis import __version__
 from jarvis.app.background import run_windowless
 from jarvis.app.windowless import is_windowless
 from jarvis.config import RuntimeMode, Settings
-from jarvis.core.bootstrap import run_text_mode
+from jarvis.core.bootstrap import Overrides, run_text_mode
 from jarvis.core.voice_bootstrap import run_voice_mode
+from jarvis.integrations.connect.cli import connect_app
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import configure_logging, get_logger
 
@@ -65,8 +66,17 @@ def _show_version(value: bool) -> None:
         raise typer.Exit
 
 
-@app.command()
+app.add_typer(
+    connect_app,
+    name="connect",
+    help="Connect Google, Microsoft and Discord once, in this terminal (see the README).",
+)
+
+
+@app.callback(invoke_without_command=True)
 def run(
+    ctx: typer.Context,
+    *,
     mode: Annotated[
         RuntimeMode | None,
         typer.Option("--mode", case_sensitive=False, help="Provider set: cloud or local."),
@@ -88,7 +98,9 @@ def run(
         bool, typer.Option("--version", callback=_show_version, is_eager=True)
     ] = False,
 ) -> None:
-    """Start the assistant."""
+    """Start the assistant (or run a sub-command such as ``jarvis connect google``)."""
+    if ctx.invoked_subcommand is not None:
+        return
     settings = load_settings(mode)
     if is_windowless(background=background, stdout=sys.stdout):
         # No console to talk to: voice mode with the tray, logging to a file.
@@ -121,9 +133,14 @@ def _announce(options: LaunchOptions) -> None:
 
 
 def session(settings: Settings, options: LaunchOptions) -> Coroutine[object, object, None]:
-    """The conversation to run: voice by default, the terminal with ``--text-only``."""
+    """The conversation to run: voice by default, the terminal with ``--text-only``.
+
+    Only the terminal conversation may open a Google or Microsoft consent
+    flow: it is the one front end where the user sees the browser prompt or
+    the device code. Voice mode reports "run connect_accounts.py" instead.
+    """
     if options.text_only:
-        return run_text_mode(settings)
+        return run_text_mode(settings, Overrides(interactive_sign_in=True))
     return run_voice_mode(settings, wake_word=options.wake_word_enabled)
 
 
@@ -151,3 +168,6 @@ if __name__ == "__main__":
 #   meaningless there and ignored.
 # - Ctrl+C cancels the main task; the bootstrap's exit stack still closes
 #   the database and connections before KeyboardInterrupt reaches here.
+# - The launch is the app's callback (invoke_without_command) rather than a
+#   command so `jarvis --text-only` and the shortcuts' `jarvis --background`
+#   keep working unchanged while `jarvis connect ...` is a sub-command.

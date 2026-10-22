@@ -235,6 +235,12 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:8888/callback", validation_alias="SPOTIFY_REDIRECT_URI"
     )
     discord_guild_id: str | None = Field(default=None, validation_alias="DISCORD_GUILD_ID")
+    teams_enabled: bool = False
+    """Add Teams chats to the Microsoft sign-in (``Chat.Read``, ``ChatMessage.Send``).
+
+    Off by default: personal Microsoft accounts cannot use the Teams chat
+    API, and a token request that includes scopes the account cannot grant
+    can fail as a whole, taking Outlook down with it."""
 
     # Web and documents
     document_roots: Annotated[list[Path], NoDecode] = Field(default_factory=default_document_roots)

@@ -5,6 +5,8 @@ import httpx
 import pytest
 
 from jarvis.config import Settings
+from jarvis.integrations.base import ConsentRequiredError
+from jarvis.integrations.consent import NotifyOnConsent
 from jarvis.integrations.discord import DiscordProvider
 from jarvis.integrations.factory import (
     IntegrationFactory,
@@ -66,7 +68,7 @@ def test_google_settings_select_gmail_and_calendar_with_one_shared_sign_in(
     }
 
 
-def test_microsoft_settings_select_outlook_for_mail_calendar_and_teams_for_chat(
+def test_microsoft_settings_select_outlook_and_leave_teams_off_by_default(
     make_settings: Callable[..., Settings], http: httpx.AsyncClient
 ) -> None:
     settings = make_settings(ms_client_id="00000000-fake-client-id")
@@ -74,12 +76,52 @@ def test_microsoft_settings_select_outlook_for_mail_calendar_and_teams_for_chat(
 
     assert [type(p) for p in factory.email()] == [OutlookProvider]
     assert [type(p) for p in factory.calendar()] == [OutlookProvider]
-    assert [type(p) for p in factory.chat()] == [TeamsProvider]
+    assert factory.chat() == []
     assert factory._microsoft() is factory._microsoft()
+    assert set(factory._microsoft().scopes) == set(OutlookProvider.scopes)
+
+
+def test_teams_enabled_adds_teams_chat_and_its_scopes_to_the_one_sign_in(
+    make_settings: Callable[..., Settings], http: httpx.AsyncClient
+) -> None:
+    settings = make_settings(ms_client_id="00000000-fake-client-id", teams_enabled=True)
+    factory = IntegrationFactory(settings, http, MemoryTokenStore())
+
+    assert [type(p) for p in factory.chat()] == [TeamsProvider]
     assert set(factory._microsoft().scopes) == {
         *OutlookProvider.scopes,
         *TeamsProvider.scopes,
     }
+
+
+def test_sign_in_is_non_interactive_unless_asked(
+    make_settings: Callable[..., Settings], http: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    settings = make_settings(
+        google_client_secrets_file=tmp_path / "client.json", ms_client_id="fake-client"
+    )
+    quiet = IntegrationFactory(settings, http, MemoryTokenStore())
+    terminal = IntegrationFactory(settings, http, MemoryTokenStore(), interactive_sign_in=True)
+
+    assert not quiet._google().interactive
+    assert not quiet._microsoft().interactive
+    assert terminal._google().interactive
+    assert terminal._microsoft().interactive
+
+
+def test_a_consent_notifier_wraps_both_sign_ins(
+    make_settings: Callable[..., Settings], http: httpx.AsyncClient, tmp_path: Path
+) -> None:
+    async def notify(_error: ConsentRequiredError) -> None:
+        return None
+
+    settings = make_settings(
+        google_client_secrets_file=tmp_path / "client.json", ms_client_id="fake-client"
+    )
+    factory = IntegrationFactory(settings, http, MemoryTokenStore(), consent_notifier=notify)
+
+    assert isinstance(factory._google(), NotifyOnConsent)
+    assert isinstance(factory._microsoft(), NotifyOnConsent)
 
 
 def test_both_mail_accounts_are_returned_together(
@@ -111,7 +153,10 @@ def test_chat_lists_every_configured_network(
     make_settings: Callable[..., Settings], http: httpx.AsyncClient
 ) -> None:
     settings = make_settings(
-        slack_bot_token="xoxb-fake", discord_bot_token="fake-discord", ms_client_id="fake"
+        slack_bot_token="xoxb-fake",
+        discord_bot_token="fake-discord",
+        ms_client_id="fake",
+        teams_enabled=True,
     )
 
     providers = build_chat_providers(settings, http, MemoryTokenStore())
