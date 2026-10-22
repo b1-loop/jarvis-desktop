@@ -21,8 +21,10 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pybind11
@@ -131,10 +133,32 @@ class CommandRunner:
         subprocess.run(f'cmd.exe /d /s /c "{inner}"', check=True, cwd=NATIVE_DIR)
 
 
+def clear_readonly_and_retry(
+    function: Callable[[str], object], path: str, error: BaseException
+) -> None:
+    """``shutil.rmtree`` ``onexc`` hook that makes read-only files deletable.
+
+    Git marks the objects in a clone's ``.git/objects/pack`` read-only, and
+    on Windows ``os.unlink`` refuses to delete a read-only file. FetchContent
+    clones (Catch2, Dear ImGui) live inside the build tree, so ``--clean``
+    hits exactly that. Anything other than a permission error is re-raised
+    untouched, and a retry that still fails propagates as well.
+    """
+    if not isinstance(error, PermissionError):
+        raise error
+    Path(path).chmod(stat.S_IWRITE)
+    function(path)
+
+
+def remove_tree(path: Path) -> None:
+    """Delete ``path`` recursively, including read-only files."""
+    shutil.rmtree(path, onexc=clear_readonly_and_retry)
+
+
 def configure(runner: CommandRunner, preset: str, *, clean: bool) -> None:
     """Run the CMake configure step for ``preset``."""
     if clean and build_dir(preset).exists():
-        shutil.rmtree(build_dir(preset))
+        remove_tree(build_dir(preset))
     runner.run(
         [
             "cmake",
