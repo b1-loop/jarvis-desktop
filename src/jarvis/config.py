@@ -34,6 +34,11 @@ OverlayThemeName = Literal["cyan", "amber"]
 OverlayIntensityName = Literal["calm", "normal", "max"]
 OverlaySizeName = Literal["compact", "normal", "large"]
 """Which ``LLMClient`` answers: Claude, a local Ollama server, or in-process llama.cpp."""
+BargeInModeName = Literal["auto", "voice", "wake_word", "off"]
+"""What may interrupt speech; ``auto`` decides from the output device (ADR-0019)."""
+
+DEFAULT_STT_HOTWORDS: Final = "Jarvis, Discord, Gmail, Spotify"
+"""Names Whisper mishears without a hint ("Vad finns på det?" for "... på Discord?")."""
 
 DEFAULT_LOCAL_MODELS_DIR: Final = Path("models")
 """Where ``scripts/download_models.py --local`` puts the LOCAL-mode files by default."""
@@ -156,7 +161,9 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5:7b"
 
     # Speech
-    stt_model: str = "small"
+    stt_model: str | None = None
+    """Pins one faster-whisper model for every device; None picks per device
+    (``stt_model_gpu`` / ``stt_model_cpu``, see :meth:`whisper_model`)."""
     stt_device: str = "auto"
     stt_compute_type: str = "auto"
     tts_voice: str = "en-GB-RyanNeural"
@@ -450,6 +457,35 @@ class Settings(BaseSettings):
         user = UserSettingsSource(settings_cls, (init_settings, env_settings, dotenv_settings))
         return init_settings, env_settings, user, dotenv_settings, file_secret_settings
 
+    # Voice robustness
+    barge_in_mode: BargeInModeName = "auto"
+    """What may interrupt Jarvis while it speaks (README "Using Jarvis"):
+    ``voice`` (talking over it), ``wake_word`` (only "Hey Jarvis", the hotkey
+    or typing), ``off`` (hotkey or typing), ``auto`` (``voice`` on headphones,
+    else ``wake_word``)."""
+    barge_in_echo_ratio: float = Field(default=2.0, ge=0.0)
+    """Voice mode: speech onset counts only when the microphone is this many
+    times louder than the echo predicted from the playback level; 0 disables
+    the check (the engine then stops playback natively on any onset)."""
+    barge_in_echo_window_ms: int = Field(default=300, gt=0)
+    """Level history compared at a speech onset."""
+    self_wake_guard_ms: int = Field(default=2500, ge=0)
+    """Wake words are ignored this long after a sentence naming the assistant starts."""
+    speaking_wake_margin: float = Field(default=0.1, ge=0.0, lt=1.0)
+    """While speaking, a wake word needs ``wake_word_threshold`` plus this score."""
+    stt_model_gpu: str = "large-v3-turbo"
+    """faster-whisper model on CUDA (``JARVIS_STT_DEVICE`` auto or cuda)."""
+    stt_model_cpu: str = "small"
+    """faster-whisper model on the CPU, including the fallback from auto."""
+    stt_hotwords: str = DEFAULT_STT_HOTWORDS
+    """Names Whisper should prefer when unsure; empty disables the bias."""
+
+    def whisper_model(self, *, gpu: bool) -> str:
+        """The faster-whisper model for a GPU or CPU load; ``stt_model`` wins when set."""
+        if self.stt_model:
+            return self.stt_model
+        return self.stt_model_gpu if gpu else self.stt_model_cpu
+
 
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can
@@ -466,6 +502,10 @@ class Settings(BaseSettings):
 #   option that runs locally but is not the fully offline LOCAL mode (it
 #   still pairs with faster-whisper and edge-tts). The default Ollama model
 #   is a small tool-capable one so tool calling works out of the box.
+# - Voice robustness (ADR-0019 update): barge_in_mode=auto picks voice
+#   barge-in only on headphones, because on speakers Jarvis heard itself and
+#   cut its own answers off. The STT model is chosen per device (turbo on
+#   CUDA, small on the CPU); see stt/faster_whisper.py for the measurements.
 # - The echo guard defaults to 400 ms: long enough to cover the burst of
 #   Jarvis's own first syllable reaching the microphone through speakers,
 #   short enough that a user who interrupts at once is heard. There is no

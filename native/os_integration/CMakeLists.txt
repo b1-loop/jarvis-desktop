@@ -11,6 +11,7 @@ if(NOT WIN32)
 endif()
 
 add_library(jarvis_os_integration STATIC
+    src/audio_endpoint.cpp
     src/clipboard.cpp
     src/hotkey_manager.cpp
     src/hotkey_parser.cpp
@@ -45,6 +46,7 @@ target_link_libraries(jarvis_os_integration
         user32      # windows, hotkeys, SendInput, clipboard
         gdi32       # screenshot
         ole32       # COM, IStream
+        propsys     # PROPVARIANT helpers for endpoint properties
         oleaut32    # BSTR / VARIANT for WMI
         shell32     # ShellExecuteEx, Shell_NotifyIcon
         dwmapi      # cloaked windows, extended frame bounds

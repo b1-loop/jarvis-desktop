@@ -46,6 +46,7 @@ class FakeWhisperModel:
         language: str | None,
         beam_size: int,
         vad_filter: bool,
+        hotwords: str | None = None,
     ) -> tuple[Iterable[FakeSegment], FakeInfo]:
         if self.failure is not None:
             raise self.failure
@@ -55,6 +56,7 @@ class FakeWhisperModel:
                 "language": language,
                 "beam_size": beam_size,
                 "vad_filter": vad_filter,
+                "hotwords": hotwords,
             }
         )
         return lazy(self.segments, self.log), self.info

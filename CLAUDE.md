@@ -113,7 +113,7 @@ docs/adr/      Architecture Decision Records
 
 - Put uv, Python 3.12 and LLVM on `PATH` explicitly in every shell; never call a bare `python` that may resolve to another interpreter.
 - Long native builds (whisper.cpp, llama.cpp) exceed a 10-minute foreground limit: run `scripts/build_native.py` in the background. `--skip-tests` builds without running Catch2.
-- Ollama serves `qwen2.5:7b` at `http://localhost:11434`. The development machine has an NVIDIA GPU but not the CUDA cuBLAS library, so faster-whisper falls back to CPU; set `JARVIS_STT_DEVICE=cpu` for benchmarks to skip the attempt.
+- Ollama serves `qwen2.5:7b` at `http://localhost:11434`. The development machine has an NVIDIA GPU (8 GB, shared with Ollama) but no CUDA toolkit: `uv sync --all-extras` installs the `gpu` extra (cuBLAS/cuDNN wheels) so faster-whisper runs on CUDA; without it it falls back to the CPU. Set `JARVIS_STT_DEVICE=cpu` for CPU benchmarks.
 - The workstation may be locked while agents run: desktop-dependent native and Python tests skip themselves (session lock probe), clipboard and window calls fail on a locked desktop, and CI runners may have no audio endpoint.
 - GitHub Actions is switched off in the repository settings (Actions minutes). `.github/workflows/ci.yml` still documents the pipeline; until it is re-enabled, run every check locally and paste the results into the PR instead of waiting for CI.
 - Someone may be sitting at the computer: never play audio through the real speakers from automated runs. `scripts/benchmark_latency.py` uses a silent null sink by default (`--sink device` only when asked), and `hardware`-marked tests are run by hand only.

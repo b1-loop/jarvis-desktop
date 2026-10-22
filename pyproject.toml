@@ -53,6 +53,14 @@ desktop = ["psutil>=6.0", "pystray>=0.19", "pillow>=11.0"]
 # STT and LLM in LOCAL mode come from the native jarvis_inference module, not
 # from a Python package. piper-tts is GPL-3.0-or-later; see ADR-0013.
 local = ["piper-tts>=1.3,<2"]
+# CUDA speech recognition without a system CUDA install: the cuBLAS 12 and
+# cuDNN 9 runtime DLLs CTranslate2 (faster-whisper) loads on the GPU. Pinned
+# because CTranslate2 is built against these major versions; faster-whisper
+# adds their bin directories to the DLL search path (ADR-0019 update).
+gpu = [
+  "nvidia-cublas-cu12==12.9.1.4; sys_platform == 'win32' or sys_platform == 'linux'",
+  "nvidia-cudnn-cu12==9.10.2.21; sys_platform == 'win32' or sys_platform == 'linux'",
+]
 all = ["jarvis[cloud,memory,integrations,documents,desktop,local]"]
 
 [project.scripts]

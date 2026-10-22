@@ -749,8 +749,9 @@ def providers_of(settings: Any) -> dict[str, str]:
             "llm": f"llama.cpp {settings.local_llm_model.name}",
             "tts": f"Piper {settings.local_tts_model.name}",
         }
+    whisper = settings.whisper_model(gpu=settings.stt_device != "cpu")
     return {
-        "stt": f"faster-whisper {settings.stt_model} ({settings.stt_device})",
+        "stt": f"faster-whisper {whisper} ({settings.stt_device})",
         "llm": f"Ollama {settings.ollama_model}",
         "tts": f"edge-tts {settings.tts_voice}",
     }

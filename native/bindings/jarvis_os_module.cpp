@@ -6,6 +6,7 @@
 /// exception hierarchy onto Python classes. All behaviour lives in jarvis::os.
 
 #include "jarvis/common/errors.hpp"
+#include "jarvis/os/audio_endpoint.hpp"
 #include "jarvis/os/clipboard.hpp"
 #include "jarvis/os/errors.hpp"
 #include "jarvis/os/hotkey.hpp"
@@ -176,6 +177,20 @@ void defineSystem(const py::module_& module) {
             py::arg("handle"));
 }
 
+void defineAudioEndpoint(py::module_& module) {
+    py::class_<AudioEndpointInfo>(module, "AudioEndpoint",
+                                  "The default output device: friendly name and form factor.")
+        .def_readonly("name", &AudioEndpointInfo::name)
+        .def_property_readonly(
+            "form_factor",
+            [](const AudioEndpointInfo& self) {
+                return std::string{formFactorName(self.formFactor)};
+            },
+            "Core Audio form factor in snake_case: 'speakers', 'headphones', 'headset', ...");
+    module.def("default_output_endpoint", &defaultOutputEndpoint, GilRelease(),
+               "The default output device, or None when there is none or it cannot be read.");
+}
+
 }  // namespace
 
 PYBIND11_MODULE(jarvis_os, module) {
@@ -191,4 +206,5 @@ PYBIND11_MODULE(jarvis_os, module) {
     defineProcesses(module);
     defineInputAndNotifications(module);
     defineSystem(module);
+    defineAudioEndpoint(module);
 }

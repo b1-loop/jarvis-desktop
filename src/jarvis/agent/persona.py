@@ -21,22 +21,31 @@ DEFAULT_VOICE_STYLE: Final = "a measured pace with short, clear sentences"
 DEFAULT_LANGUAGE: Final = "English"
 """Used when the configured voice id does not reveal a language."""
 
-_LANGUAGE_NAMES: Final[dict[str, str]] = {
-    "en": "English",
-    "de": "German",
-    "fr": "French",
-    "es": "Spanish",
-    "it": "Italian",
-    "bg": "Bulgarian",
-    "sv": "Swedish",
-    "nl": "Dutch",
-    "pt": "Portuguese",
+_LANGUAGE_NAMES: Final[dict[str, tuple[str, str]]] = {
+    "en": ("English", "English"),
+    "de": ("German", "Deutsch"),
+    "fr": ("French", "français"),
+    "es": ("Spanish", "español"),
+    "it": ("Italian", "italiano"),
+    "bg": ("Bulgarian", "български"),
+    "sv": ("Swedish", "svenska"),
+    "nl": ("Dutch", "Nederlands"),
+    "pt": ("Portuguese", "português"),
+    "zh": ("Chinese", "中文"),
+    "ja": ("Japanese", "日本語"),
+    "ko": ("Korean", "한국어"),
 }
-"""Languages edge-tts voices are commonly configured in, by ISO 639-1 prefix."""
+"""Languages edge-tts voices are commonly configured in, by ISO 639-1 prefix:
+the English name (for the prompt) and the name in the language itself."""
+
+CJK_LANGUAGES: Final = frozenset({"Chinese", "Japanese", "Korean"})
+"""Languages whose answers legitimately contain CJK characters."""
 
 SYSTEM_PROMPT_TEMPLATE: Final = """\
 You are {name}, a voice assistant running on the user's own computer.
-Your tone is {tone}. Answer in {language}, with {voice_style}.
+Your tone is {tone}. Speak with {voice_style}.
+Always reply in {language} ({native_language}), even when the user's words are unclear, \
+in another language or look misheard; never switch to Chinese or any other language.
 
 Everything you write is read aloud by text-to-speech:
 - Use short, plain sentences. No markdown, lists, headings, code blocks, links or emoji.
@@ -66,21 +75,30 @@ class Persona:
         name: What the assistant calls itself (``Settings.assistant_name``).
         tone: Manner of speaking (``Settings.persona_tone``).
         voice_style: How the wording should sound when spoken aloud.
-        language: Natural language to answer in.
+        language: Natural language to answer in, in English ("Swedish").
+        native_language: The same language named in itself ("svenska").
     """
 
     name: str
     tone: str
     voice_style: str = DEFAULT_VOICE_STYLE
     language: str = DEFAULT_LANGUAGE
+    native_language: str = DEFAULT_LANGUAGE
+
+    @property
+    def allows_cjk(self) -> bool:
+        """Whether answers may contain Chinese, Japanese or Korean script."""
+        return self.language in CJK_LANGUAGES
 
     @classmethod
     def from_settings(cls, settings: Settings) -> Persona:
         """Build the persona from settings; the language follows the TTS voice."""
+        language, native = languages_of_voice(settings.tts_voice)
         return cls(
             name=settings.assistant_name,
             tone=settings.persona_tone,
-            language=language_of_voice(settings.tts_voice),
+            language=language,
+            native_language=native,
         )
 
     def system_prompt(self, memory: str = "") -> str:
@@ -89,6 +107,7 @@ class Persona:
             name=self.name,
             tone=self.tone,
             language=self.language,
+            native_language=self.native_language,
             voice_style=self.voice_style,
         )
         if memory.strip():
@@ -98,14 +117,25 @@ class Persona:
 
 def language_of_voice(voice_id: str) -> str:
     """``en-GB-RyanNeural`` -> ``English``; unknown prefixes fall back to English."""
+    return languages_of_voice(voice_id)[0]
+
+
+def languages_of_voice(voice_id: str) -> tuple[str, str]:
+    """``sv-SE-MattiasNeural`` -> ``("Swedish", "svenska")``; unknown -> English."""
     prefix = voice_id.split("-", 1)[0].lower()
-    return _LANGUAGE_NAMES.get(prefix, DEFAULT_LANGUAGE)
+    return _LANGUAGE_NAMES.get(prefix, (DEFAULT_LANGUAGE, DEFAULT_LANGUAGE))
 
 
 # Design notes:
 # - The language is derived from the TTS voice rather than a separate
 #   setting: answering in German with an English voice sounds broken, so
 #   the two must agree, and one knob cannot disagree with itself.
+# - The language sentence names the language twice, in English and in
+#   itself ("Swedish (svenska)"), and names the observed failure ("never
+#   switch to Chinese"): qwen2.5:7b answered a misheard English line with
+#   Chinese when the prompt only said "Answer in Swedish". The agent loop
+#   also drops CJK sentences for non-CJK languages (agent/language_guard.py),
+#   because a prompt lowers the odds but cannot guarantee anything.
 # - "Just call the tool" is deliberate. Confirmation is enforced centrally
 #   (ADR-0006); a model that also asks "shall I?" makes the user confirm
 #   twice, once to the model and once to the policy.

@@ -8,11 +8,15 @@ engine while a transcription runs. The model is loaded lazily on first use
 (or by ``warm_up``) because loading takes seconds and text-only mode never
 needs it.
 
-With ``JARVIS_STT_DEVICE=auto`` CTranslate2 picks CUDA whenever it sees a
-GPU, even when the CUDA runtime libraries (cuBLAS, cuDNN) are not
-installed, and then fails on load or on the first transcription. In that
-case the provider falls back to the CPU (int8) once, with one warning that
-names the missing library; an explicit ``cuda`` device still fails loudly.
+With ``JARVIS_STT_DEVICE=auto`` the provider tries the GPU first, with the
+GPU model (``stt_model_gpu``, large-v3-turbo) and the cuBLAS/cuDNN DLLs of
+the ``gpu`` extra on the DLL search path (:mod:`jarvis.stt.cuda_libraries`).
+When CUDA cannot work (no NVIDIA device, or the runtime libraries missing,
+which CTranslate2 reports on load or on the first transcription) it falls
+back once to the CPU model (``stt_model_cpu``, small) in int8, with one
+warning that names what is missing; an explicit ``cuda`` device still
+fails loudly. ``stt_hotwords`` bias decoding towards names Whisper
+otherwise mishears ("Jarvis", "Discord").
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import math
 import re
 import time
 from collections.abc import Callable, Iterable
+from types import ModuleType
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
 import numpy as np
@@ -35,6 +40,7 @@ from jarvis.stt.base import (
     TranscriptionError,
     TranscriptSegment,
 )
+from jarvis.stt.cuda_libraries import register_cuda_libraries
 from jarvis.utils.errors import ConfigError
 from jarvis.utils.logging import get_logger
 
@@ -48,9 +54,14 @@ DEFAULT_BEAM_SIZE: Final = 5
 """faster-whisper's own default; wider beams cost latency for little accuracy."""
 
 AUTO_DEVICE: Final = "auto"
+AUTO_COMPUTE_TYPE: Final = "auto"
+CUDA_DEVICE: Final = "cuda"
 CPU_FALLBACK_DEVICE: Final = "cpu"
 CPU_FALLBACK_COMPUTE_TYPE: Final = "int8"
 """The fastest CPU compute type CTranslate2 offers, used when CUDA cannot load."""
+GPU_DEFAULT_COMPUTE_TYPE: Final = "int8_float16"
+"""int8 weights, float16 maths: as fast as float16 on an RTX 4070 Laptop and
+about 1 GB less VRAM, which matters next to a 7B Ollama model on 8 GB."""
 
 _GPU_LIBRARY_ERROR: Final = re.compile(
     r"cublas|cudnn|cudart|cufft|curand|nvrtc|\bcuda\b.*\b(?:library|dll|driver)\b", re.IGNORECASE
@@ -102,8 +113,13 @@ class WhisperModel(Protocol):
         language: str | None,
         beam_size: int,
         vad_filter: bool,
+        hotwords: str | None,
     ) -> tuple[Iterable[WhisperSegment], WhisperInfo]:
         """Return a lazy segment iterator and the utterance metadata."""
+
+
+class GpuUnavailableError(RuntimeError):
+    """CTranslate2 sees no CUDA device, so the GPU model cannot load at all."""
 
 
 ModelFactory = Callable[[], WhisperModel]
@@ -121,12 +137,14 @@ class FasterWhisperSTT(STT):
         beam_size: int = DEFAULT_BEAM_SIZE,
         vad_filter: bool = False,
         cpu_fallback: ModelFactory | None = None,
+        hotwords: str | None = None,
     ) -> None:
         self._model_factory = model_factory
         self._cpu_fallback = cpu_fallback
         self._language = language
         self._beam_size = beam_size
         self._vad_filter = vad_filter
+        self._hotwords = hotwords.strip() if hotwords and hotwords.strip() else None
         self._model: WhisperModel | None = None
         self._load_lock = asyncio.Lock()
 
@@ -134,25 +152,30 @@ class FasterWhisperSTT(STT):
     def from_settings(cls, settings: Settings, *, language: str | None = None) -> FasterWhisperSTT:
         """Build the real provider from ``Settings`` (model size, device, compute type).
 
-        Only ``stt_device=auto`` gets a CPU fallback: "auto" means "whatever
-        works", while an explicit ``cuda`` must fail loudly if CUDA cannot.
+        ``auto`` and ``cuda`` load the GPU model on CUDA; ``cpu`` (or any
+        other CTranslate2 device) loads the CPU model there. Only ``auto``
+        gets a CPU fallback: "auto" means "whatever works", while an
+        explicit ``cuda`` must fail loudly if CUDA cannot.
         """
         root = str(settings.models_dir / "whisper")
+        on_gpu = settings.stt_device in {AUTO_DEVICE, CUDA_DEVICE}
         factory = _faster_whisper_factory(
-            settings.stt_model,
-            device=settings.stt_device,
-            compute_type=settings.stt_compute_type,
+            settings.whisper_model(gpu=on_gpu),
+            device=CUDA_DEVICE if on_gpu else settings.stt_device,
+            compute_type=_compute_type(settings.stt_compute_type, gpu=on_gpu),
             download_root=root,
         )
         fallback = None
         if settings.stt_device == AUTO_DEVICE:
             fallback = _faster_whisper_factory(
-                settings.stt_model,
+                settings.whisper_model(gpu=False),
                 device=CPU_FALLBACK_DEVICE,
                 compute_type=CPU_FALLBACK_COMPUTE_TYPE,
                 download_root=root,
             )
-        return cls(factory, language=language, cpu_fallback=fallback)
+        return cls(
+            factory, language=language, cpu_fallback=fallback, hotwords=settings.stt_hotwords
+        )
 
     @property
     def loaded(self) -> bool:
@@ -211,8 +234,9 @@ class FasterWhisperSTT(STT):
             return await self._load_cpu_fallback(error)
 
     def _can_fall_back(self, error: Exception) -> bool:
-        """A CPU fallback is left and ``error`` is a missing GPU library."""
-        return self._cpu_fallback is not None and is_gpu_library_error(error)
+        """A CPU fallback is left and ``error`` says the GPU cannot be used."""
+        gpu_unusable = isinstance(error, GpuUnavailableError) or is_gpu_library_error(error)
+        return self._cpu_fallback is not None and gpu_unusable
 
     async def _load_cpu_fallback(self, error: Exception) -> WhisperModel:
         """Load the CPU model; the fallback is used up whether or not it works."""
@@ -246,6 +270,7 @@ class FasterWhisperSTT(STT):
             language=self._language,
             beam_size=self._beam_size,
             vad_filter=self._vad_filter,
+            hotwords=self._hotwords,
         )
         return list(segments), info
 
@@ -262,8 +287,17 @@ def is_gpu_library_error(error: BaseException) -> bool:
 
 def missing_gpu_library(error: BaseException) -> str:
     """The library named in ``error`` (``cublas64_12.dll``), for the warning."""
+    if isinstance(error, GpuUnavailableError):
+        return "a CUDA device"
     match = _LIBRARY_NAME.search(str(error))
     return match.group(0) if match else "a CUDA runtime library"
+
+
+def _compute_type(configured: str, *, gpu: bool) -> str:
+    """``auto`` becomes int8_float16 on the GPU; anything explicit is kept."""
+    if gpu and configured == AUTO_COMPUTE_TYPE:
+        return GPU_DEFAULT_COMPUTE_TYPE
+    return configured
 
 
 def _prepare_audio(samples: Samples, sample_rate: int) -> Samples:
@@ -324,19 +358,34 @@ def _weighted_confidence(segments: tuple[TranscriptSegment, ...]) -> float | Non
     return sum(w * s for w, s in zip(weights, scores, strict=True)) / sum(weights)
 
 
+def _import_faster_whisper() -> ModuleType:
+    try:
+        # Imported lazily by name: an optional, slow-to-import dependency
+        # that text-only mode never needs.
+        return importlib.import_module("faster_whisper")
+    except ImportError as error:
+        raise ConfigError(
+            "faster-whisper is not installed; run 'uv sync --extra cloud' "
+            "or switch to JARVIS_MODE=local once step 12 lands."
+        ) from error
+
+
+def _require_cuda_device() -> None:
+    """Fail fast (and fall back) when CTranslate2 sees no NVIDIA GPU at all."""
+    count = getattr(importlib.import_module("ctranslate2"), "get_cuda_device_count", None)
+    if count is not None and count() == 0:
+        raise GpuUnavailableError("CTranslate2 found no CUDA device")
+
+
 def _faster_whisper_factory(
     model_size: str, *, device: str, compute_type: str, download_root: str
 ) -> ModelFactory:
     def factory() -> WhisperModel:
-        try:
-            # Imported lazily by name: an optional, slow-to-import dependency
-            # that text-only mode never needs.
-            faster_whisper = importlib.import_module("faster_whisper")
-        except ImportError as error:
-            raise ConfigError(
-                "faster-whisper is not installed; run 'uv sync --extra cloud' "
-                "or switch to JARVIS_MODE=local once step 12 lands."
-            ) from error
+        if device == CUDA_DEVICE:
+            register_cuda_libraries()  # before CTranslate2's CUDA backend loads
+        faster_whisper = _import_faster_whisper()
+        if device == CUDA_DEVICE:
+            _require_cuda_device()
         log.info("stt.model_loading", model=model_size, device=device, compute_type=compute_type)
         model = faster_whisper.WhisperModel(
             model_size, device=device, compute_type=compute_type, download_root=download_root
@@ -355,6 +404,16 @@ def _faster_whisper_factory(
 #   fallback every utterance became "Sorry, I didn't catch that". It
 #   covers both places the failure shows up (CTranslate2 loads cuBLAS
 #   lazily, on the first transcription) and logs exactly one warning.
+# - Two model settings instead of one plus a silent downgrade: the right
+#   Whisper size differs by device. large-v3-turbo transcribes 14 s of
+#   Swedish in about 0.6 s on an RTX 4070 Laptop GPU, but is far too slow
+#   on a laptop CPU, where small (about 2.6 s for the same clip) is the
+#   sweet spot. A fallback that kept the GPU model on the CPU would turn a
+#   missing DLL into multi-second answers. JARVIS_STT_MODEL still pins
+#   one model for every device.
+# - Hotwords rather than an initial prompt: faster-whisper adds them to
+#   the decoder prompt without making the model continue a fake previous
+#   sentence, which an initial prompt can do on very short utterances.
 # - The load lock prevents two concurrent first calls from loading the
 #   weights twice; after that it is uncontended.
 # - Confidence is exp(avg_logprob): a well-known approximation, not a

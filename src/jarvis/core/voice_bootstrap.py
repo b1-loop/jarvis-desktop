@@ -11,6 +11,10 @@ degradation ladder from CLAUDE.md:
   :func:`run_voice_mode` falls back to text mode with a clear message.
 * wake-word models missing or broken -> warn once, hotkey-only.
 * TTS failing at runtime -> printed answers (``VoiceOutput``).
+
+It also decides the session's barge-in mode (``core/barge_in_mode.py``):
+with ``JARVIS_BARGE_IN_MODE=auto``, talking over Jarvis interrupts it on
+headphones, and only the wake word (or hotkey, or typing) does on speakers.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from jarvis.audio.engine import (
 from jarvis.audio.models import AudioModelPaths
 from jarvis.config import HudPosition, RuntimeMode, Settings
 from jarvis.core import providers
+from jarvis.core.barge_in_mode import BargeInMode, resolve_barge_in_mode
 from jarvis.core.bootstrap import (
     FrontEnd,
     FrontEndRequest,
@@ -44,10 +49,11 @@ from jarvis.core.bootstrap import (
     run_text_mode,
 )
 from jarvis.core.combined_input import CombinedAnswers, CombinedInput
+from jarvis.core.echo_detector import EchoDetector
 from jarvis.core.hotkey_router import HotkeyRouter
 from jarvis.core.hud_hotkey import HudHotkey
 from jarvis.core.hud_wiring import HudActions
-from jarvis.core.interruption import BargeInController
+from jarvis.core.interruption import BargeInController, InterruptPolicy, SpeakingInputs
 from jarvis.core.orchestrator import Orchestrator, TerminalOutput, Writer
 from jarvis.core.overlay_bridge import OverlayBridge
 from jarvis.core.reply_output import SwitchableOutput, TextReplies
@@ -61,6 +67,8 @@ from jarvis.core.voice_io import (
 )
 from jarvis.core.voice_latency import FirstTokenProbe, TurnTimeline
 from jarvis.core.voice_triggers import AnyTrigger, HotkeyTrigger, TurnTrigger, WakeWordTrigger
+from jarvis.os_integration.audio_endpoint import default_output_endpoint
+from jarvis.os_integration.base import OutputEndpoint
 from jarvis.os_integration.errors import PlatformError
 from jarvis.stt.base import STT
 from jarvis.tts.base import TTS
@@ -83,10 +91,11 @@ from jarvis.utils.logging import get_logger
 log = get_logger(__name__)
 
 MS_PER_SECOND: Final = 1000.0
-GREETING: Final = (
-    "Say '{wake}' or press {hotkey}, then speak. Talk over me to interrupt; Ctrl+C quits."
-)
-HOTKEY_GREETING: Final = "Press {hotkey}, then speak. Talk over me to interrupt; Ctrl+C quits."
+GREETING: Final = "Say '{wake}' or press {hotkey}, then speak. {interrupt}; Ctrl+C quits."
+HOTKEY_GREETING: Final = "Press {hotkey}, then speak. {interrupt}; Ctrl+C quits."
+INTERRUPT_BY_VOICE: Final = "Talk over me to interrupt"
+INTERRUPT_BY_WAKE_WORD: Final = "Say '{wake}' to interrupt me"
+INTERRUPT_BY_HOTKEY: Final = "Press {hotkey} to interrupt me"
 WAKE_WORD_UNAVAILABLE: Final = "The wake word is unavailable ({reason}); the hotkey works. "
 TEXT_FALLBACK: Final = (
     "Voice mode is unavailable: {reason}\nStarting text mode instead; type your requests.\n"
@@ -238,6 +247,8 @@ class VoiceFactories:
     tts: Callable[[Settings], TTS] = build_tts
     overlay: Callable[[Settings], Overlay] = build_overlay
     autostart: Callable[[Settings], Autostart | None] = startup_shortcut
+    output_endpoint: Callable[[], OutputEndpoint | None] = default_output_endpoint
+    microphone_name: Callable[[], str | None] = default_microphone_name
     poll_interval: float = 0.01
 
 
@@ -259,6 +270,12 @@ class _Audio:
     engine: AudioEngine
     wake_word_problem: str | None
     wake_word_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _Triggers:
+    turn: TurnTrigger
+    hotkey: HotkeyTrigger | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +389,7 @@ class VoiceFrontEndBuilder:
         self._factories = factories or VoiceFactories()
         self._write = write or _stdout_write
         self._hooks = hooks or SessionHooks()
+        self._mode: BargeInMode | None = None
 
     async def __call__(self, request: FrontEndRequest) -> FrontEnd:
         """Open the audio devices and assemble voice input and output.
@@ -390,7 +408,7 @@ class VoiceFrontEndBuilder:
             raise VoiceUnavailableError(f"no audio output device: {error}") from error
         stt = await self._load_stt(request.settings)
         hotkeys = HotkeyRouter(request.platform)
-        trigger = await self._trigger(request, audio, hotkeys)
+        triggers = await self._trigger(request, audio, hotkeys)
         overlay = self._overlay(request, audio.engine, speaker)
         front = self._assemble(
             request=request,
@@ -398,7 +416,7 @@ class VoiceFrontEndBuilder:
             speaker=speaker,
             stt=stt,
             tts=tts,
-            trigger=trigger,
+            triggers=triggers,
             overlay=overlay,
         )
         await self._hud_hotkey(request, hotkeys, front)
@@ -453,7 +471,7 @@ class VoiceFrontEndBuilder:
 
     async def _trigger(
         self, request: FrontEndRequest, audio: _Audio, hotkeys: HotkeyRouter
-    ) -> TurnTrigger:
+    ) -> _Triggers:
         triggers: list[TurnTrigger] = []
         if audio.wake_word_active:
             triggers.append(WakeWordTrigger(audio.engine))
@@ -464,10 +482,10 @@ class VoiceFrontEndBuilder:
             log.warning("voice.hotkey.unavailable", hotkey=hotkey.spec, error=str(error))
             if not triggers:
                 raise VoiceUnavailableError(f"no wake word and no hotkey: {error}") from error
-        else:
-            request.stack.push_async_callback(hotkey.aclose)
-            triggers.append(hotkey)
-        return AnyTrigger(triggers)
+            return _Triggers(AnyTrigger(triggers), None)
+        request.stack.push_async_callback(hotkey.aclose)
+        triggers.append(hotkey)
+        return _Triggers(AnyTrigger(triggers), hotkey)
 
     async def _hud_hotkey(
         self, request: FrontEndRequest, hotkeys: HotkeyRouter, front: FrontEnd
@@ -508,16 +526,11 @@ class VoiceFrontEndBuilder:
         speaker: Speaker,
         stt: STT,
         tts: TTS,
-        trigger: TurnTrigger,
+        triggers: _Triggers,
         overlay: _OverlayParts,
     ) -> FrontEnd:
         output, replies = self._outputs(request, speaker, tts, overlay)
-        barge_in = BargeInController(
-            engine=audio.engine,
-            playback=speaker.native,
-            state=request.state,
-            echo_guard_seconds=request.settings.barge_in_echo_guard_ms / MS_PER_SECOND,
-        )
+        barge_in = self._barge_in(request, audio, speaker, triggers)
         output.set_observer(barge_in)
         # System phrases follow "speak replies" too: a silent typed session
         # must not suddenly ask a confirmation question out loud.
@@ -528,7 +541,7 @@ class VoiceFrontEndBuilder:
             audio=audio,
             speaker=speaker,
             stt=stt,
-            trigger=trigger,
+            trigger=triggers.turn,
             timeline=timeline,
             system_voice=system_voice,
         )
@@ -540,6 +553,47 @@ class VoiceFrontEndBuilder:
         request.stack.push_async_callback(inputs.combined.aclose)
         parts = _HudParts(audio=audio, tts=tts, replies=replies, inputs=inputs)
         return self._front_end(request, overlay, parts, system_voice, timeline)
+
+    def _barge_in(
+        self, request: FrontEndRequest, audio: _Audio, speaker: Speaker, triggers: _Triggers
+    ) -> BargeInController:
+        """The controller for this session's barge-in mode (decided once, logged)."""
+        settings = request.settings
+        policy = InterruptPolicy(
+            mode=self._barge_in_mode(settings),
+            wake_threshold=settings.wake_word_threshold,
+            speaking_wake_margin=settings.speaking_wake_margin,
+            self_wake_guard_seconds=settings.self_wake_guard_ms / MS_PER_SECOND,
+            assistant_name=settings.assistant_name,
+        )
+        echo = EchoDetector(
+            ratio=settings.barge_in_echo_ratio,
+            window_seconds=settings.barge_in_echo_window_ms / MS_PER_SECOND,
+        )
+        engine = audio.engine
+        inputs = SpeakingInputs(
+            events=engine,
+            hotkey=triggers.hotkey,
+            levels=lambda: (engine.input_level, speaker.output_level),
+            echo=echo,
+        )
+        return BargeInController(
+            engine=engine,
+            playback=speaker.native,
+            state=request.state,
+            echo_guard_seconds=settings.barge_in_echo_guard_ms / MS_PER_SECOND,
+            policy=policy,
+            inputs=inputs,
+        )
+
+    def _barge_in_mode(self, settings: Settings) -> BargeInMode:
+        if self._mode is None:
+            self._mode = resolve_barge_in_mode(
+                settings.barge_in_mode,
+                endpoint=self._factories.output_endpoint,
+                microphone=self._factories.microphone_name,
+            )
+        return self._mode
 
     def _outputs(
         self, request: FrontEndRequest, speaker: Speaker, tts: TTS, overlay: _OverlayParts
@@ -650,13 +704,22 @@ class VoiceFrontEndBuilder:
         )
 
     def _greeting(self, settings: Settings, audio: _Audio) -> str:
-        hotkey = settings.hotkey
+        hotkey, wake = settings.hotkey, settings.wake_word.title()
+        interrupt = self._interrupt_hint(audio).format(wake=wake, hotkey=hotkey)
         if audio.wake_word_active:
-            return GREETING.format(wake=settings.wake_word.title(), hotkey=hotkey)
-        greeting = HOTKEY_GREETING.format(hotkey=hotkey)
+            return GREETING.format(wake=wake, hotkey=hotkey, interrupt=interrupt)
+        greeting = HOTKEY_GREETING.format(hotkey=hotkey, interrupt=interrupt)
         if audio.wake_word_problem is None:
             return greeting
         return WAKE_WORD_UNAVAILABLE.format(reason=audio.wake_word_problem) + greeting
+
+    def _interrupt_hint(self, audio: _Audio) -> str:
+        """How to interrupt Jarvis in this session, for the greeting."""
+        if self._mode is BargeInMode.VOICE:
+            return INTERRUPT_BY_VOICE
+        if self._mode is BargeInMode.WAKE_WORD and audio.wake_word_active:
+            return INTERRUPT_BY_WAKE_WORD
+        return INTERRUPT_BY_HOTKEY
 
 
 async def run_voice_mode(
@@ -703,6 +766,9 @@ async def run_voice_mode(
 # - The voice hotkey and the HUD hotkey (minimize to the orb) share one
 #   HotkeyRouter: Platform.poll_hotkeys clears what it returns, so two
 #   independent pollers would steal each other's presses.
+# - The barge-in mode is resolved once per builder (and logged): the output
+#   device is read through jarvis_os before anything is spoken, so the
+#   greeting can already say how to interrupt in this session.
 # - Muting stops the audio engine (the device is really closed, which
 #   Windows shows in its microphone indicator) and makes the input ignore
 #   hotkey presses until unmuted.

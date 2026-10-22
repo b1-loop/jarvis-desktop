@@ -20,6 +20,7 @@ add_executable(jarvis_tests
     audio/mp3_decoder_test.cpp
     audio/silero_vad_test.cpp
     audio/open_wake_word_test.cpp
+    os/audio_endpoint_test.cpp
     os/clipboard_test.cpp
     os/hotkey_manager_test.cpp
     os/hotkey_parser_test.cpp

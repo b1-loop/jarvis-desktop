@@ -22,6 +22,7 @@ from jarvis.core.voice_bootstrap import VoiceFactories, VoiceFrontEndBuilder
 from jarvis.core.voice_latency import VOICE_STAGES
 from jarvis.llm.base import TextDelta
 from jarvis.memory.vector_store import InMemoryVectorStore
+from jarvis.os_integration.base import OutputEndpoint
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.ui.overlay import Overlay, StubOverlay
 from tests.agent.llm_fakes import Block, ScriptedLLM, text_round
@@ -69,6 +70,8 @@ class VoiceSession:
             stt=lambda _settings: self.stt,
             tts=lambda _settings: self.tts,
             overlay=lambda _settings: Overlay(StubOverlay()),
+            output_endpoint=lambda: OutputEndpoint("Headphones (USB)", "headphones"),
+            microphone_name=lambda: None,
             poll_interval=0.001,
         )
 
@@ -139,7 +142,8 @@ async def test_barge_in_cancels_the_turn_and_hears_the_new_request(settings: Set
             text_round("Sunny and mild."),
         ]
     )
-    application = await session.build(settings, llm)
+    native_barge_in = settings.model_copy(update={"barge_in_echo_ratio": 0.0})
+    application = await session.build(native_barge_in, llm)
     running = asyncio.create_task(application.run())
 
     await session.speak(application, "Tell me a story.")
