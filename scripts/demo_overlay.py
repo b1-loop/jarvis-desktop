@@ -15,9 +15,19 @@ while the states cycle. While recording, a plain dark backdrop window covers
 the work area behind the overlay so the GIFs never contain whatever happens
 to be open on the desktop.
 
+``--interactive`` scripts the interactive HUD (ADR-0024) instead: the
+hover controls appear, a request is typed into the text field, the typed
+line is injected as a ``SubmitText`` event and read back the way the
+overlay bridge reads it, a scripted answer plays (no LLM, no speech), and
+the HUD expands to its conversation view and collapses again. It uses the
+window's demo hooks, so the real mouse and keyboard focus are never
+touched; ``--record-interactive`` captures it.
+
 Usage::
 
     uv run python scripts/demo_overlay.py
+    uv run python scripts/demo_overlay.py --interactive
+    uv run python scripts/demo_overlay.py --record-interactive docs/media/overlay-interactive.gif
     uv run python scripts/demo_overlay.py --theme amber --intensity max
     uv run python scripts/demo_overlay.py --record docs/media/overlay-boot.gif
     uv run python scripts/demo_overlay.py --record-states docs/media/overlay-states.gif
@@ -32,13 +42,14 @@ import sys
 import time
 import tkinter as tk
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
 from PIL import Image, ImageGrab
 
 from jarvis import _native
+from jarvis.ui.hud_protocol import HistoryRole, SubmitText
 from jarvis.ui.overlay import (
     Overlay,
     OverlayConfig,
@@ -82,6 +93,16 @@ SAMPLE_READOUT: Final = {
     "MODE": "CLOUD",
     "MIC": "Microphone (demo, nothing is recorded)",
 }
+_EXPANDED: Final = (900, 640)
+"""Must match kExpandedWidth/kExpandedHeight in native/overlay/hud_layout.hpp."""
+TYPING_INTERVAL_S: Final = 0.07
+TYPED_REQUEST: Final = "Vad är klockan i Tokyo?"
+TYPED_REPLY: Final = "Klockan är 21:14 i Tokyo."
+SAMPLE_HISTORY: Final = (
+    (HistoryRole.USER, "what's on my calendar today"),
+    (HistoryRole.TOOL, "calendar_agenda · 118 ms"),
+    (HistoryRole.JARVIS, "Two meetings: stand-up at ten and a design review at three."),
+)
 
 LevelFn = Callable[[float], float]
 Box = tuple[int, int, int, int]
@@ -136,6 +157,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--opaque", action="store_true", help="force the whole-window-alpha fallback"
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="scripted HUD interaction (hover controls, typing, expanded view) with timings",
+    )
+    parser.add_argument(
+        "--record-interactive", type=Path, metavar="OUT.gif", help="capture the interaction"
     )
     return parser.parse_args(argv)
 
@@ -321,6 +350,101 @@ def demo(
         report(beat.state.value.lower(), overlay)
 
 
+def interactive_box(config: OverlayConfig) -> Box:
+    """The corner HUD and the default expanded panel that grows out of it."""
+    left, top, _right, _bottom = work_area()
+    scale = dpi_scale()
+    panel = panel_box(config)
+    width = round((_EXPANDED[0] + 2 * _BLEED) * scale)
+    height = round((_EXPANDED[1] + 2 * _BLEED) * scale)
+    return (max(panel[2] - width, left), max(panel[3] - height, top), panel[2], panel[3])
+
+
+def type_into_field(overlay: Overlay, text: str, tick: Callable[[], None]) -> None:
+    """Show ``text`` appearing in the field one character at a time (demo hook)."""
+    for count in range(1, len(text) + 1):
+        overlay._native.set_demo(hover=True, input=text[:count])  # type: ignore[attr-defined]
+        run_for(TYPING_INTERVAL_S, lambda _elapsed: tick())
+
+
+def answer(overlay: Overlay, request: str, reply: str, tick: Callable[[], None]) -> None:
+    """What the session does with a typed request, scripted: no LLM, no speech."""
+    overlay.inject_ui_event(SubmitText(request))
+    submitted = overlay.poll_ui_events()  # exactly what the bridge would receive
+    print(f"bridge received: {submitted}")
+    overlay._native.set_demo(hover=True, input="")  # type: ignore[attr-defined]
+    overlay.set_transcript(request)
+    overlay.add_history(HistoryRole.USER, request)
+    overlay.set_state(OverlayState.LISTENING)
+    overlay.set_state(OverlayState.THINKING)
+    run_for(1.0, lambda _elapsed: tick())
+    overlay.add_history(HistoryRole.TOOL, "current_time · 4 ms")
+    overlay.set_response(reply)
+    overlay.set_state(OverlayState.SPEAKING)
+
+    def speak(elapsed: float) -> None:
+        overlay.push_level(voice_envelope(elapsed))
+        tick()
+
+    run_for(1.6, speak)
+    overlay.add_history(HistoryRole.JARVIS, reply)
+    overlay.set_state(OverlayState.IDLE)
+
+
+def interactive_demo(overlay: Overlay, tick: Callable[[], None]) -> None:
+    """Hover, type a request, answer it, expand, collapse; timings per phase."""
+    native = overlay._native  # demo hooks and frame stats live on the native window
+    native.reset_frame_stats()  # type: ignore[attr-defined]
+    run_for(2.0, lambda _elapsed: tick())
+    report("idle", overlay)
+    native.set_demo(hover=True)  # type: ignore[attr-defined]
+    run_for(2.0, lambda _elapsed: tick())
+    report("hover", overlay)
+    type_into_field(overlay, TYPED_REQUEST, tick)
+    answer(overlay, TYPED_REQUEST, TYPED_REPLY, tick)
+    report("typing", overlay)
+    overlay.set_expanded(True)
+    run_for(0.6, lambda _elapsed: tick())
+    native.reset_frame_stats()  # type: ignore[attr-defined]
+    run_for(2.5, lambda _elapsed: tick())
+    report("expanded", overlay)
+    overlay.set_expanded(False)
+    native.set_demo(hover=False)  # type: ignore[attr-defined]
+    run_for(1.5, lambda _elapsed: tick())
+    report("collapse", overlay)
+
+
+def run_interactive(args: argparse.Namespace, config: OverlayConfig) -> int:
+    """The ``--interactive`` / ``--record-interactive`` mode."""
+    backdrop = Backdrop() if args.record_interactive is not None else None
+    try:
+        overlay = create_native_overlay(replace(config, boot_animation=False))
+    except (NativeUnavailableError, OverlayError) as error:
+        print(f"Overlay unavailable: {error}", file=sys.stderr)
+        return 1
+    recorder = Recorder(interactive_box(config), STATES_FPS, STATES_BUDGET_BYTES)
+
+    def tick() -> None:
+        if backdrop is not None:
+            backdrop.pump()
+        recorder.tick(time.perf_counter())
+
+    with overlay:
+        for line in SAMPLE_HISTORY:
+            overlay.add_history(*line)
+        run_for(SETTLE_S, lambda _elapsed: tick())
+        # Armed only once the HUD is on screen: the GIF's palette comes from
+        # the first frame, and a frame of bare backdrop has no HUD colours.
+        recorder.armed = args.record_interactive is not None
+        interactive_demo(overlay, tick)
+    if backdrop is not None:
+        backdrop.close()
+    if args.record_interactive is not None:
+        size = recorder.save(args.record_interactive)
+        print(f"wrote {args.record_interactive} ({size / 1e6:.2f} MB)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the demo; returns a process exit code."""
     args = parse_args(argv)
@@ -334,6 +458,13 @@ def main(argv: list[str] | None = None) -> int:
         size=OverlaySize(args.size),
         transparent=not args.opaque,
     )
+    if args.interactive or args.record_interactive is not None:
+        return run_interactive(args, config)
+    return run_states(args, config)
+
+
+def run_states(args: argparse.Namespace, config: OverlayConfig) -> int:
+    """The default mode: boot, then the four states, optionally recorded."""
     recording = args.record is not None or args.record_states is not None
     backdrop = Backdrop() if recording else None
     try:
