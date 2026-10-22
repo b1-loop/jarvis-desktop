@@ -13,7 +13,8 @@ onboarding guide for anyone (including future me) touching the code.
 | CMake | ≥ 3.28 | native build |
 | Ninja | any | fast native builds, required by the CMake presets |
 | MSVC | VS 2022 17.10+ or VS 2026 | C++20 compiler on Windows |
-| LLVM | ≥ 18 | `clang-format` and `clang-tidy` |
+| LLVM | 23 | `clang-tidy`, and `clang-format` for editors (the hook pins its own 23.1.3) |
+| sccache | any | only to reproduce CI locally with the `ci-windows` preset (`winget install Mozilla.sccache`) |
 
 ## First-time setup
 
@@ -53,6 +54,49 @@ clear message when `native/third_party/` is empty.
 4. Commit with [Conventional Commits](https://www.conventionalcommits.org/):
    `feat(audio): add ring buffer`, `fix(agent): handle empty tool result`, `docs: add ADR-0003`.
 5. Push and open a pull request. CI must be green before merging.
+
+## Tool versions: one source of truth
+
+The pre-commit hooks, a terminal and CI must agree on formatter and linter
+versions, otherwise two versions fight over the same lines (ruff 0.7 and 0.17
+disagreed about which `noqa` comments were needed, and code was bent around
+that). So each tool has exactly one pin:
+
+| Tool | Pinned in | Used by |
+| --- | --- | --- |
+| ruff, mypy | `uv.lock` | `uv run ...` in a terminal, the `repo: local` hooks in `.pre-commit-config.yaml`, CI |
+| clang-format | `.pre-commit-config.yaml` (`mirrors-clang-format` 23.1.3) | the hook and CI's `clang-format check`, which runs that hook; LLVM 23 on the dev machine matches the major version |
+| clang-tidy | the LLVM installation | local `--tidy`, and the runner image's LLVM in CI (printed by the `clang-tidy` job) |
+
+To upgrade ruff or mypy, bump them with `uv lock --upgrade-package ruff`; the
+hooks follow automatically. To upgrade clang-format, change the hook `rev`,
+run `uv run pre-commit run clang-format --all-files`, and commit the result
+on its own.
+
+## CI caches
+
+The Windows native lane spent most of its time on work that does not change
+between pushes. Four caches cut it down; none of them skips a check.
+
+| Cache | What | Key | Why it is safe |
+| --- | --- | --- | --- |
+| FetchContent | miniaudio, the ONNX Runtime zip, Catch2 and Dear ImGui sources in `native/build/_fetchcontent` (`FETCHCONTENT_BASE_DIR` in the `ci-windows` preset) | hash of the three `CMakeLists.txt` that declare FetchContent, falling back to the newest cache | FetchContent re-checks every dependency against its declaration (URL hash, git tag) and downloads again when it changed |
+| sccache | compiled objects, including whisper.cpp, llama.cpp and ggml | content hash of each compile, stored in the GitHub Actions cache | the compiler output for identical input is identical; a miss just compiles. `CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded` (`/Z7`) keeps objects cacheable should a target request debug info, because `/Zi` writes a shared PDB that sccache cannot cache |
+| ONNX models | the audio models (`scripts/download_models.py` without `--local`) | hash of `src/jarvis/audio/models.py` | the script verifies each file's SHA-256 and re-downloads a mismatch |
+| uv | wheels for `uv sync`, on every job | `uv.lock` (setup-uv default) | `UV_FROZEN=1` installs exactly the lock file. setup-uv v4 talked to the retired cache API and never restored anything ("Cache service responded with 400"), hence the bump |
+
+LOCAL-mode models (whisper.cpp and llama.cpp, 570 MB) are not downloaded in CI;
+the model-backed inference tests skip themselves when the files are absent,
+while the wrappers' logic is covered by the model-free tests.
+
+clang-tidy runs in its own `clang-tidy` job, parallel to the build, and lints
+one translation unit per process (`--jobs`, default: CPU count). Locally,
+`--tidy` keeps building first; `--tidy-only` configures and lints without
+building.
+
+To reproduce the CI build locally, install sccache and run
+`uv run python scripts/build_native.py --preset ci-windows`. Day-to-day work
+uses `windows-release` or `windows-debug`, which need neither.
 
 ## Code rules
 
