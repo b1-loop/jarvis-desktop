@@ -7,7 +7,14 @@ from pathlib import Path
 
 from jarvis.app.autostart import StartupShortcut
 from jarvis.app.restart import Relaunch, relaunch_command
-from jarvis.app.shortcuts import Launcher, Manifest, ShortcutLocation, ShortcutSpec
+from jarvis.app.shortcuts import (
+    Launcher,
+    Manifest,
+    ShortcutKind,
+    ShortcutLocation,
+    ShortcutSlot,
+    ShortcutSpec,
+)
 
 
 def test_the_relaunch_command_restarts_the_windowless_app() -> None:
@@ -68,7 +75,8 @@ def test_start_with_windows_creates_and_removes_only_the_startup_shortcut(tmp_pa
     desktop = writer.folder(ShortcutLocation.DESKTOP) / "Jarvis.lnk"
     desktop.write_text("lnk", encoding="utf-8")
     manifest = Manifest(tmp_path / "data" / "desktop-shortcuts.json")
-    manifest.save({ShortcutLocation.DESKTOP: desktop})
+    desktop_slot = ShortcutSlot(ShortcutKind.JARVIS, ShortcutLocation.DESKTOP)
+    manifest.save({desktop_slot: desktop})
     assert not autostart.enabled()
 
     autostart.set_enabled(True)
@@ -78,7 +86,7 @@ def test_start_with_windows_creates_and_removes_only_the_startup_shortcut(tmp_pa
     autostart.set_enabled(False)
     assert not autostart.enabled()
     assert desktop.exists()
-    assert manifest.load() == {ShortcutLocation.DESKTOP: desktop}
+    assert manifest.load() == {desktop_slot: desktop}
 
 
 def test_a_shortcut_deleted_in_explorer_reads_as_off(tmp_path: Path) -> None:

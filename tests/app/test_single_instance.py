@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -9,6 +9,7 @@ import pytest
 from jarvis.app.single_instance import (
     LOOPBACK,
     Handoff,
+    HandoverRequest,
     InstanceLock,
     InstanceServer,
     ask_running_instance_to_show,
@@ -103,8 +104,8 @@ def test_garbled_handoff_is_none(tmp_path: Path, content: str) -> None:
 
 async def test_second_launch_asks_the_running_one_to_show(tmp_path: Path) -> None:
     path = tmp_path / "jarvis.instance"
-    shown: list[bool] = []
-    server = InstanceServer(lambda: shown.append(True), path)
+    shown: list[HandoverRequest] = []
+    server = InstanceServer(shown.append, path)
     await server.start()
     try:
         published = read_handoff(path)
@@ -112,16 +113,53 @@ async def test_second_launch_asks_the_running_one_to_show(tmp_path: Path) -> Non
         assert published.pid == os.getpid()
 
         assert await ask_running_instance_to_show(path)
-        assert shown == [True]
+        assert shown == [HandoverRequest.SHOW]
     finally:
         await server.aclose()
     assert not path.exists()
 
 
+async def test_a_hud_only_request_reaches_the_running_one(tmp_path: Path) -> None:
+    path = tmp_path / "jarvis.instance"
+    shown: list[HandoverRequest] = []
+    server = InstanceServer(shown.append, path)
+    await server.start()
+    try:
+        assert await ask_running_instance_to_show(path, request=HandoverRequest.SHOW_HUD)
+        assert shown == [HandoverRequest.SHOW_HUD]
+    finally:
+        await server.aclose()
+
+
+@pytest.mark.parametrize(
+    "line_for",
+    [lambda token: f"explode {token}", lambda _token: "show", lambda token: f"show {token}x"],
+)
+async def test_an_unknown_command_or_a_bad_token_is_rejected(
+    tmp_path: Path, line_for: Callable[[str], str]
+) -> None:
+    path = tmp_path / "jarvis.instance"
+    shown: list[HandoverRequest] = []
+    server = InstanceServer(shown.append, path)
+    await server.start()
+    try:
+        handoff = read_handoff(path)
+        assert handoff is not None
+        reader, writer = await asyncio.open_connection(LOOPBACK, handoff.port)
+        writer.write((line_for(handoff.token) + "\n").encode())
+        await writer.drain()
+        assert await reader.read() == b""  # closed without the acknowledgement
+        writer.close()
+        await writer.wait_closed()
+        assert shown == []
+    finally:
+        await server.aclose()
+
+
 async def test_a_request_without_the_token_is_ignored(tmp_path: Path) -> None:
     path = tmp_path / "jarvis.instance"
-    shown: list[bool] = []
-    server = InstanceServer(lambda: shown.append(True), path)
+    shown: list[HandoverRequest] = []
+    server = InstanceServer(shown.append, path)
     await server.start()
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -149,7 +187,7 @@ async def test_ping_to_a_dead_port_is_false(tmp_path: Path) -> None:
 
 
 async def test_server_close_is_idempotent(tmp_path: Path) -> None:
-    server = InstanceServer(lambda: None, tmp_path / "jarvis.instance")
+    server = InstanceServer(lambda _request: None, tmp_path / "jarvis.instance")
     await server.aclose()
     await server.start()
     await server.aclose()

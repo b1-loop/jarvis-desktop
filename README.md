@@ -436,8 +436,10 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
   - **Hover controls** fade in over the HUD: keyboard (type a request),
     microphone (mute), power (quit, asks "QUIT JARVIS?" first), gear
     (settings), arrows (expand / collapse), bar-and-orb (minimize) and
-    cross (hide; the tray's "Toggle overlay" brings it back). With the HUD focused, Tab moves
-    between them and Enter or Space activates.
+    cross (hide until needed: the next wake word or voice hotkey brings
+    it back with the wake ripple, and so do opening Jarvis again and the
+    tray's "Toggle overlay"). With the HUD focused, Tab moves between them
+    and Enter or Space activates.
   - **Typing.** Click the keyboard control or the text field, type, press
     Enter. The request goes to the same conversation as voice; typing while
     Jarvis speaks interrupts it like talking over it does, and a typed "yes"
@@ -471,7 +473,10 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
     Everything around it is click-through and it never takes the keyboard.
     Click (or double-click) the orb to restore the HUD, drag it to move it
     (same snapping as the HUD). Whether you left it minimized, and where
-    you put the orb, is remembered for the next start.
+    you put the orb, is remembered for the next start; the start-up
+    animation still plays in the full HUD and then shrinks into the orb.
+    A wake word or the voice hotkey keeps your orb an orb (shown again if
+    you had hidden it); opening Jarvis again restores the full HUD.
   - **Auto-minimize** (`JARVIS_HUD_AUTO_MINIMIZE_SECONDS`, or "Auto-minimize
     to the orb" in the settings, default off): after that many idle seconds
     with the cursor elsewhere the HUD shrinks by itself, pops back when the
@@ -502,14 +507,25 @@ your Startup folder (`shell:startup`), so Jarvis starts with Windows. Each
 one runs `uvw run --project <checkout> jarvis --background`: no console
 window, the tray icon is the app. On start you get one notification,
 "Jarvis is listening; say 'Hey Jarvis' or press Ctrl+Alt+J" (it also tends
-to wake on the Swedish "Hej Jarvis"). Double-click the tray icon or pick
-Show dashboard to open the dashboard. Opening a shortcut while Jarvis is
-already running brings that one forward instead of starting a second one.
-If Ollama is the LLM and is not running, Jarvis starts it, hidden.
+to wake on the Swedish "Hej Jarvis"), and the HUD plays its start-up
+animation. Double-click the tray icon or pick Show dashboard to open the
+dashboard. If Ollama is the LLM and is not running, Jarvis starts it,
+hidden.
+
+Opening a shortcut while Jarvis is already running brings that one
+forward instead of starting a second one: the HUD comes back if you had
+closed it, grows back from the orb if you had minimized it, and replays
+the whole start-up animation with its MODEL / MODE / MIC readout; the
+**Jarvis** shortcut also opens the dashboard, as before. A second
+shortcut, **Jarvis HUD** (desktop and Start menu, own icon in the
+listening colour), runs the same command with `--show-hud`: just the HUD
+and its animation, no dashboard, and when Jarvis is not running it starts
+it normally ([ADR-0025](docs/adr/0025-relaunch-replays-the-hud.md)).
 
 - **Choose what to create:** `--no-desktop`, `--no-start-menu`,
-  `--autostart` / `--no-autostart` (the options describe the end state, so
-  `--no-autostart` removes an autostart shortcut made earlier).
+  `--autostart` / `--no-autostart`, `--no-hud` (the options describe the
+  end state, so `--no-autostart` removes an autostart shortcut made
+  earlier and `--no-hud` the Jarvis HUD shortcuts).
 - **Remove it:** `uv run python scripts/install_shortcuts.py --uninstall`
   deletes exactly the shortcuts the script created (recorded in
   `data/desktop-shortcuts.json`).

@@ -428,16 +428,24 @@ and registers the `hud_toggle_hotkey` (`core/hud_hotkey.py`) through a
 `core/hotkey_router.py` shared with the voice hotkey so neither consumer
 steals the other's presses.
 
+Closing the HUD hides it until it is needed (ADR-0025): the overlay
+bridge shows it again on the next `WakeWordHeard` (wake word or voice
+hotkey) with the ordinary wake ripple, keeping an orb an orb, and a
+launch while Jarvis runs replays the full boot (`Overlay.replay_boot`).
+
 ### Desktop app
 
 `scripts/install_shortcuts.py` writes desktop, Start-menu and (optionally)
 Startup shortcuts that run `uvw run --project <checkout> jarvis
---background`. `--background` (or a process without stdout) selects the
+--background`, plus "Jarvis HUD" desktop and Start-menu shortcuts that add
+`--show-hud`. `--background` (or a process without stdout) selects the
 windowless session in `jarvis.app.background`: logs go to a rotating
 JSON-lines file (`data/logs/jarvis.log`), an OS file lock
 (`data/jarvis.lock`) keeps one instance and a second launch asks the first,
 over a loopback socket served on the event loop with a random token, to
-show its dashboard; Ollama is started hidden when it is the LLM and not
+come forward (`HandoverRequest`): `HudActions.bring_forward` shows the
+HUD, restores it from the orb and replays the boot through the native
+`replayBoot`, and the plain shortcut also shows the dashboard (ADR-0025); Ollama is started hidden when it is the LLM and not
 answering; voice mode runs with the dashboard hidden and the tray icon as
 the only surface. A failure is reported as a notification plus a tray
 tooltip naming the log (ADR-0021).

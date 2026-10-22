@@ -11,6 +11,7 @@ from jarvis.core.hud_wiring import EXPANDED_BOUNDS_KEY, POSITION_KEY, HudActions
 from jarvis.core.ui_wiring import AppControls
 from jarvis.ui.hud_protocol import HistoryRole, PlacementChanged, SettingsPage
 from jarvis.ui.hud_settings import SettingsController
+from jarvis.ui.overlay import BootInfo
 from jarvis.user_settings import UserSettingsStore, user_settings_path
 
 MakeSettings = Callable[..., Settings]
@@ -23,10 +24,31 @@ class FakeOverlay:
         self.history: list[tuple[HistoryRole, str]] = []
         self.pages: list[SettingsPage] = []
         self.is_minimized = False
+        self.is_visible = True
+        self.is_expanded = False
+        self.replays: list[BootInfo | None] = []
 
     @property
     def minimized(self) -> bool:
         return self.is_minimized
+
+    @property
+    def visible(self) -> bool:
+        return self.is_visible
+
+    def show(self) -> None:
+        self.is_visible = True
+
+    @property
+    def expanded(self) -> bool:
+        return self.is_expanded
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.is_expanded = expanded
+
+    def replay_boot(self, info: BootInfo | None = None) -> bool:
+        self.replays.append(info)
+        return True
 
     def minimize(self) -> None:
         self.is_minimized = True
@@ -36,6 +58,7 @@ class FakeOverlay:
 
     def hide(self) -> None:
         self.hidden += 1
+        self.is_visible = False
 
     def set_transcript(self, text: str) -> None:
         self.transcripts.append(text)
@@ -105,6 +128,35 @@ def test_close_hides_and_quit_goes_through_the_app_controls(
 
     assert overlay.hidden == 1
     assert stopped == [True]
+
+
+async def test_bring_forward_reopens_a_closed_hud_and_replays_the_boot(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    readout = {"MODEL": "qwen2.5:7b", "MODE": "CLOUD", "MIC": "Mic"}
+    hud, overlay, _typed, _store = actions(make_settings, tmp_path, boot_readout=lambda: readout)
+    hud.close()
+
+    await hud.bring_forward()
+
+    assert overlay.visible
+    assert overlay.replays == [readout]
+
+
+def test_app_controls_bring_the_hud_forward_off_the_callback() -> None:
+    async def scenario() -> list[str]:
+        calls: list[str] = []
+
+        async def forward() -> None:
+            calls.append("forward")
+
+        controls = AppControls(stop=lambda: None, bring_hud_forward=forward)
+        controls.bring_hud_forward()
+        AppControls(stop=lambda: None).bring_hud_forward()  # no HUD: logged no-op
+        await asyncio.sleep(0)
+        return calls
+
+    assert asyncio.run(scenario()) == ["forward"]
 
 
 async def test_mute_uses_the_microphone_until_the_controls_are_bound(

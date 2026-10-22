@@ -7,8 +7,10 @@ holds everything it does so it is type-checked and tested:
   next to the ``uv`` on PATH (``uvw run --project <repo> jarvis
   --background``), or the checkout's ``.venv`` ``pythonw.exe``
   (``-m jarvis --background``) when uv is not on PATH.
-* :func:`build_shortcut_spec` is a pure function from folder, launcher and
-  repository to the ``.lnk`` fields.
+* :func:`build_shortcut_spec` is a pure function from folder, launcher,
+  repository and :class:`ShortcutKind` to the ``.lnk`` fields. Two kinds
+  exist: **Jarvis** (the app) and **Jarvis HUD** (``--show-hud``: bring the
+  HUD forward with its boot animation, without the dashboard; ADR-0025).
 * :class:`ShortcutWriter` is the effect: :class:`PowerShellShortcutWriter`
   drives the ``WScript.Shell`` COM object through PowerShell, so no Python
   COM dependency is needed.
@@ -31,14 +33,18 @@ from typing import Final, Protocol
 from jarvis.utils.errors import JarvisError
 
 SHORTCUT_FILENAME: Final = "Jarvis.lnk"
+HUD_SHORTCUT_FILENAME: Final = "Jarvis HUD.lnk"
 WINDOW_STYLE_MINIMIZED: Final = 7
 """``IWshShortcut.WindowStyle``: 1 normal, 3 maximised, 7 minimised."""
 DESCRIPTION: Final = "Jarvis voice assistant (runs in the notification area)"
+HUD_DESCRIPTION: Final = "Show the Jarvis HUD and play its start-up animation"
 MANIFEST_FILENAME: Final = "desktop-shortcuts.json"
 UV_EXECUTABLE: Final = "uv"
 UVW_FILENAME: Final = "uvw.exe"
 VENV_PYTHONW: Final = Path(".venv") / "Scripts" / "pythonw.exe"
 BACKGROUND_FLAG: Final = "--background"
+SHOW_HUD_FLAG: Final = "--show-hud"
+_KEY_SEPARATOR: Final = ":"
 _POWERSHELL: Final = ("powershell.exe", "-NoProfile", "-NonInteractive", "-Command")
 _ENV_PREFIX: Final = "JARVIS_LNK_"
 
@@ -53,6 +59,58 @@ class ShortcutLocation(StrEnum):
     DESKTOP = "Desktop"
     START_MENU = "Programs"
     STARTUP = "Startup"
+
+
+class ShortcutKind(StrEnum):
+    """Which launch a shortcut makes; the value tags its manifest entries."""
+
+    JARVIS = "jarvis"
+    HUD = "hud"
+
+
+@dataclass(frozen=True, slots=True)
+class KindDetails:
+    """The fields that differ between the kinds of shortcut."""
+
+    filename: str
+    description: str
+    extra_arguments: tuple[str, ...] = ()
+
+
+KIND_DETAILS: Final[Mapping[ShortcutKind, KindDetails]] = {
+    ShortcutKind.JARVIS: KindDetails(SHORTCUT_FILENAME, DESCRIPTION),
+    ShortcutKind.HUD: KindDetails(HUD_SHORTCUT_FILENAME, HUD_DESCRIPTION, (SHOW_HUD_FLAG,)),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ShortcutSlot:
+    """One shortcut the tool manages: a kind in a location.
+
+    The manifest key of the original Jarvis shortcut is the bare location
+    (``"Desktop"``), so manifests written before the HUD shortcut existed
+    still load; other kinds add ``":<kind>"``.
+    """
+
+    kind: ShortcutKind
+    location: ShortcutLocation
+
+    @property
+    def key(self) -> str:
+        """The manifest key."""
+        if self.kind is ShortcutKind.JARVIS:
+            return self.location.value
+        return f"{self.location.value}{_KEY_SEPARATOR}{self.kind.value}"
+
+    @classmethod
+    def from_key(cls, key: str) -> ShortcutSlot:
+        """The slot a manifest key names.
+
+        Raises:
+            ValueError: If the location or kind is unknown.
+        """
+        location, _, kind = key.partition(_KEY_SEPARATOR)
+        return cls(ShortcutKind(kind or ShortcutKind.JARVIS.value), ShortcutLocation(location))
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,14 +169,26 @@ def resolve_launcher(repo: Path, which: Callable[[str], str | None] = shutil.whi
     )
 
 
-def build_shortcut_spec(folder: Path, launcher: Launcher, repo: Path, icon: Path) -> ShortcutSpec:
-    """The shortcut ``folder/Jarvis.lnk`` that starts ``launcher`` in ``repo``."""
+def build_shortcut_spec(
+    folder: Path,
+    launcher: Launcher,
+    repo: Path,
+    icon: Path,
+    kind: ShortcutKind = ShortcutKind.JARVIS,
+) -> ShortcutSpec:
+    """The ``kind`` shortcut in ``folder`` that starts ``launcher`` in ``repo``.
+
+    ``Jarvis.lnk`` runs the launcher as resolved; ``Jarvis HUD.lnk`` adds
+    ``--show-hud``.
+    """
+    details = KIND_DETAILS[kind]
     return ShortcutSpec(
-        path=folder / SHORTCUT_FILENAME,
+        path=folder / details.filename,
         target=launcher.target,
-        arguments=subprocess.list2cmdline(launcher.arguments),
+        arguments=subprocess.list2cmdline((*launcher.arguments, *details.extra_arguments)),
         working_directory=repo,
         icon=icon,
+        description=details.description,
     )
 
 
@@ -193,13 +263,13 @@ class PowerShellShortcutWriter:
 
 @dataclass(frozen=True, slots=True)
 class ShortcutPlan:
-    """What the user asked for: each location is wanted or not."""
+    """What the user asked for: each slot is wanted or not; absent slots are left alone."""
 
-    wanted: Mapping[ShortcutLocation, bool]
+    wanted: Mapping[ShortcutSlot, bool]
 
 
 class Manifest:
-    """The record of shortcuts this tool created, keyed by location.
+    """The record of shortcuts this tool created, keyed by slot (:attr:`ShortcutSlot.key`).
 
     Args:
         path: The JSON file, normally ``data/desktop-shortcuts.json``.
@@ -208,7 +278,7 @@ class Manifest:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def load(self) -> dict[ShortcutLocation, Path]:
+    def load(self) -> dict[ShortcutSlot, Path]:
         """Recorded shortcuts; empty when nothing was installed yet.
 
         Raises:
@@ -218,17 +288,17 @@ class Manifest:
             return {}
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            return {ShortcutLocation(key): Path(value) for key, value in raw.items()}
+            return {ShortcutSlot.from_key(key): Path(value) for key, value in raw.items()}
         except (ValueError, AttributeError) as error:
             raise ShortcutError(f"{self._path} is not a shortcut manifest: {error}") from error
 
-    def save(self, entries: Mapping[ShortcutLocation, Path]) -> None:
+    def save(self, entries: Mapping[ShortcutSlot, Path]) -> None:
         """Replace the record; an empty record deletes the file."""
         if not entries:
             self._path.unlink(missing_ok=True)
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        data = {location.value: str(path) for location, path in entries.items()}
+        data = {slot.key: str(path) for slot, path in entries.items()}
         self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -236,21 +306,27 @@ def apply_plan(
     plan: ShortcutPlan,
     writer: ShortcutWriter,
     manifest: Manifest,
-    make_spec: Callable[[Path], ShortcutSpec],
-) -> dict[ShortcutLocation, Path]:
+    make_spec: Callable[[ShortcutSlot, Path], ShortcutSpec],
+) -> dict[ShortcutSlot, Path]:
     """Create the wanted shortcuts and remove recorded ones that are no longer wanted.
+
+    Args:
+        plan: What should exist afterwards.
+        writer: Resolves folders and writes ``.lnk`` files.
+        manifest: The record of what this tool created.
+        make_spec: The shortcut for a slot, given its folder.
 
     Returns:
         The shortcuts that exist afterwards, as recorded in the manifest.
     """
     entries = manifest.load()
-    for location, wanted in plan.wanted.items():
+    for slot, wanted in plan.wanted.items():
         if wanted:
-            spec = make_spec(writer.folder(location))
+            spec = make_spec(slot, writer.folder(slot.location))
             writer.create(spec)
-            entries[location] = spec.path
-        elif location in entries:
-            entries.pop(location).unlink(missing_ok=True)
+            entries[slot] = spec.path
+        elif slot in entries:
+            entries.pop(slot).unlink(missing_ok=True)
     manifest.save(entries)
     return entries
 
@@ -286,5 +362,9 @@ def _remove(paths: Iterable[Path]) -> list[Path]:
 #   Manager's Startup apps lists it), and uninstall is a file delete.
 # - The manifest is the only source of what to delete. Uninstall never
 #   globs for "Jarvis.lnk", so a shortcut the user made by hand survives.
+# - The HUD shortcut is a second kind, not a second tool: same launcher,
+#   same manifest, one extra flag. Manifest keys of the original shortcut
+#   stay bare location names so an existing data/desktop-shortcuts.json is
+#   still understood (and --uninstall still finds what it recorded).
 # - Arguments are quoted with subprocess.list2cmdline, the same rules the
 #   C runtime uses to split them again in uvw/pythonw.

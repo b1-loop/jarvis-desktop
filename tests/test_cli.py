@@ -11,8 +11,10 @@ from jarvis.__main__ import (
     EXIT_STARTUP_FAILED,
     LaunchOptions,
     app,
+    handover_request,
     load_settings,
 )
+from jarvis.app.single_instance import HandoverRequest
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core import bootstrap
 from jarvis.utils.errors import NativeUnavailableError
@@ -115,10 +117,10 @@ def test_mode_flag_absent_keeps_environment_value() -> None:
 def test_background_flag_runs_the_windowless_app(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    calls: list[bool] = []
+    calls: list[tuple[bool, HandoverRequest]] = []
 
-    def windowless(settings: object, *, wake_word: bool) -> int:
-        calls.append(wake_word)
+    def windowless(settings: object, *, wake_word: bool, request: HandoverRequest) -> int:
+        calls.append((wake_word, request))
         return 0
 
     monkeypatch.setattr(cli, "run_windowless", windowless)
@@ -128,8 +130,32 @@ def test_background_flag_runs_the_windowless_app(
     )
 
     assert result.exit_code == 0
-    assert calls == [False]
+    assert calls == [(False, HandoverRequest.SHOW)]
     assert result.output == ""  # nothing is printed without a console
+
+
+def test_show_hud_runs_the_windowless_app_asking_for_the_hud_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    requests: list[HandoverRequest] = []
+
+    def windowless(settings: object, *, wake_word: bool, request: HandoverRequest) -> int:
+        requests.append(request)
+        return 0
+
+    monkeypatch.setattr(cli, "run_windowless", windowless)
+    # A console is attached: --show-hud alone must still mean the desktop session.
+    monkeypatch.setattr(cli, "is_windowless", lambda **kwargs: kwargs["background"])
+
+    result = runner.invoke(app, ["--show-hud"], env={"JARVIS_DATA_DIR": str(tmp_path)})
+
+    assert result.exit_code == 0
+    assert requests == [HandoverRequest.SHOW_HUD]
+
+
+def test_handover_request_follows_the_flag() -> None:
+    assert handover_request(show_hud=False) is HandoverRequest.SHOW
+    assert handover_request(show_hud=True) is HandoverRequest.SHOW_HUD
 
 
 def test_missing_stdout_also_means_windowless(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,7 +168,9 @@ def test_missing_stdout_also_means_windowless(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_help_mentions_background() -> None:
-    assert "--background" in runner.invoke(app, ["--help"]).output
+    output = runner.invoke(app, ["--help"]).output
+    assert "--background" in output
+    assert "--show-hud" in output
 
 
 def test_launch_options_are_immutable() -> None:

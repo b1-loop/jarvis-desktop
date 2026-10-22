@@ -101,6 +101,11 @@ GPU:        swap chain   light layer (R11G11B10_FLOAT, cleared)                 
 
 `skipBoot()` and any state other than Idle jump to act 4, so the panel still
 whips into place. `playBoot(readout)` is idempotent; the first readout wins.
+`replayBoot(readout)` is the deliberate exception (ADR-0025): it restarts the
+whole sequence with a fresh readout, even after the first boot or while one
+plays, and is skipped to the hand-off at once when the state is not Idle. A
+launch of an already running Jarvis uses it. An orb the user chose waits for
+the hand-off and shrinks back, as after the start-up boot.
 
 ## Corner HUD
 

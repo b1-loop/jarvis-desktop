@@ -4,16 +4,20 @@ from pathlib import Path
 
 import pytest
 
-from jarvis.app.icon import ICON_PATH
+from jarvis.app.icon import HUD_ICON_PATH, ICON_PATH
 from jarvis.app.shortcuts import (
+    HUD_DESCRIPTION,
+    HUD_SHORTCUT_FILENAME,
     SHORTCUT_FILENAME,
     WINDOW_STYLE_MINIMIZED,
     Launcher,
     Manifest,
     PowerShellShortcutWriter,
     ShortcutError,
+    ShortcutKind,
     ShortcutLocation,
     ShortcutPlan,
+    ShortcutSlot,
     ShortcutSpec,
     apply_plan,
     build_shortcut_spec,
@@ -92,6 +96,52 @@ def test_spec_quotes_arguments_and_starts_minimised_in_the_checkout(
     assert spec.window_style == WINDOW_STYLE_MINIMIZED
 
 
+def test_the_hud_shortcut_adds_show_hud_and_its_own_name_and_icon(
+    tmp_path: Path, repo: Path
+) -> None:
+    launcher = Launcher(
+        tmp_path / "uvw.exe", ("run", "--project", str(repo), "jarvis", "--background")
+    )
+
+    spec = build_shortcut_spec(
+        tmp_path / "Desktop", launcher, repo, HUD_ICON_PATH, ShortcutKind.HUD
+    )
+
+    assert spec.path == tmp_path / "Desktop" / HUD_SHORTCUT_FILENAME
+    assert spec.arguments == f'run --project "{repo}" jarvis --background --show-hud'
+    assert spec.icon == HUD_ICON_PATH
+    assert spec.description == HUD_DESCRIPTION
+
+
+def test_hud_icon_is_its_own_committed_file() -> None:
+    assert HUD_ICON_PATH.is_file()
+    assert HUD_ICON_PATH.read_bytes() != ICON_PATH.read_bytes()
+
+
+@pytest.mark.parametrize("kind", list(ShortcutKind))
+@pytest.mark.parametrize("location", list(ShortcutLocation))
+def test_slot_keys_round_trip(kind: ShortcutKind, location: ShortcutLocation) -> None:
+    slot = ShortcutSlot(kind, location)
+
+    assert ShortcutSlot.from_key(slot.key) == slot
+
+
+def test_the_jarvis_shortcut_keeps_the_original_manifest_key() -> None:
+    assert ShortcutSlot(ShortcutKind.JARVIS, ShortcutLocation.DESKTOP).key == "Desktop"
+    assert ShortcutSlot(ShortcutKind.HUD, ShortcutLocation.DESKTOP).key == "Desktop:hud"
+
+
+def test_a_manifest_from_before_the_hud_shortcut_still_loads(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text('{"Desktop": "C:/Users/me/Desktop/Jarvis.lnk"}', encoding="utf-8")
+
+    assert Manifest(path).load() == {
+        ShortcutSlot(ShortcutKind.JARVIS, ShortcutLocation.DESKTOP): Path(
+            "C:/Users/me/Desktop/Jarvis.lnk"
+        )
+    }
+
+
 def test_values_reach_powershell_only_through_the_environment(tmp_path: Path) -> None:
     spec = ShortcutSpec(
         path=tmp_path / "a'b$c.lnk",
@@ -133,18 +183,27 @@ class FakeWriter:
         self.created.append(spec)
 
 
-def make_spec(folder: Path) -> ShortcutSpec:
-    return build_shortcut_spec(folder, Launcher(Path("uvw.exe"), ()), Path("repo"), ICON_PATH)
+def make_spec(slot: ShortcutSlot, folder: Path) -> ShortcutSpec:
+    launcher = Launcher(Path("uvw.exe"), ())
+    return build_shortcut_spec(folder, launcher, Path("repo"), ICON_PATH, slot.kind)
 
 
-def plan(*, desktop: bool, start_menu: bool, startup: bool) -> ShortcutPlan:
-    return ShortcutPlan(
-        wanted={
-            ShortcutLocation.DESKTOP: desktop,
-            ShortcutLocation.START_MENU: start_menu,
-            ShortcutLocation.STARTUP: startup,
-        }
-    )
+def jarvis(location: ShortcutLocation) -> ShortcutSlot:
+    return ShortcutSlot(ShortcutKind.JARVIS, location)
+
+
+def hud(location: ShortcutLocation) -> ShortcutSlot:
+    return ShortcutSlot(ShortcutKind.HUD, location)
+
+
+def plan(*, desktop: bool, start_menu: bool, startup: bool, hud_too: bool = False) -> ShortcutPlan:
+    wanted = {
+        jarvis(ShortcutLocation.DESKTOP): desktop,
+        jarvis(ShortcutLocation.START_MENU): start_menu,
+        jarvis(ShortcutLocation.STARTUP): startup,
+        hud(ShortcutLocation.DESKTOP): desktop and hud_too,
+    }
+    return ShortcutPlan(wanted=wanted)
 
 
 def test_install_creates_the_wanted_shortcuts_and_records_them(tmp_path: Path) -> None:
@@ -155,10 +214,31 @@ def test_install_creates_the_wanted_shortcuts_and_records_them(tmp_path: Path) -
         plan(desktop=True, start_menu=True, startup=True), writer, manifest, make_spec
     )
 
-    assert set(entries) == set(ShortcutLocation)
-    assert entries[ShortcutLocation.STARTUP] == tmp_path / "shell" / "Startup" / "Jarvis.lnk"
+    assert set(entries) == {jarvis(location) for location in ShortcutLocation}
+    assert (
+        entries[jarvis(ShortcutLocation.STARTUP)] == tmp_path / "shell" / "Startup" / "Jarvis.lnk"
+    )
     assert all(path.is_file() for path in entries.values())
     assert manifest.load() == entries
+
+
+def test_the_hud_shortcut_sits_next_to_jarvis_and_goes_away_on_its_own(tmp_path: Path) -> None:
+    writer = FakeWriter(tmp_path / "shell")
+    manifest = Manifest(tmp_path / "manifest.json")
+    both = plan(desktop=True, start_menu=False, startup=False, hud_too=True)
+
+    entries = apply_plan(both, writer, manifest, make_spec)
+
+    assert (
+        entries[hud(ShortcutLocation.DESKTOP)] == tmp_path / "shell" / "Desktop" / "Jarvis HUD.lnk"
+    )
+    assert writer.created[-1].arguments.endswith("--show-hud")
+    entries = apply_plan(
+        plan(desktop=True, start_menu=False, startup=False), writer, manifest, make_spec
+    )
+    assert set(entries) == {jarvis(ShortcutLocation.DESKTOP)}
+    assert not (tmp_path / "shell" / "Desktop" / "Jarvis HUD.lnk").exists()
+    assert (tmp_path / "shell" / "Desktop" / "Jarvis.lnk").exists()
 
 
 def test_turning_a_location_off_removes_only_the_recorded_shortcut(tmp_path: Path) -> None:
@@ -171,7 +251,7 @@ def test_turning_a_location_off_removes_only_the_recorded_shortcut(tmp_path: Pat
         plan(desktop=True, start_menu=False, startup=False), writer, manifest, make_spec
     )
 
-    assert set(entries) == {ShortcutLocation.DESKTOP}
+    assert set(entries) == {jarvis(ShortcutLocation.DESKTOP)}
     assert not (tmp_path / "shell" / "Startup" / "Jarvis.lnk").exists()
     assert users_own.exists()  # never recorded, so never deleted
 
@@ -181,10 +261,13 @@ def test_uninstall_removes_exactly_the_recorded_files_and_the_manifest(tmp_path:
     manifest_path = tmp_path / "manifest.json"
     manifest = Manifest(manifest_path)
     entries = apply_plan(
-        plan(desktop=True, start_menu=True, startup=False), writer, manifest, make_spec
+        plan(desktop=True, start_menu=True, startup=False, hud_too=True),
+        writer,
+        manifest,
+        make_spec,
     )
     unrelated = touch(tmp_path / "shell" / "Desktop" / "Other.lnk")
-    entries[ShortcutLocation.DESKTOP].unlink()  # the user already deleted one by hand
+    entries[jarvis(ShortcutLocation.DESKTOP)].unlink()  # the user already deleted one by hand
 
     removed = uninstall(manifest)
 

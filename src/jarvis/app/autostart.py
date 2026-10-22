@@ -20,8 +20,10 @@ from jarvis.app.shortcuts import (
     Launcher,
     Manifest,
     PowerShellShortcutWriter,
+    ShortcutKind,
     ShortcutLocation,
     ShortcutPlan,
+    ShortcutSlot,
     ShortcutWriter,
     apply_plan,
     build_shortcut_spec,
@@ -33,6 +35,9 @@ log = get_logger(__name__)
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 """The checkout: src/jarvis/app/autostart.py is three levels below it."""
+
+STARTUP_SLOT: Final = ShortcutSlot(ShortcutKind.JARVIS, ShortcutLocation.STARTUP)
+"""The one shortcut this switch manages: Jarvis in the Startup folder."""
 
 
 class StartupShortcut:
@@ -63,7 +68,7 @@ class StartupShortcut:
 
     def enabled(self) -> bool:
         """Whether a recorded Startup shortcut exists on disk."""
-        path = self._manifest.load().get(ShortcutLocation.STARTUP)
+        path = self._manifest.load().get(STARTUP_SLOT)
         return path is not None and path.is_file()
 
     def set_enabled(self, enabled: bool) -> None:
@@ -78,10 +83,10 @@ class StartupShortcut:
         """
         launcher = self._launcher(self._repo)
         apply_plan(
-            ShortcutPlan(wanted={ShortcutLocation.STARTUP: enabled}),
+            ShortcutPlan(wanted={STARTUP_SLOT: enabled}),
             self._writer,
             self._manifest,
-            lambda folder: build_shortcut_spec(folder, launcher, self._repo, self._icon),
+            lambda _slot, folder: build_shortcut_spec(folder, launcher, self._repo, self._icon),
         )
         log.info("autostart.changed", enabled=enabled)
 

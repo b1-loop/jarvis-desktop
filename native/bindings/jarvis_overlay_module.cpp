@@ -197,13 +197,21 @@ void setStateByName(OverlayWindow& window, std::string_view name) {
 
 using ReadoutPairs = std::vector<std::pair<std::string, std::string>>;
 
-bool playBoot(OverlayWindow& window, const ReadoutPairs& info) {
+BootReadout toReadout(const ReadoutPairs& info) {
     BootReadout readout;
     readout.reserve(info.size());
     for (const auto& [label, value] : info) {
         readout.push_back(ReadoutLine{.label = label, .value = value});
     }
-    return window.playBoot(std::move(readout));
+    return readout;
+}
+
+bool playBoot(OverlayWindow& window, const ReadoutPairs& info) {
+    return window.playBoot(toReadout(info));
+}
+
+void replayBoot(OverlayWindow& window, const ReadoutPairs& info) {
+    window.replayBoot(toReadout(info));
 }
 
 // --- interactive HUD (ADR-0024): data in, events out --------------------------
@@ -446,6 +454,9 @@ void defineWindowAnimation(WindowClass& window) {
         .def("play_boot", &playBoot, py::arg("info") = ReadoutPairs{},
              "Start the boot sequence with (label, value) readout lines; non-blocking,\n"
              "idempotent. True if this call started it.")
+        .def("replay_boot", &replayBoot, py::arg("info") = ReadoutPairs{},
+             "Play the whole boot sequence again with a fresh readout, even after the\n"
+             "first one (a relaunch while running); skipped at once unless IDLE.")
         .def("skip_boot", &OverlayWindow::skipBoot,
              "Cut the boot sequence short; it still glides into the corner.")
         .def("transparent", &OverlayWindow::transparent,

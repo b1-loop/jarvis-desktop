@@ -172,6 +172,23 @@ TEST_CASE("the boot plays once and frames are measured while it runs", "[overlay
     REQUIRE_FALSE(window->skipBoot());
 }
 
+TEST_CASE("a boot can be replayed after the first one, with a new readout", "[overlay][window]") {
+    const auto window = openWindowOrSkip();
+    REQUIRE(window->playBoot({{.label = "MODEL", .value = "first"}}));
+    REQUIRE(window->skipBoot());
+    const auto first = window->snapshot().bootStartedAt;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    window->replayBoot({{.label = "MODEL", .value = "again"}});
+
+    const auto replay = window->snapshot();
+    REQUIRE(replay.bootStartedAt > first);
+    REQUIRE_FALSE(replay.bootSkippedAt.has_value());
+    REQUIRE(replay.bootReadout->front().value == "again");
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    REQUIRE(window->running());
+}
+
 TEST_CASE("the window reports whether bloom runs, and why not", "[overlay][window][bloom]") {
     const auto window = openWindowOrSkip();
     REQUIRE(window->bloom() == window->bloomReason().empty());

@@ -4,8 +4,10 @@ Started by ``jarvis --background`` (the shortcuts, autostart) or whenever
 there is no console (``pythonw``). The sequence is:
 
 1. Take the single-instance lock; if another Jarvis holds it, ask it to
-   show its dashboard (or notify "already running") and exit.
-2. Listen for such requests from later launches.
+   come forward (or notify "already running") and exit.
+2. Listen for such requests from later launches: each one brings the HUD
+   forward and replays its boot animation, and the plain shortcut also
+   opens the dashboard (``--show-hud`` does not; ADR-0025).
 3. Start Ollama if it is the LLM and is not answering.
 4. Build the assistant in voice mode with the dashboard hidden, the tray
    as the only visible surface and terminal text routed to the log.
@@ -20,6 +22,7 @@ icon whose tooltip carries the error, and exits when the user picks Quit.
 from __future__ import annotations
 
 import asyncio
+import functools
 import os
 import sys
 from collections.abc import Awaitable, Callable, Coroutine
@@ -33,6 +36,7 @@ from jarvis.app.restart import Relaunch, Spawner, spawn_detached
 from jarvis.app.single_instance import (
     HANDOFF_FILENAME,
     LOCK_FILENAME,
+    HandoverRequest,
     InstanceLock,
     InstanceServer,
     ask_running_instance_to_show,
@@ -81,13 +85,23 @@ class InstanceGuard(Protocol):
 
 
 class HandoverServer(Protocol):
-    """Answers "show" requests from later launches (``InstanceServer``)."""
+    """Answers hand-over requests from later launches (``InstanceServer``)."""
 
     async def start(self) -> None:
         """Start listening and publish how to reach this instance."""
 
     async def aclose(self) -> None:
         """Stop listening."""
+
+
+class ForwardControls(Protocol):
+    """What a hand-over request drives (``AppControls``, ``ErrorTrayControls``)."""
+
+    def bring_hud_forward(self) -> None:
+        """Show the whole HUD and replay its boot animation."""
+
+    def show_dashboard(self) -> None:
+        """Bring the dashboard window up."""
 
 
 class OllamaStarter(Protocol):
@@ -129,6 +143,18 @@ def open_in_default_app(path: Path) -> None:
         log.warning("desktop.open_log.unsupported", path=str(path))
 
 
+def come_forward(controls: ForwardControls, request: HandoverRequest) -> None:
+    """Answer a later launch: the HUD with its boot always, the dashboard unless HUD-only."""
+    controls.bring_hud_forward()
+    if request is HandoverRequest.SHOW:
+        controls.show_dashboard()
+
+
+async def ping_running_instance(handoff_path: Path, request: HandoverRequest) -> bool:
+    """Ask the running instance to come forward as ``request`` says."""
+    return await ask_running_instance_to_show(handoff_path, request=request)
+
+
 def ollama_starter(settings: Settings) -> OllamaStarter:
     """The real launcher for ``settings.ollama_base_url``."""
     return create_ollama_launcher(settings.ollama_base_url, settings.ollama_start_timeout_seconds)
@@ -150,8 +176,8 @@ class BackgroundDeps:
     """Every effect of the windowless session; tests replace them with fakes."""
 
     lock: Callable[[Path], InstanceGuard] = InstanceLock
-    ping: Callable[[Path], Awaitable[bool]] = ask_running_instance_to_show
-    server: Callable[[Callable[[], None], Path], HandoverServer] = InstanceServer
+    ping: Callable[[Path, HandoverRequest], Awaitable[bool]] = ping_running_instance
+    server: Callable[[Callable[[HandoverRequest], None], Path], HandoverServer] = InstanceServer
     platform: Callable[[AsyncExitStack], Platform] = build_platform_backend
     application: Callable[[Settings, Overrides], Awaitable[Application]] = build_application
     front_end: Callable[[bool, Writer, SessionHooks], FrontEndBuilder] = voice_front_end
@@ -187,9 +213,20 @@ def uses_ollama(settings: Settings) -> bool:
 
 
 async def run_background(
-    settings: Settings, *, wake_word: bool = True, deps: BackgroundDeps | None = None
+    settings: Settings,
+    *,
+    wake_word: bool = True,
+    request: HandoverRequest = HandoverRequest.SHOW,
+    deps: BackgroundDeps | None = None,
 ) -> int:
     """Run the windowless session, or hand over to the one already running.
+
+    Args:
+        settings: Settings as loaded.
+        wake_word: Listen for the wake word.
+        request: What to ask an instance that is already running for. A
+            first launch plays the full boot either way.
+        deps: The effects; tests pass fakes.
 
     Returns:
         The process exit code: 0 after Quit or a hand-over, ``EXIT_FAILED``
@@ -198,7 +235,7 @@ async def run_background(
     deps = deps or BackgroundDeps()
     lock = deps.lock(settings.data_dir / LOCK_FILENAME)
     if not lock.acquire():
-        await _hand_over(settings, deps)
+        await _hand_over(settings, deps, request)
         return EXIT_OK
     relaunch = Relaunch(wake_word=wake_word, spawn=deps.spawn)
     try:
@@ -213,10 +250,10 @@ async def run_background(
     return code
 
 
-async def _hand_over(settings: Settings, deps: BackgroundDeps) -> None:
+async def _hand_over(settings: Settings, deps: BackgroundDeps, request: HandoverRequest) -> None:
     """Ask the running instance to come forward; notify when it cannot answer."""
-    if await deps.ping(settings.data_dir / HANDOFF_FILENAME):
-        log.info("desktop.handed_over")
+    if await deps.ping(settings.data_dir / HANDOFF_FILENAME, request):
+        log.info("desktop.handed_over", request=request.value)
         return
     async with AsyncExitStack() as stack:
         await notify(deps.platform(stack), ALREADY_RUNNING_MESSAGE)
@@ -250,6 +287,10 @@ class ErrorTrayControls:
     def show_dashboard(self) -> None:
         """There is no dashboard without an assistant; say why again."""
         self._explain()
+
+    def bring_hud_forward(self) -> None:
+        """No HUD either; the dashboard request (or this one alone) explains."""
+        log.info("desktop.error_tray.hud_unavailable")
 
     def toggle_overlay(self) -> None:
         """Nothing to toggle; logged so a click is visible in the log."""
@@ -289,7 +330,7 @@ class BackgroundSession:
         self._wake_word = wake_word
         self._deps = deps
         self._relaunch = relaunch
-        self._show: Callable[[], None] = self._show_while_starting
+        self._show: Callable[[HandoverRequest], None] = self._show_while_starting
         self._tasks: set[asyncio.Task[None]] = set()
         self._platform: Platform | None = None
 
@@ -309,9 +350,9 @@ class BackgroundSession:
                 return await self._fail(error)
             return await self._converse(application, ollama_problem)
 
-    def show_requested(self) -> None:
+    def show_requested(self, request: HandoverRequest = HandoverRequest.SHOW) -> None:
         """A later launch asked this instance to come forward."""
-        self._show()
+        self._show(request)
 
     def _overrides(self) -> Overrides:
         writer = LogWriter()
@@ -338,7 +379,7 @@ class BackgroundSession:
     async def _converse(self, application: Application, ollama_problem: str | None) -> int:
         controls = application.controls
         if controls is not None:
-            self._show = controls.show_dashboard
+            self._show = functools.partial(come_forward, controls)
             if ollama_problem is not None and controls.tray is not None:
                 controls.tray.set_notice(OLLAMA_NOTICE.format(reason=ollama_problem))
         await notify(self._require_platform(), listening_message(self._settings, ollama_problem))
@@ -376,13 +417,15 @@ class BackgroundSession:
             return
         try:
             tray.set_notice(NOT_LISTENING_NOTICE.format(reason=reason))
-            self._show = controls.show_dashboard
+            # Whatever was asked for, the answer is the error notification.
+            self._show = lambda _request: controls.show_dashboard()
             await quit_requested.wait()
         finally:
             await tray.stop()
 
-    def _show_while_starting(self) -> None:
-        log.info("desktop.show_requested.while_starting")
+    def _show_while_starting(self, request: HandoverRequest) -> None:
+        # The start-up boot is about to play anyway.
+        log.info("desktop.show_requested.while_starting", request=request.value)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         task = asyncio.get_running_loop().create_task(work)
@@ -395,17 +438,28 @@ class BackgroundSession:
         return self._platform
 
 
-def run_windowless(settings: Settings, *, wake_word: bool = True) -> int:
+def run_windowless(
+    settings: Settings,
+    *,
+    wake_word: bool = True,
+    request: HandoverRequest = HandoverRequest.SHOW,
+) -> int:
     """Entry point for a launch without a console: file logging, then the session.
+
+    Args:
+        settings: Settings as loaded.
+        wake_word: Listen for the wake word.
+        request: What a running instance is asked for (``--show-hud``:
+            the HUD only).
 
     Returns:
         The process exit code.
     """
     log_file = log_file_for(settings)
     configure_logging(settings.log_level, log_file=log_file)
-    log.info("desktop.start", log=str(log_file.path), wake_word=wake_word)
+    log.info("desktop.start", log=str(log_file.path), wake_word=wake_word, request=request.value)
     try:
-        return asyncio.run(run_background(settings, wake_word=wake_word))
+        return asyncio.run(run_background(settings, wake_word=wake_word, request=request))
     except Exception:
         log.exception("desktop.fatal")
         return EXIT_FAILED
@@ -426,9 +480,14 @@ def run_windowless(settings: Settings, *, wake_word: bool = True) -> int:
 # - The platform is built once, outside the assistant (Overrides.platform),
 #   so notifications still work after the assistant's own resources were
 #   released by a failed start.
-# - "Show" requests from a later launch go through self._show, which is
-#   re-pointed as the session moves on: a log line while starting, the
-#   dashboard while running, the error notification in the error tray.
+# - Requests from a later launch go through self._show, which is
+#   re-pointed as the session moves on: a log line while starting (the
+#   start-up boot is about to play), come_forward while running, the error
+#   notification in the error tray.
+# - Every launch while running replays the HUD's full boot, because the
+#   launch is the user asking to see Jarvis (ADR-0025). The plain shortcut
+#   still opens the dashboard, as it always has, so nothing it used to do
+#   is lost; the "Jarvis HUD" shortcut (--show-hud) is the HUD alone.
 # - The Ollama check happens before assembly so the first spoken question
 #   does not race the server's start-up; a failure is not fatal (Ollama
 #   may be started by hand later) and is reported in the start notification

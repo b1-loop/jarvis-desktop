@@ -69,7 +69,7 @@ std::string_view controlLabel(HudControl control) noexcept {
         case HudControl::Close:
             break;
     }
-    return "Hide the HUD (the tray icon brings it back)";
+    return "Hide until needed (waking Jarvis brings it back)";
 }
 
 RectF ControlBar::button(HudControl control) const noexcept {

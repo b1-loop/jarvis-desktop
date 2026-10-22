@@ -143,6 +143,18 @@ bool OverlayModel::playBoot(BootReadout readout, Clock::time_point now) {
     return true;
 }
 
+void OverlayModel::replayBoot(BootReadout readout, Clock::time_point now) {
+    auto bounded = std::make_shared<const BootReadout>(boundedReadout(std::move(readout)));
+    const std::scoped_lock lock(mutex_);
+    bootStartedAt_ = now;
+    bootSkippedAt_.reset();
+    if (state_ != AssistantState::Idle) {
+        bootSkippedAt_ = now;
+    }
+    bootReadout_ = std::move(bounded);
+    touch();
+}
+
 BootReadout OverlayModel::boundedReadout(BootReadout readout) const {
     if (readout.size() > limits_.maxReadoutLines) {
         readout.resize(limits_.maxReadoutLines);
@@ -214,5 +226,11 @@ float OverlayModel::wakeFlashAt(Clock::time_point now) const {
 // - The boot sequence is two timestamps, not a "playing" flag: whether it
 //   is still running is a question for the animation timeline, which knows
 //   its duration; the model only records what Python asked for and when.
+//   That is also why a replay needs no reset of the renderer: every boot
+//   effect is a pure function of the time since bootStartedAt_, so moving
+//   the timestamp restarts the whole sequence, readout included.
+// - playBoot() stays first-request-only and replayBoot() is a separate,
+//   explicit call: two start-up callers asking for "the boot" must not
+//   play it twice, while a relaunch asks for a second one on purpose.
 // - revision_ is atomic so the UI thread can decide whether to render at all
 //   without taking the lock on every tick.

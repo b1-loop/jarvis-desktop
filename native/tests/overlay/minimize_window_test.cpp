@@ -30,7 +30,8 @@ using jarvis::overlay::UiEvent;
 
 namespace {
 
-constexpr auto kMorph = std::chrono::milliseconds(900);  // 0.5 s morph plus slack
+constexpr auto kMorph = std::chrono::milliseconds(900);        // 0.5 s morph plus slack
+constexpr auto kBootStarted = std::chrono::milliseconds(200);  // a few frames into act 1
 constexpr const wchar_t* kTitle = L"Jarvis minimize test overlay";
 /// Wider than any orb window (orb plus bleed at up to 200 % DPI), narrower
 /// than any HUD.
@@ -148,4 +149,24 @@ TEST_CASE("minimize options can change while the HUD runs", "[overlay][orb][wind
     std::this_thread::sleep_for(std::chrono::milliseconds(700));
     REQUIRE_FALSE(window->fullscreenHidden());
     REQUIRE_FALSE(window->minimized());
+}
+
+TEST_CASE("a boot over the orb plays in the full HUD, then shrinks back",
+          "[overlay][orb][window]") {
+    OverlayConfig config;
+    config.startMinimized = true;
+    const auto window = openOrSkip(config);
+    std::this_thread::sleep_for(kMorph);
+    REQUIRE(widthOf(windowRect()) < kOrbWindowLimit);
+
+    // A relaunch while running: the boot spans the work area again.
+    window->replayBoot({{.label = "MODE", .value = "CLOUD"}});
+    std::this_thread::sleep_for(kBootStarted);
+    REQUIRE(widthOf(windowRect()) > kOrbWindowLimit);
+    REQUIRE(window->minimized());  // the user's orb is kept, not forgotten
+
+    REQUIRE(window->skipBoot());
+    std::this_thread::sleep_for(kMorph + kMorph);  // the hand-off, then the orb morph
+    REQUIRE(widthOf(windowRect()) < kOrbWindowLimit);
+    REQUIRE(window->pollUiEvents().empty());  // nothing the user did
 }

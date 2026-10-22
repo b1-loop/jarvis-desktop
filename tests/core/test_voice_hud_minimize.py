@@ -12,7 +12,10 @@ from contextlib import AsyncExitStack
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from jarvis.config import HudPosition, Settings
+from jarvis.core import voice_bootstrap
 from jarvis.core.voice_bootstrap import VoiceFrontEndBuilder, overlay_config
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.ui.hud_protocol import SettingChanged
@@ -63,6 +66,39 @@ async def test_the_tray_entry_toggles_the_hud(make_settings: MakeSettings, tmp_p
         await front.toggle_hud_minimized()
         assert overlay.minimized
     assert make_settings(data_dir=tmp_path, user_settings_enabled=True).hud_minimized is True
+
+
+async def test_a_launch_while_running_shows_the_hud_and_replays_the_boot(
+    make_settings: MakeSettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(voice_bootstrap, "default_microphone_name", lambda: "Test Mic")
+    native = StubOverlay()
+    overlay = Overlay(native)
+    async with AsyncExitStack() as stack:
+        front = await builder_with(overlay)(request(make_settings(data_dir=tmp_path), stack))
+        assert front.bring_hud_forward is not None
+        overlay.minimize()
+        overlay.hide()
+
+        await front.bring_hud_forward()
+
+        assert overlay.visible
+        assert not overlay.minimized
+        assert native.boot_replays == 1
+        assert dict(native.boot_info)["MIC"] == "Test Mic"
+    assert make_settings(data_dir=tmp_path, user_settings_enabled=True).hud_minimized is False
+
+
+def test_a_first_launch_boots_even_when_the_hud_was_left_minimized(
+    make_settings: MakeSettings,
+) -> None:
+    settings = make_settings(overlay_enabled=False, hud_minimized=True)
+
+    overlay = voice_bootstrap.build_overlay(settings)
+
+    assert isinstance(overlay._native, StubOverlay)
+    assert overlay._native.boot_started  # the native window boots in full, then shrinks
+    assert overlay_config(settings).start_minimized
 
 
 async def test_a_hud_hotkey_equal_to_the_voice_hotkey_is_skipped(
