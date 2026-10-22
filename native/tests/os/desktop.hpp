@@ -1,11 +1,12 @@
 /// @file desktop.hpp
-/// @brief Gates for OS tests: an interactive desktop, and permission to change state.
+/// @brief Gates for OS tests: an interactive, unlocked desktop, and permission to change state.
 
 #pragma once
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <windows.h>
+#include <wtsapi32.h>
 
 #include <array>
 #include <string_view>
@@ -20,15 +21,36 @@ inline std::wstring_view environmentVariable(const wchar_t* name, std::array<wch
                                                   : std::wstring_view{buffer.data(), length};
 }
 
-/// Skip unless the process can see an interactive desktop (CI runners
-/// have one; a service session or a headless container does not).
-/// OpenInputDesktop fails in session 0 and on a locked secure desktop.
+/// True when Windows reports this process's session as locked.
+///
+/// A locked workstation keeps the user's desktop alive but denies clipboard
+/// and window calls, and OpenInputDesktop alone does not reveal it.
+inline bool sessionLocked() {
+    LPWSTR buffer = nullptr;
+    DWORD bytes = 0;
+    if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+                                    WTSSessionInfoEx, &buffer, &bytes) == FALSE) {
+        return false;  // unknown: let the test run and report what it finds
+    }
+    const auto* info = reinterpret_cast<const WTSINFOEXW*>(buffer);  // NOLINT(*-reinterpret-cast)
+    const bool locked =
+        info->Level == 1 && info->Data.WTSInfoExLevel1.SessionFlags == WTS_SESSIONSTATE_LOCK;
+    WTSFreeMemory(buffer);
+    return locked;
+}
+
+/// Skip unless the process can use an interactive, unlocked desktop (CI
+/// runners have one; a service session, a headless container or a locked
+/// workstation do not).
 inline void requireDesktop() {
     const HDESK desktop = OpenInputDesktop(0, FALSE, GENERIC_READ);
     if (desktop == nullptr) {
         SKIP("no interactive desktop session");
     }
     CloseDesktop(desktop);
+    if (sessionLocked()) {
+        SKIP("the workstation is locked");
+    }
 }
 
 /// Skip unless the developer opted in to tests that change machine state

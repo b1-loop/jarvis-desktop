@@ -29,9 +29,9 @@ namespace {
 // Translators are consulted most-recently-registered first, so the base
 // class goes first and the derived class after it.
 void defineExceptions(const py::module_& module) {
-    const auto& nativeError =
-        py::register_exception<jarvis::NativeError>(module, "NativeError", PyExc_RuntimeError);
-    py::register_exception<OverlayError>(module, "OverlayError", nativeError.ptr());
+    const auto& nativeError = py::register_local_exception<jarvis::NativeError>(
+        module, "NativeError", PyExc_RuntimeError);
+    py::register_local_exception<OverlayError>(module, "OverlayError", nativeError.ptr());
 }
 
 void defineEnums(const py::module_& module) {
