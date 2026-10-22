@@ -81,7 +81,7 @@ root (`JARVIS_SHELL_WORKING_ROOT`), scrubbed environment, timeout, output cap.
 
 | Tool | What it does | Confirmation | Service |
 | --- | --- | --- | --- |
-| `system_monitor` | CPU, memory, disk, battery and the heaviest processes | no | psutil probe |
+| `system_monitor` | Whole-computer CPU, RAM, disk and battery, plus the heaviest processes, labelled apart (about 0.2 s) | no | psutil totals + one-call process table (ADR-0026) |
 | `battery_status` | Battery level, charging state and time remaining | no | psutil probe |
 | `current_time` | Current date, time and zone, optionally converted | no | `Clock` |
 

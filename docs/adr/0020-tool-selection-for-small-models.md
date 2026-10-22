@@ -253,6 +253,8 @@ minuter": the model invents a date (2023) instead of calling `current_time`
 first, and the tool rejects it as past. Thinking fixes that, at ten times
 the latency. The RAM request's first token takes about 10 s for every
 model because `system_monitor` itself samples processes for that long.
+(Both fixed in ADR-0026: the tool now answers in about 0.2 s and labels
+system RAM apart from each process's memory.)
 
 ### Consequences
 
