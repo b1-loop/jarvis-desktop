@@ -60,7 +60,13 @@ async def test_transcript_joins_segments_and_carries_timings(
     ]
     assert not transcript.is_empty
     assert model.calls == [
-        {"samples": 16_000, "language": None, "beam_size": 5, "vad_filter": False}
+        {
+            "samples": 16_000,
+            "language": None,
+            "beam_size": 5,
+            "vad_filter": False,
+            "hotwords": None,
+        }
     ]
 
 
@@ -302,23 +308,45 @@ async def test_the_fallback_is_tried_only_once(logs: CapturingLogger) -> None:
 
 
 class FakeFasterWhisper:
-    """Stands in for the ``faster_whisper`` package; CUDA libraries are missing."""
+    """Stands in for ``faster_whisper`` (and ``ctranslate2``); CUDA libraries are missing."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, cuda_devices: int = 1, cuda_works: bool = False) -> None:
         self.devices: list[tuple[str, str]] = []
+        self.models: list[str] = []
+        self.cuda_devices = cuda_devices
+        self.cuda_works = cuda_works
 
     def WhisperModel(self, size: str, *, device: str, compute_type: str, **_: object) -> object:  # noqa: N802
         self.devices.append((device, compute_type))
-        if device != "cpu":
+        self.models.append(size)
+        if device != "cpu" and not self.cuda_works:
             raise RuntimeError(CUBLAS_MISSING)
         return FakeWhisperModel(info=FakeInfo(duration=0.5))
 
+    def get_cuda_device_count(self) -> int:
+        return self.cuda_devices
+
+
+@pytest.fixture
+def registered(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Replaces the DLL-path setup and counts how often it ran."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        faster_whisper_module, "register_cuda_libraries", lambda: calls.append(1) or ()
+    )
+    return calls
+
+
+def install(monkeypatch: pytest.MonkeyPatch, package: FakeFasterWhisper) -> None:
+    monkeypatch.setattr(faster_whisper_module.importlib, "import_module", lambda _name: package)
+
 
 @pytest.mark.parametrize(("device", "falls_back"), [("auto", True), ("cuda", False)])
-async def test_from_settings_falls_back_only_for_the_auto_device(
+async def test_from_settings_falls_back_only_for_the_auto_device(  # noqa: PLR0917
     monkeypatch: pytest.MonkeyPatch,
     make_settings: Callable[..., Settings],
     logs: CapturingLogger,
+    registered: list[int],
     device: str,
     falls_back: bool,
 ) -> None:
@@ -332,8 +360,85 @@ async def test_from_settings_falls_back_only_for_the_auto_device(
 
     if falls_back:
         await stt.transcribe(one_second_of_noise())
-        assert package.devices == [("auto", "auto"), ("cpu", "int8")]
+        assert package.devices == [("cuda", "int8_float16"), ("cpu", "int8")]
+        assert package.models == ["large-v3-turbo", "small"]  # the CPU gets the CPU model
     else:
         with pytest.raises(RuntimeError, match="cublas64_12"):
             await stt.transcribe(one_second_of_noise())
-        assert package.devices == [("cuda", "auto")]
+        assert package.devices == [("cuda", "int8_float16")]
+    assert registered == [1]  # the DLL directories are set up before the CUDA load
+
+
+async def test_a_working_gpu_loads_the_gpu_model_in_int8_float16(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings], registered: list[int]
+) -> None:
+    package = FakeFasterWhisper(cuda_works=True)
+    install(monkeypatch, package)
+
+    await FasterWhisperSTT.from_settings(make_settings()).warm_up()
+
+    assert package.devices == [("cuda", "int8_float16")]
+    assert package.models == ["large-v3-turbo"]
+    assert registered == [1]
+
+
+async def test_no_cuda_device_falls_back_to_cpu_without_trying_the_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+    make_settings: Callable[..., Settings],
+    registered: list[int],
+    logs: CapturingLogger,
+) -> None:
+    package = FakeFasterWhisper(cuda_devices=0, cuda_works=True)
+    install(monkeypatch, package)
+
+    await FasterWhisperSTT.from_settings(make_settings()).warm_up()
+
+    assert package.devices == [("cpu", "int8")]
+    assert package.models == ["small"]
+    (warning,) = warnings(logs)
+    assert warning["missing"] == "a CUDA device"
+
+
+async def test_the_cpu_device_loads_the_cpu_model_without_cuda_setup(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings], registered: list[int]
+) -> None:
+    package = FakeFasterWhisper()
+    install(monkeypatch, package)
+
+    await FasterWhisperSTT.from_settings(make_settings(stt_device="cpu")).warm_up()
+
+    assert package.devices == [("cpu", "auto")]
+    assert package.models == ["small"]
+    assert registered == []
+
+
+async def test_an_explicit_stt_model_is_used_on_every_device(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings], registered: list[int]
+) -> None:
+    package = FakeFasterWhisper()
+    install(monkeypatch, package)
+
+    await FasterWhisperSTT.from_settings(make_settings(stt_model="medium")).warm_up()
+
+    assert package.models == ["medium", "medium"]
+
+
+async def test_hotwords_reach_faster_whisper(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings], registered: list[int]
+) -> None:
+    model = FakeWhisperModel(info=FakeInfo(duration=0.5))
+    install(monkeypatch, FakeFasterWhisper(cuda_works=True))
+    monkeypatch.setattr(FakeFasterWhisper, "WhisperModel", lambda _self, _size, **_options: model)
+
+    stt = FasterWhisperSTT.from_settings(make_settings())
+    await stt.transcribe(one_second_of_noise())
+
+    assert model.calls[0]["hotwords"] == "Jarvis, Discord, Gmail, Spotify"
+
+
+async def test_empty_hotwords_disable_the_bias(model: FakeWhisperModel) -> None:
+    stt = FasterWhisperSTT(lambda: model, hotwords="  ")
+
+    await stt.transcribe(one_second_of_noise())
+
+    assert model.calls[0]["hotwords"] is None

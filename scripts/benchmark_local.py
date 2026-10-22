@@ -268,7 +268,9 @@ async def run(runs: int) -> list[Row]:
     cpu_stt = cloud.model_copy(update={"stt_device": "cpu", "stt_compute_type": "int8"})
     local = settings.model_copy(update={"mode": RuntimeMode.LOCAL})
     rows = [
-        await bench_stt(f"faster-whisper {settings.stt_model} (cpu, int8)", cpu_stt, audio, runs),
+        await bench_stt(
+            f"faster-whisper {settings.whisper_model(gpu=False)} (cpu, int8)", cpu_stt, audio, runs
+        ),
         await bench_stt(f"whisper.cpp {settings.local_stt_model.name}", local, audio, runs),
     ]
     rows += await llm_rows(settings, runs)
