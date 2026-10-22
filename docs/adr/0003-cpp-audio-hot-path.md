@@ -31,7 +31,7 @@ The audio engine is C++20, exposed to Python through one pybind11 module:
   overflow drops samples and counts them rather than ever blocking.
 - A **worker thread** pops frames and runs `AudioPipeline`, which hosts
   **Silero VAD** and **openWakeWord** through ONNX Runtime, assembles speech
-  segments with hysteresis, keeps a pre-roll buffer and emits events.
+  segments with hysteresis (on the way in as well as out), keeps a pre-roll buffer and emits events.
 - **Playback** keeps a chunk queue that the device thread drains under a
   `try_lock`; `stop()` clears it, so barge-in is a single call that takes
   effect on the next period. The engine issues that call itself when speech

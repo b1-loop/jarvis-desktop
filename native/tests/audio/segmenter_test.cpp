@@ -92,3 +92,14 @@ TEST_CASE("reset returns to silence", "[audio][segmenter]") {
     REQUIRE_FALSE(segmenter.inSpeech());
     REQUIRE(feed(segmenter, 0.9F, kMinSpeechFrames - 1) == Transition::None);
 }
+
+TEST_CASE("a dip between the thresholds holds the start count", "[audio][segmenter]") {
+    // A word's quieter middle scores between the thresholds: not silence, so
+    // the frames already counted are kept rather than thrown away.
+    SpeechSegmenter segmenter{defaultConfig()};
+
+    feed(segmenter, 0.9F, kMinSpeechFrames - 1);
+    REQUIRE(feed(segmenter, 0.4F, 3) == Transition::None);
+    REQUIRE_FALSE(segmenter.inSpeech());
+    REQUIRE(segmenter.update(0.9F) == Transition::SpeechStarted);
+}

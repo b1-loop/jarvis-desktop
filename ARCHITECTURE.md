@@ -252,6 +252,14 @@ configured by Jarvis, 700 ms silence hangover, cooldown, pre-roll) live in
 `PipelineConfig` and are exposed to Python unchanged. ADR-0003 records why
 this layer is C++.
 
+Silero v5 scores each 512-sample frame together with the last 64 samples
+of the previous one, as the reference implementation does; without that
+context the probability flickered on short, quiet requests and the
+segmenter never saw enough speech frames after the wake word. While the
+segmenter counts towards `SpeechStarted`, a frame between the end and start
+thresholds pauses the count and only a frame below the end threshold
+restarts it, the same hysteresis that keeps speech alive once it has begun.
+
 ### OS integration
 
 Tools talk to the operating system only through
