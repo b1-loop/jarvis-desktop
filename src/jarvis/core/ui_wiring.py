@@ -17,7 +17,7 @@ from typing import Protocol
 
 from jarvis.config import Settings
 from jarvis.core.events import EventBus
-from jarvis.ui.dashboard import DashboardSurface, create_dashboard
+from jarvis.ui.dashboard import DashboardConfig, DashboardSurface, create_dashboard
 from jarvis.ui.tray import TraySurface, create_tray
 from jarvis.ui.view_model import MemoryInspector
 from jarvis.utils.logging import get_logger
@@ -61,6 +61,11 @@ class AppControls:
     def attach_tray(self, tray: TraySurface) -> None:
         """Let the controls reflect the mute state on the icon."""
         self._tray = tray
+
+    @property
+    def tray(self) -> TraySurface | None:
+        """The attached tray, for notices the windowless app puts in its tooltip."""
+        return self._tray
 
     def show_dashboard(self) -> None:
         """Bring the dashboard window up."""
@@ -107,7 +112,10 @@ async def build_dashboard(
     """The dashboard (or its stub), fed by a latency tracker on the bus."""
     tracker = LatencyTracker()
     stack.callback(tracker.attach(bus))
-    dashboard = await create_dashboard(bus, memory, tracker, enabled=settings.dashboard_enabled)
+    config = DashboardConfig(start_visible=settings.dashboard_start_visible)
+    dashboard = await create_dashboard(
+        bus, memory, tracker, config=config, enabled=settings.dashboard_enabled
+    )
     stack.push_async_callback(dashboard.stop)
     return dashboard
 

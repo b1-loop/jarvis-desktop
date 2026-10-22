@@ -296,6 +296,13 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    # Desktop app
+    dashboard_start_visible: bool = True
+    log_file_max_bytes: int = Field(default=1_000_000, ge=10_000)
+    log_file_backups: int = Field(default=3, ge=0)
+    ollama_autostart: bool = True
+    ollama_start_timeout_seconds: float = Field(default=20.0, gt=0)
+
     def tools_per_turn(self) -> int:
         """How many tool schemas one request may carry; 0 means all of them.
 

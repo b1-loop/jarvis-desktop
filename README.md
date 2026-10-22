@@ -140,6 +140,39 @@ uv run jarvis --text-only           # type instead of talk, for development
   turn the volume down (or raise `JARVIS_VAD_MIN_SPEECH_MS`).
 - **Leaving.** Say "goodbye", choose Quit in the tray menu, or press Ctrl+C.
 
+### Install as an app
+
+No PowerShell needed after this. From the checkout, once:
+
+```powershell
+uv run python scripts/install_shortcuts.py --autostart
+```
+
+This creates a **Jarvis** shortcut on the desktop, in the Start menu and in
+your Startup folder (`shell:startup`), so Jarvis starts with Windows. Each
+one runs `uvw run --project <checkout> jarvis --background`: no console
+window, the tray icon is the app. On start you get one notification,
+"Jarvis is listening; say 'Hey Jarvis' or press Ctrl+Alt+J" (it also tends
+to wake on the Swedish "Hej Jarvis"). Double-click the tray icon or pick
+Show dashboard to open the dashboard. Opening a shortcut while Jarvis is
+already running brings that one forward instead of starting a second one.
+If Ollama is the LLM and is not running, Jarvis starts it, hidden.
+
+- **Choose what to create:** `--no-desktop`, `--no-start-menu`,
+  `--autostart` / `--no-autostart` (the options describe the end state, so
+  `--no-autostart` removes an autostart shortcut made earlier).
+- **Remove it:** `uv run python scripts/install_shortcuts.py --uninstall`
+  deletes exactly the shortcuts the script created (recorded in
+  `data/desktop-shortcuts.json`).
+- **Log:** `data\logs\jarvis.log` in the checkout (rotated at 1 MB, three
+  backups). If voice cannot start (native build, models, microphone), the
+  notification and the tray tooltip say why and point there; Quit in the
+  tray menu exits.
+
+The shortcuts point at the checkout, so run the script again if you move
+it. ADR-0021 explains why this is a shortcut to `uvw` rather than a frozen
+`.exe`.
+
 ## Features
 
 Phase 1 (core): wake word and hotkey, streaming voice answers with barge-in,

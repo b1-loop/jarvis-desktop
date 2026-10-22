@@ -1,11 +1,19 @@
 import io
 import json
+import logging
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 import structlog
 
-from jarvis.utils.logging import configure_logging, get_logger, redact_secrets
+from jarvis.utils.logging import (
+    LogFile,
+    close_file_logging,
+    configure_logging,
+    get_logger,
+    redact_secrets,
+)
 
 created_at_import = get_logger("tests.logging.module_level")
 """Like every ``log = get_logger(__name__)``: made before any configuration."""
@@ -117,3 +125,64 @@ def test_counters_that_only_contain_a_marker_stay_readable(key: str) -> None:
     event = redact_secrets(None, "info", {"event": "x", key: 42})
 
     assert event[key] == 42
+
+
+# -- rotating file (windowless app) ------------------------------------------------
+
+
+@pytest.fixture
+def log_path(tmp_path: Path) -> Iterator[Path]:
+    yield tmp_path / "logs" / "jarvis.log"
+    close_file_logging()
+
+
+def test_file_logging_writes_redacted_json_lines_and_creates_the_directory(
+    log_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_logging("INFO", log_file=LogFile(log_path))
+
+    get_logger("tests.file").info("started", api_key="secret", mode="cloud")
+    get_logger("tests.file").debug("dropped")
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["event"] == "started"
+    assert record["logger"] == "tests.file"
+    assert record["api_key"] == "***"
+    assert "\x1b[" not in lines[0]  # never coloured
+    assert capsys.readouterr().err == ""
+
+
+def test_file_logging_rotates_at_the_size_cap_and_keeps_the_backups(log_path: Path) -> None:
+    configure_logging("INFO", log_file=LogFile(log_path, max_bytes=2_000, backups=2))
+
+    for index in range(200):
+        get_logger("tests.file").info("filler", index=index, padding="x" * 40)
+
+    names = sorted(path.name for path in log_path.parent.iterdir())
+    assert names == ["jarvis.log", "jarvis.log.1", "jarvis.log.2"]
+    assert all(path.stat().st_size <= 2_000 for path in log_path.parent.iterdir())
+
+
+def test_exceptions_reach_the_file_with_one_traceback(log_path: Path) -> None:
+    configure_logging("INFO", log_file=LogFile(log_path))
+
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        get_logger("tests.file").exception("failed")
+
+    record = json.loads(log_path.read_text(encoding="utf-8"))
+    assert record["level"] == "error"
+    assert record["exception"].count("Traceback") == 1
+
+
+def test_reconfiguring_closes_the_previous_file_handler(log_path: Path, tmp_path: Path) -> None:
+    configure_logging("INFO", log_file=LogFile(log_path))
+    configure_logging("INFO", log_file=LogFile(tmp_path / "other.log"))
+
+    assert len(logging.getLogger("jarvis.file").handlers) == 1
+    close_file_logging()
+    close_file_logging()  # idempotent
+    assert logging.getLogger("jarvis.file").handlers == []

@@ -9,6 +9,7 @@ construction decision lives in a small, tested builder there.
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Annotated, Final
@@ -16,6 +17,8 @@ from typing import Annotated, Final
 import typer
 
 from jarvis import __version__
+from jarvis.app.background import run_windowless
+from jarvis.app.windowless import is_windowless
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core.bootstrap import run_text_mode
 from jarvis.core.voice_bootstrap import run_voice_mode
@@ -74,12 +77,22 @@ def run(
     no_wakeword: Annotated[
         bool, typer.Option("--no-wakeword", help="Disable the wake word; use the hotkey only.")
     ] = False,
+    background: Annotated[
+        bool,
+        typer.Option(
+            "--background",
+            help="Run as a desktop app: tray icon only, log file, one instance (shortcuts).",
+        ),
+    ] = False,
     version: Annotated[  # noqa: ARG001 - consumed by the eager callback
         bool, typer.Option("--version", callback=_show_version, is_eager=True)
     ] = False,
 ) -> None:
     """Start the assistant."""
     settings = load_settings(mode)
+    if is_windowless(background=background, stdout=sys.stdout):
+        # No console to talk to: voice mode with the tray, logging to a file.
+        raise typer.Exit(code=run_windowless(settings, wake_word=not no_wakeword))
     configure_logging(settings.log_level)
     options = LaunchOptions(
         mode=settings.mode, text_only=text_only, wake_word_enabled=not no_wakeword
@@ -131,5 +144,10 @@ if __name__ == "__main__":
 # - Voice is the default. When it cannot run (no native build, no models,
 #   no microphone) run_voice_mode says why and continues in text mode
 #   rather than pretending to listen.
+# - Without a console (--background from the shortcuts, or pythonw where
+#   sys.stdout is None) none of the terminal paths apply: jarvis.app runs
+#   the windowless session, which logs to data/logs/jarvis.log and shows
+#   problems in a notification and the tray instead. --text-only is
+#   meaningless there and ignored.
 # - Ctrl+C cancels the main task; the bootstrap's exit stack still closes
 #   the database and connections before KeyboardInterrupt reaches here.

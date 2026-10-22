@@ -13,6 +13,7 @@ from jarvis.core.state_machine import AssistantState
 from jarvis.ui import tray as tray_module
 from jarvis.ui.tray import (
     ICON_SIZE,
+    TOOLTIP_MAX_CHARS,
     StubTray,
     TrayAction,
     TrayError,
@@ -22,6 +23,7 @@ from jarvis.ui.tray import (
     pystray_backend_factory,
     render_state_icon,
     render_state_icons,
+    with_notice,
 )
 from jarvis.ui.view_model import STATE_STYLES
 
@@ -315,6 +317,35 @@ async def test_stub_tracks_state_and_mute(bus: EventBus) -> None:
     await stub.stop()
     await stub.stop()
     assert not stub.running
+
+
+async def test_notice_is_shown_under_the_state_and_cleared(
+    bus: EventBus, callbacks: RecordingCallbacks
+) -> None:
+    tray = TrayIcon(FakeBackend, bus, callbacks, FakeLoop())
+    backend = _backend_of(tray)
+
+    tray.set_notice("Not listening: no microphone")
+    assert backend.tooltips[-1] == "Jarvis - Idle\nNot listening: no microphone"
+
+    tray.set_notice(None)
+    assert backend.tooltips[-1] == "Jarvis - Idle"
+
+
+def test_stub_records_the_notice(bus: EventBus) -> None:
+    stub = StubTray(bus)
+
+    stub.set_notice("LLM offline")
+
+    assert stub.tooltip == "Jarvis - Idle\nLLM offline"
+
+
+def test_long_notices_are_cut_to_what_windows_displays() -> None:
+    text = with_notice("Jarvis - Idle", "x" * 500)
+
+    assert len(text) == TOOLTIP_MAX_CHARS
+    assert text.endswith("...")
+    assert with_notice("Jarvis - Idle", None) == "Jarvis - Idle"
 
 
 # -- pystray adapter ---------------------------------------------------------------------
