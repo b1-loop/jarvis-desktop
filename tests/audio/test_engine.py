@@ -349,3 +349,23 @@ async def test_pause_after_the_wake_phrase_then_silence_counts_as_nothing_heard(
         utterance = await asyncio.wait_for(capture, WAIT)
 
     assert not utterance.speech_detected
+
+
+async def test_speech_without_a_wake_phrase_is_the_request_itself(
+    engine: AudioEngine, native: FakeNativeEngine
+) -> None:
+    # Hotkey pressed mid-sentence: speech is in progress but contains no wake
+    # phrase, so its end completes the capture even though it ends quickly.
+    native.script(native_event("SPEECH_STARTED", 0.9, 4_000))
+    async with engine:
+        for _ in range(int(WAIT / POLL)):
+            if engine.speech_active:
+                break
+            await asyncio.sleep(POLL)
+        engine.discard_pending_events()
+        capture = asyncio.create_task(engine.record_utterance(start_timeout=0.05))
+        await asyncio.sleep(POLL * 5)
+        native.script(native_event("SPEECH_ENDED", 0.1, 4_000 + 1_000 + HANGOVER))
+        utterance = await asyncio.wait_for(capture, WAIT)
+
+    assert utterance.speech_detected

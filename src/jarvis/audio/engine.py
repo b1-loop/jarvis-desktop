@@ -197,6 +197,8 @@ class AudioEngine:
         # Tracked from every event as it is polled, independent of the queue,
         # because the queue is cleared before each capture.
         self._in_speech = False
+        self._wake_in_speech = False  # the wake phrase was part of the current speech
+        self._wake_seen_before_end = False  # ... of the speech that ended last
         self._last_wake_position = 0
 
     async def __aenter__(self) -> AudioEngine:
@@ -346,12 +348,19 @@ class AudioEngine:
         ended = await self._wait_for_end()
         if ended is None:
             return True, True
-        if not self._only_wake_phrase(ended):
+        if not self._wake_in_speech_of(ended):
             return True, False
         heard = await self._speech_starts(start_timeout)
         return heard, heard and not await self._speech_ends()
 
-    def _only_wake_phrase(self, ended: AudioEvent) -> bool:
+    def _wake_in_speech_of(self, ended: AudioEvent) -> bool:
+        """True when the speech that just ended was only the wake phrase.
+
+        A hotkey pressed mid-sentence has no wake phrase in that speech, so the
+        whole speech is the request.
+        """
+        if not self._wake_seen_before_end:
+            return False
         spoken_after_wake = ended.sample_position - self._last_wake_position
         follow_on = spoken_after_wake - self._silence_end_samples
         return follow_on < FOLLOW_ON_SPEECH_MS * SAMPLE_RATE // 1000
@@ -380,10 +389,14 @@ class AudioEngine:
     def _track(self, event: AudioEvent) -> None:
         if event.kind is AudioEventKind.SPEECH_STARTED:
             self._in_speech = True
+            self._wake_in_speech = False
         elif event.kind is AudioEventKind.SPEECH_ENDED:
+            self._wake_seen_before_end = self._wake_in_speech
             self._in_speech = False
+            self._wake_in_speech = False
         elif event.kind is AudioEventKind.WAKE_WORD_DETECTED:
             self._last_wake_position = event.sample_position
+            self._wake_in_speech = self._in_speech
 
     async def _poll_forever(self) -> None:
         try:
