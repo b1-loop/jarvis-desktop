@@ -61,7 +61,7 @@ async def test_a_silent_turn_goes_from_thinking_back_to_idle() -> None:
     assert path(transitions) == [IDLE, LISTENING, THINKING, IDLE]
 
 
-@pytest.mark.parametrize("command", ["exit", "QUIT", "  bye  "])
+@pytest.mark.parametrize("command", ["exit", "QUIT", "  bye  ", "Goodbye."])
 async def test_exit_commands_end_the_session(command: str) -> None:
     orchestrator, agent, output, _ = build([command, "never read"])
 
@@ -69,6 +69,55 @@ async def test_exit_commands_end_the_session(command: str) -> None:
 
     assert agent.requests == []
     assert output.said == [FAREWELL]
+
+
+class ListeningInput(ScriptedInput):
+    """A voice-like source: it enters LISTENING itself before returning a line."""
+
+    def __init__(self, lines: list[str | None], state: StateMachine) -> None:
+        super().__init__(lines)
+        self.state = state
+
+    async def read_line(self, prompt: str) -> str | None:
+        self.state.transition(LISTENING, "wake word")
+        return await super().read_line(prompt)
+
+
+async def test_a_source_that_already_listens_is_not_moved_to_listening_again() -> None:
+    bus = EventBus()
+    transitions: list[StateChanged] = []
+    bus.subscribe_callback(StateChanged, transitions.append)
+    state = StateMachine(bus)
+    output = RecordingOutput()
+    orchestrator = Orchestrator(
+        agent=FakeAgent(),
+        state=state,
+        source=ListeningInput(["What time is it?", "Goodbye."], state),
+        sink=output,
+        greeting="Say hey Jarvis.",
+    )
+
+    await orchestrator.run()
+
+    assert path(transitions) == [IDLE, LISTENING, THINKING, SPEAKING, IDLE, LISTENING, IDLE]
+    assert transitions[-1].reason == "exit requested"
+    assert output.notices == ["Say hey Jarvis."]
+    assert output.flushes == 2  # once for the answer, once for the farewell
+
+
+async def test_an_interrupted_delivery_still_ends_the_turn() -> None:
+    class Interrupted(RecordingOutput):
+        async def flush(self) -> bool:
+            await super().flush()
+            return False
+
+    bus = EventBus()
+    orchestrator = Orchestrator(
+        agent=FakeAgent(), state=StateMachine(bus), source=ScriptedInput([]), sink=Interrupted()
+    )
+
+    assert await orchestrator.handle_text("hello") is not None
+    assert orchestrator.state is IDLE
 
 
 async def test_blank_lines_are_skipped_and_end_of_input_stops() -> None:

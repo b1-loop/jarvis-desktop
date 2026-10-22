@@ -3,16 +3,16 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from jarvis import __version__
+from jarvis import __version__, _native
 from jarvis.__main__ import (
     EXIT_STARTUP_FAILED,
-    VOICE_MODE_NOTICE,
     LaunchOptions,
     app,
     load_settings,
 )
 from jarvis.config import RuntimeMode
 from jarvis.core import bootstrap
+from jarvis.utils.errors import NativeUnavailableError
 
 runner = CliRunner()
 
@@ -60,7 +60,7 @@ def test_flags_are_reflected_in_the_resolved_configuration(tmp_path: Path) -> No
     assert "mode=local" in result.output
     assert "text_only=True" in result.output
     assert "wake_word=False" in result.output
-    assert VOICE_MODE_NOTICE not in result.output
+    assert "Voice mode is unavailable" not in result.output
 
 
 @pytest.mark.usefixtures("offline_environment")
@@ -69,15 +69,23 @@ def test_text_only_session_runs_until_exit() -> None:
 
     assert result.exit_code == 0, result.output
     assert "Jarvis> Goodbye." in result.output
-    assert VOICE_MODE_NOTICE not in result.output
+    assert "Voice mode is unavailable" not in result.output
 
 
 @pytest.mark.usefixtures("offline_environment")
-def test_voice_mode_says_it_is_not_built_yet_and_falls_back_to_text() -> None:
+def test_voice_mode_without_the_audio_build_falls_back_to_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def not_built(name: str) -> object:
+        raise NativeUnavailableError(name, "not built")
+
+    monkeypatch.setattr(_native, "load", not_built)
+
     result = runner.invoke(app, [], input="")
 
     assert result.exit_code == 0, result.output
-    assert VOICE_MODE_NOTICE in result.output
+    assert "Voice mode is unavailable" in result.output
+    assert "jarvis_audio" in result.output
     assert "Goodbye." in result.output
 
 
