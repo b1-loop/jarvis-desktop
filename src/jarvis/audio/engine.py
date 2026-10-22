@@ -164,6 +164,9 @@ class NativeEngine(Protocol):
     def set_barge_in_target(self, playback: NativePlayback | None) -> None:
         """Stop ``playback`` natively when speech starts; ``None`` disables."""
 
+    def set_wake_word_threshold(self, threshold: float) -> None:
+        """Change the wake-word score threshold from the next chunk on."""
+
     def input_level(self) -> float:
         """RMS of the latest frame."""
 
@@ -292,6 +295,14 @@ class AudioEngine:
     def enable_barge_in(self, playback: NativePlayback | None) -> None:
         """Make speech onset stop ``playback`` natively; ``None`` disables it."""
         self._native.set_barge_in_target(playback)
+
+    def set_wake_word_threshold(self, threshold: float) -> None:
+        """Apply a new wake-word threshold live (the HUD's settings slider).
+
+        The native pipeline clamps it to a usable probability, so a slider
+        at either end can never disable or trip the wake word permanently.
+        """
+        self._native.set_wake_word_threshold(float(threshold))
 
     async def capture_utterance(self) -> Samples:
         """Record until the user stops talking.

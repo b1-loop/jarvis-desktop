@@ -74,6 +74,10 @@ public:
     /// Pass nullptr to disable.
     void setBargeInTarget(std::shared_ptr<Playback> playback);
 
+    /// See AudioPipeline::setWakeWordThreshold; applies from the next chunk.
+    void setWakeWordThreshold(float threshold);
+    [[nodiscard]] float wakeWordThreshold() const;
+
     [[nodiscard]] float inputLevel() const;
     [[nodiscard]] std::size_t droppedSamples() const noexcept { return ring_.droppedSamples(); }
     [[nodiscard]] std::uint64_t samplesProcessed() const;

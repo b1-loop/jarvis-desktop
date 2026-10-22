@@ -194,3 +194,23 @@ TEST_CASE("reset clears detectors, buffers and listening", "[audio][pipeline]") 
     REQUIRE(f.pipeline.takeCaptured().empty());
     REQUIRE(f.pipeline.inputLevel() == 0.0F);
 }
+
+TEST_CASE("the wake-word threshold can be changed while running", "[audio][pipeline]") {
+    Fixture f;
+    f.wakeWord->script({0.7F, 0.7F});
+    f.pipeline.setWakeWordThreshold(0.8F);
+    f.feedChunks(1);
+    REQUIRE(f.count(AudioEventType::WakeWordDetected) == 0);
+
+    f.pipeline.setWakeWordThreshold(0.6F);
+    f.feedChunks(1);
+    REQUIRE(f.count(AudioEventType::WakeWordDetected) == 1);
+}
+
+TEST_CASE("the wake-word threshold stays a usable probability", "[audio][pipeline]") {
+    Fixture f;
+    f.pipeline.setWakeWordThreshold(0.0F);
+    REQUIRE(f.pipeline.wakeWordThreshold() > 0.0F);
+    f.pipeline.setWakeWordThreshold(1.5F);
+    REQUIRE(f.pipeline.wakeWordThreshold() < 1.0F);
+}

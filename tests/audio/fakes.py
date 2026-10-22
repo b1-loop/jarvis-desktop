@@ -38,6 +38,7 @@ class FakeNativeEngine:
     captured: Samples = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
     listening_calls: list[bool] = field(default_factory=list)
     barge_in_targets: list[NativePlayback | None] = field(default_factory=list)
+    wake_word_thresholds: list[float] = field(default_factory=list)
     started: int = 0
     stopped: int = 0
     dropped: int = 0
@@ -72,6 +73,9 @@ class FakeNativeEngine:
 
     def set_barge_in_target(self, playback: NativePlayback | None) -> None:
         self.barge_in_targets.append(playback)
+
+    def set_wake_word_threshold(self, threshold: float) -> None:
+        self.wake_word_thresholds.append(threshold)
 
     def input_level(self) -> float:
         return self.level

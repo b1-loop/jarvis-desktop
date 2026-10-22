@@ -106,6 +106,13 @@ void AudioPipeline::processVadFrame(std::span<const float, kVadFrameSamples> fra
     }
 }
 
+void AudioPipeline::setWakeWordThreshold(float threshold) noexcept {
+    // A threshold of 0 would fire on silence and 1 never; both are bugs.
+    constexpr float kMinimum = 0.01F;
+    constexpr float kMaximum = 0.99F;
+    config_.wakeWordThreshold = std::clamp(threshold, kMinimum, kMaximum);
+}
+
 void AudioPipeline::processWakeWordChunk(std::span<const float, kWakeWordChunkSamples> chunk) {
     const float score = wakeWord_->score(chunk);
     if (cooldownRemaining_ > 0) {
