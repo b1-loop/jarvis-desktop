@@ -32,7 +32,7 @@ is Python 3.12.
 | 8 | Phase 1 + 2 tools | providers and web/document helpers done, tools pending |
 | 9 | Memory | done |
 | 10 | Proactive and routines | done |
-| 11 | Vision | planned |
+| 11 | Vision | done |
 | 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | C++ wrappers done, Python LOCAL mode pending |
 | 13 | Overlay and dashboard | overlay done, tray and dashboard pending |
 | 14 | Docs, ADRs, benchmark | planned |

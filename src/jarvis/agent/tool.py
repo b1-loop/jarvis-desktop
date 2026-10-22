@@ -34,6 +34,7 @@ from jarvis.integrations.base import (
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 from jarvis.utils.timing import Clock, SystemClock
+from jarvis.vision.screen import ScreenReaderProtocol
 
 log = get_logger(__name__)
 
@@ -176,6 +177,7 @@ class ToolContext:
         memory: Long-term memory, ``None`` until the memory step lands.
         integrations: Email, calendar, music, chat and smart-home
             providers; ``None`` in tests that do not need them.
+        vision: Screen understanding, ``None`` when it is not wired in.
     """
 
     settings: Settings
@@ -185,6 +187,7 @@ class ToolContext:
     platform: PlatformFacade | None = None
     memory: MemoryFacade | None = None
     integrations: IntegrationProviders | None = None
+    vision: ScreenReaderProtocol | None = None
 
 
 class Tool[InputT: BaseModel](ABC):
