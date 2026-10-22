@@ -10,7 +10,11 @@ boot sequence in the middle of the screen, with a diagnostic readout of
 real values passed in by the caller, before whipping into its corner.
 All rendering and animation happen on a native UI thread; Python only
 pushes state through cheap, thread-safe setters and never receives
-callbacks.
+callbacks. The HUD is also interactive (ADR-0024): hover controls, a text
+field, dragging, an expanded conversation view and a settings page. What
+the user does there is queued natively and drained by
+:meth:`Overlay.poll_ui_events` (the overlay bridge polls every ~30 ms);
+the types that cross the boundary are in ``ui/hud_protocol.py``.
 
 The native window is injected through the :class:`NativeOverlay` Protocol
 so the facade is unit-tested with fakes, and :class:`StubOverlay` stands in
@@ -24,14 +28,24 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
-from typing import Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from jarvis import _native
+from jarvis.ui.hud_protocol import (
+    HistoryRole,
+    SettingsPage,
+    UiEvent,
+    event_to_native,
+    parse_ui_event,
+)
 from jarvis.utils.errors import JarvisError, NativeUnavailableError
 from jarvis.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+HISTORY_TIME_FORMAT: Final = "%H:%M"
 
 
 class OverlayError(JarvisError):
@@ -89,6 +103,27 @@ BootInfo = Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
+class SavedPosition:
+    """Where the user left the HUD: logical pixels from a monitor's work-area corner.
+
+    Attributes:
+        monitor: Device name (``MONITORINFOEX.szDevice``); unknown names fall
+            back to the primary monitor, and the HUD is always clamped fully on
+            screen.
+        x: Offset from the work area's left edge.
+        y: Offset from its top edge.
+        width: Logical width (the expanded panel's; 0 for the corner HUD).
+        height: Logical height.
+    """
+
+    monitor: str
+    x: float
+    y: float
+    width: float = 0.0
+    height: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class OverlayConfig:
     """Geometry and behaviour of the panel. Sizes are logical pixels at 96 DPI.
 
@@ -112,6 +147,10 @@ class OverlayConfig:
         intensity: Particle count, bloom strength and motion of the HUD.
         bloom: Run the GPU bloom pipeline (it falls back to plain additive
             light by itself if the GPU cannot run it).
+        interactive: Hover controls, typing, dragging and the expanded view;
+            transparent pixels stay click-through (ADR-0024).
+        position: Where the corner HUD was dragged to; None anchors it.
+        expanded_bounds: Position and size of the expanded panel, or None.
     """
 
     corner: OverlayCorner = OverlayCorner.BOTTOM_RIGHT
@@ -130,6 +169,9 @@ class OverlayConfig:
     boot_animation: bool = True
     intensity: OverlayIntensity = OverlayIntensity.NORMAL
     bloom: bool = True
+    interactive: bool = True
+    position: SavedPosition | None = None
+    expanded_bounds: SavedPosition | None = None
 
 
 class NativeOverlay(Protocol):
@@ -184,6 +226,30 @@ class NativeOverlay(Protocol):
     def close(self) -> None:
         """Destroy the window and join the UI thread. Idempotent."""
 
+    def poll_ui_events(self) -> list[dict[str, object]]:
+        """Everything the user did since the last call, as dicts with a ``kind``."""
+
+    def inject_ui_event(self, event: dict[str, object]) -> None:
+        """Test hook: queue ``event`` as if the user had caused it."""
+
+    def set_muted(self, muted: bool) -> None:
+        """Show the microphone control as muted."""
+
+    def add_history(self, role: str, text: str, time: str) -> None:
+        """Append one conversation line to the expanded view."""
+
+    def set_settings(self, page: dict[str, object]) -> None:
+        """Replace the settings page (``SettingsPage.to_native()``)."""
+
+    def set_appearance(self, theme: str, intensity: str, size: str) -> None:
+        """Switch theme, intensity and size live (settings spellings)."""
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Expand to the panel or collapse to the corner HUD."""
+
+    def expanded(self) -> bool:
+        """Whether the HUD is (or is animating towards) the expanded panel."""
+
 
 class StubOverlay:
     """Stand-in for the native window in text-only mode.
@@ -203,6 +269,12 @@ class StubOverlay:
         self.boot_started = False
         self.boot_skipped = False
         self.boot_info: list[tuple[str, str]] = []
+        self.muted = False
+        self.history: list[tuple[str, str, str]] = []
+        self.settings: dict[str, object] = {}
+        self.appearance: tuple[str, str, str] | None = None
+        self._expanded = False
+        self._events: list[dict[str, object]] = []
         self._visible = True
         self._running = True
 
@@ -273,6 +345,39 @@ class StubOverlay:
     def close(self) -> None:
         """Mark the stub as closed."""
         self._running = False
+
+    def poll_ui_events(self) -> list[dict[str, object]]:
+        """Injected events only: nobody can click a stub."""
+        events, self._events = self._events, []
+        return events
+
+    def inject_ui_event(self, event: dict[str, object]) -> None:
+        """Queue ``event`` for the next poll."""
+        self._events.append(dict(event))
+
+    def set_muted(self, muted: bool) -> None:
+        """Record the microphone state."""
+        self.muted = muted
+
+    def add_history(self, role: str, text: str, time: str) -> None:
+        """Record the line."""
+        self.history.append((role, text, time))
+
+    def set_settings(self, page: dict[str, object]) -> None:
+        """Record the page."""
+        self.settings = page
+
+    def set_appearance(self, theme: str, intensity: str, size: str) -> None:
+        """Record the appearance."""
+        self.appearance = (theme, intensity, size)
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Record the request."""
+        self._expanded = expanded
+
+    def expanded(self) -> bool:
+        """The last request."""
+        return self._expanded
 
 
 class Overlay:
@@ -398,6 +503,51 @@ class Overlay:
         self._native.close()
         log.info("overlay.closed")
 
+    # --- interactive HUD (ADR-0024) -----------------------------------------
+
+    @property
+    def expanded(self) -> bool:
+        """Whether the HUD shows (or is opening) the expanded panel."""
+        return not self._closed and self._native.expanded()
+
+    def poll_ui_events(self) -> list[UiEvent]:
+        """Everything the user did in the HUD since the last poll, typed.
+
+        Raises:
+            HudProtocolError: If the native side reports an unknown event,
+                which means the build and this code are out of step.
+        """
+        if self._closed:
+            return []
+        return [parse_ui_event(raw) for raw in self._native.poll_ui_events()]
+
+    def inject_ui_event(self, event: UiEvent) -> None:
+        """Test and demo hook: queue ``event`` as if the user had caused it."""
+        self._forward(lambda: self._native.inject_ui_event(event_to_native(event)))
+
+    def set_muted(self, muted: bool) -> None:
+        """Show the microphone control as muted (or not)."""
+        self._forward(lambda: self._native.set_muted(muted))
+
+    def add_history(self, role: HistoryRole, text: str, at: datetime | None = None) -> None:
+        """Append one line to the expanded view's conversation, stamped ``HH:MM``."""
+        stamp = (at or datetime.now()).strftime(HISTORY_TIME_FORMAT)
+        self._forward(lambda: self._native.add_history(role.value, text, stamp))
+
+    def set_settings(self, page: SettingsPage) -> None:
+        """Replace the settings page the HUD shows."""
+        self._forward(lambda: self._native.set_settings(page.to_native()))
+
+    def set_appearance(
+        self, theme: OverlayTheme, intensity: OverlayIntensity, size: OverlaySize
+    ) -> None:
+        """Switch palette, richness and size without restarting."""
+        self._forward(lambda: self._native.set_appearance(theme.value, intensity.value, size.value))
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Expand to the panel or collapse to the corner HUD (animated)."""
+        self._forward(lambda: self._native.set_expanded(expanded))
+
     def _forward(self, call: _Setter) -> None:
         if self._closed:
             log.debug("overlay.ignored_after_close")
@@ -422,6 +572,27 @@ def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
     """
     config = config or OverlayConfig()
     module = _native.load("jarvis_overlay")
+    try:
+        window = module.OverlayWindow(_native_config(module, config))
+    except module.OverlayError as exc:
+        raise OverlayError(str(exc)) from exc
+    log.info(
+        "overlay.created",
+        corner=config.corner.value,
+        theme=config.theme.value,
+        size=config.size.value,
+        intensity=config.intensity.value,
+        interactive=config.interactive,
+        transparent=window.transparent(),
+        fallback_reason=window.fallback_reason() or None,
+        bloom=window.bloom(),
+        bloom_reason=window.bloom_reason() or None,
+    )
+    return Overlay(cast(NativeOverlay, window), boot_animation=config.boot_animation)
+
+
+def _native_config(module: Any, config: OverlayConfig) -> Any:
+    """``jarvis_overlay.OverlayConfig`` mirroring ``config``."""
     native_config = module.OverlayConfig()
     native_config.corner = module.Corner.__members__[config.corner.value]
     native_config.size = module.PanelSize.__members__[config.size.name]
@@ -436,24 +607,22 @@ def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
     native_config.theme = module.Theme.__members__[config.theme.name]
     native_config.intensity = module.Intensity.__members__[config.intensity.name]
     native_config.bloom = config.bloom
+    native_config.interactive = config.interactive
+    native_config.position = _native_position(module, config.position)
+    native_config.expanded_bounds = _native_position(module, config.expanded_bounds)
     native_config.limits.level_history = config.level_history
     native_config.limits.max_text_chars = config.max_text_chars
-    try:
-        window = module.OverlayWindow(native_config)
-    except module.OverlayError as exc:
-        raise OverlayError(str(exc)) from exc
-    log.info(
-        "overlay.created",
-        corner=config.corner.value,
-        theme=config.theme.value,
-        size=config.size.value,
-        intensity=config.intensity.value,
-        transparent=window.transparent(),
-        fallback_reason=window.fallback_reason() or None,
-        bloom=window.bloom(),
-        bloom_reason=window.bloom_reason() or None,
+    return native_config
+
+
+def _native_position(module: Any, position: SavedPosition | None) -> object | None:
+    """``jarvis_overlay.SavedPlacement`` for ``position``, or None."""
+    if position is None:
+        return None
+    placement: object = module.SavedPlacement(
+        position.monitor, position.x, position.y, position.width, position.height
     )
-    return Overlay(cast(NativeOverlay, window), boot_animation=config.boot_animation)
+    return placement
 
 
 def default_microphone_name() -> str | None:
@@ -504,3 +673,6 @@ def create_overlay(config: OverlayConfig | None = None, *, enabled: bool = True)
 #   a programming error and should surface.
 # - No asyncio here: every native setter returns in microseconds, so wrapping
 #   them in executors would only add latency to the waveform.
+# - UI events are polled, not called back: a callback from the native UI
+#   thread would need the GIL there and could stall a frame behind the
+#   event loop; a queue drained by the bridge keeps both sides independent.
