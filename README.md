@@ -25,11 +25,11 @@ is Python 3.12.
 | 1 | Plan | done |
 | 2 | Scaffold, tooling, CI | done |
 | 3 | C++ audio engine | done |
-| 4 | C++ Windows integration | **next** |
+| 4 | C++ Windows integration | done |
 | 5 | STT / TTS / LLM cloud providers | done |
 | 6 | Agent core, text-only loop | framework done, agent loop pending |
 | 7 | Voice pipeline with barge-in | planned |
-| 8 | Phase 1 + 2 tools | integration providers done, tools pending |
+| 8 | Phase 1 + 2 tools | providers and web/document helpers done, tools pending |
 | 9 | Memory | done |
 | 10 | Proactive and routines | done |
 | 11 | Vision | planned |
