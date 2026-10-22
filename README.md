@@ -62,7 +62,9 @@ scheduling. No native thread ever takes the GIL.
 - **Honest degradation.** No audio build, models or microphone: text mode,
   with the reason. No wake-word models: hotkey only. TTS failing: printed
   answers. No CUDA libraries: CPU speech recognition. No credentials:
-  clearly named `Stub*` providers.
+  clearly named `Stub*` providers. A microphone that goes quiet after sleep,
+  a system stall or an unplugged device is reopened on the current default
+  within a few seconds (ADR-0027).
 
 Integrations (Gmail, Outlook, Google Calendar, Slack, Discord, Teams,
 Spotify, Home Assistant) are implemented against their real APIs and need
@@ -413,6 +415,13 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
 - **Text mode.** `--text-only` types instead of talks. Voice mode falls
   back to it, with the reason, when the audio build, the models or a
   microphone are missing.
+- **Microphone recovery.** Jarvis follows the Windows default input
+  device: plug in a headset and it listens there. If the microphone stops
+  delivering audio (after sleep, a long system stall, or a device that was
+  unplugged), Jarvis reopens the default device, retrying with backoff from
+  1 s up to every 30 s. If three attempts fail it shows one notification,
+  "Microphone stopped; trying again", and another when it works again. The
+  log has `audio.capture.stalled` and `audio.capture.recovered`.
 - **Swedish and other languages.** Pick a voice and tell the recogniser
   the language, e.g. in `.env`:
   `JARVIS_TTS_VOICE=sv-SE-MattiasNeural` and `JARVIS_STT_LANGUAGE=sv`.

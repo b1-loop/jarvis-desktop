@@ -76,6 +76,17 @@ def test_engine_loads_models_without_touching_a_device(
     assert engine.take_captured().size == 0
 
 
+def test_recovery_api_is_bound_and_inert_before_start(
+    jarvis_audio: ModuleType, model_paths: AudioModelPaths
+) -> None:
+    engine = jarvis_audio.AudioEngine(model_paths.vad, None)
+
+    assert engine.samples_received() == 0
+    assert engine.restart_capture() is False  # not running: no device is opened
+    names = set(jarvis_audio.AudioEventType.__members__)
+    assert {"DEVICE_STOPPED", "DEVICE_REROUTED", "DEVICE_INTERRUPTED", "DEVICE_RESUMED"} <= names
+
+
 @pytest.mark.hardware
 def test_microphone_frames_reach_python(
     jarvis_audio: ModuleType, model_paths: AudioModelPaths

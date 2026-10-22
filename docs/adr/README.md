@@ -32,3 +32,4 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | [0024](0024-interactive-hud.md) | Interactive HUD: hit-tested shapes, explicit focus, polled UI events, user settings | Accepted |
 | [0025](0025-relaunch-replays-the-hud.md) | A launch while running replays the HUD; a wake brings a closed HUD back | Accepted |
 | [0026](0026-one-call-process-table.md) | system_monitor reads the process table in one kernel call | Accepted |
+| [0027](0027-capture-watchdog.md) | Capture recovery: native detection, a Python watchdog | Accepted |
