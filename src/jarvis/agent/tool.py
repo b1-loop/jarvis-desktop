@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
 from jarvis.config import Settings
 from jarvis.core.events import EventBus, ToolCallFinished, ToolCallStarted
+from jarvis.integrations.services import IntegrationServices
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 from jarvis.utils.timing import Clock, SystemClock
@@ -152,6 +153,9 @@ class ToolContext:
         clock: Time source; a fake in tests.
         platform: OS facade, ``None`` in text-only runs without a backend.
         memory: Long-term memory, ``None`` until the memory step lands.
+        integrations: External services (email, calendar, web ...), ``None``
+            when the composition root wired none; integration tools then
+            answer "not configured" instead of failing.
     """
 
     settings: Settings
@@ -160,6 +164,7 @@ class ToolContext:
     clock: Clock = field(default_factory=SystemClock)
     platform: PlatformFacade | None = None
     memory: MemoryFacade | None = None
+    integrations: IntegrationServices | None = None
 
 
 class Tool[InputT: BaseModel](ABC):

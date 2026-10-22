@@ -59,6 +59,16 @@ class RuntimeMode(StrEnum):
     LOCAL = "local"
 
 
+def default_documents_output_dir() -> Path:
+    """Where ``draft_document`` writes when nothing is configured.
+
+    A dedicated sub-folder of Documents keeps generated files together and
+    apart from the user's own, so an overwrite can only hit a file in the
+    folder Jarvis writes to.
+    """
+    return Path.home() / "Documents" / "Jarvis"
+
+
 class Settings(BaseSettings):
     """All runtime configuration for Jarvis.
 
@@ -200,6 +210,15 @@ class Settings(BaseSettings):
     def _default_empty_user_agent(cls, value: object) -> object:
         """An empty ``JARVIS_WEB_USER_AGENT=`` line keeps the default."""
         return DEFAULT_USER_AGENT if value == "" else value
+
+    # Integration tools (step 8d)
+    documents_output_dir: Path = Field(default_factory=default_documents_output_dir)
+
+    @field_validator("documents_output_dir", mode="before")
+    @classmethod
+    def _default_empty_output_dir(cls, value: object) -> object:
+        """An empty ``JARVIS_DOCUMENTS_OUTPUT_DIR=`` line keeps ``~/Documents/Jarvis``."""
+        return default_documents_output_dir() if value == "" else value
 
 
 # Design notes:
