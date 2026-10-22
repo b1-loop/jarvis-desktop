@@ -173,6 +173,7 @@ class EmbeddingToolRanker:
         self._health = _Health(clock=clock, retry_after=retry_after_seconds)
         self._vectors: dict[str, Vector] | None = None
         self._preparing: asyncio.Task[bool] | None = None
+        self._prepare_lock = asyncio.Lock()
         self._requests: OrderedDict[str, asyncio.Task[Vector]] = OrderedDict()
 
     def warm_up(self, tools: Sequence[AnyTool]) -> None:
@@ -183,9 +184,16 @@ class EmbeddingToolRanker:
     async def prepare(self, tools: Sequence[AnyTool]) -> bool:
         """Make sure every tool has a vector: from the cache, else from the model.
 
+        Calls are serialised: the startup warm-up and a direct call never
+        embed the same tools twice or write the cache file at the same time.
+
         Returns:
             True when every tool can be ranked semantically.
         """
+        async with self._prepare_lock:
+            return await self._prepare(tools)
+
+    async def _prepare(self, tools: Sequence[AnyTool]) -> bool:
         if self._vectors is None:
             self._vectors = await self._load_cache()
         documents = {self._key(tool): tool_document(tool) for tool in tools}

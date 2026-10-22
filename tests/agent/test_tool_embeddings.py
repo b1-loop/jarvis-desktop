@@ -119,6 +119,20 @@ async def test_tool_vectors_persist_and_are_not_re_embedded(
     assert path.exists()
 
 
+async def test_concurrent_preparation_embeds_and_saves_once(
+    tools: list[AnyTool], tmp_path: Path
+) -> None:
+    embedder = FakeEmbedder()
+    ranker = make_ranker(embedder, tmp_path / "tool_embeddings.json")
+
+    ranker.warm_up(tools)
+    results = await asyncio.gather(ranker.prepare(tools), ranker.prepare(tools))
+
+    assert results == [True, True]
+    assert len(embedder.documents) == len(tools)
+    await ranker.aclose()
+
+
 async def test_a_changed_model_or_description_is_re_embedded(
     tools: list[AnyTool], tmp_path: Path
 ) -> None:
