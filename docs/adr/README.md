@@ -34,3 +34,4 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | [0026](0026-one-call-process-table.md) | system_monitor reads the process table in one kernel call | Accepted |
 | [0027](0027-capture-watchdog.md) | Capture recovery: native detection, a Python watchdog | Accepted |
 | [0028](0028-hud-colour-themes.md) | HUD colours: presets plus one accent, derived in OKLCH | Accepted |
+| [0029](0029-grounding-time-and-live-data.md) | Grounding small models: the clock, relative reminders, no tool answers in memory, the profile's name | Accepted |

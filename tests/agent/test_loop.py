@@ -73,9 +73,23 @@ async def test_first_request_has_persona_memory_question_and_tools(
     assert isinstance(system, SystemMessage)
     assert "You are Friday" in system.text
     assert "User name: Bozhidar" in system.text
+    assert "Right now it is Wednesday 2026-10-21, 15:42" in system.text  # the injected clock
     assert user == UserMessage("hi")
     assert [tool.name for tool in llm.tools_seen[0]] == ["echo"]
     assert memory.recalled == ["hi"]
+
+
+async def test_the_profile_name_from_memory_becomes_the_form_of_address(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(rounds=[text_round("Hej Bozhi.")])
+    memory = FakeMemory(context="user: I'm speaking with Ravel.", user_name="Bozhi")
+
+    await make_agent(make_settings(), llm, memory=memory).respond("hej", SentenceCollector())
+
+    system = llm.requests[0][0]
+    assert isinstance(system, SystemMessage)
+    assert system.text.index("Address them as Bozhi.") < system.text.index("Ravel")
 
 
 async def test_turn_is_recorded_in_memory(make_settings: MakeSettings) -> None:

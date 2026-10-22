@@ -322,8 +322,9 @@ ADR-0017).
 
 **The loop.** `agent/loop.py` runs one request: a system prompt from
 `agent/persona.py` (name, tone, language from the TTS voice, spoken-style
-rules) plus the `MemoryManager.recall` context, the user's words and the
-tool definitions chosen by `agent/tool_selection.py` go to
+rules, the rule that live data comes from a tool call, and the current local
+date and time from the injected clock, ADR-0029) plus the
+`MemoryManager.recall` context, the user's words and the tool definitions chosen by `agent/tool_selection.py` go to
 `LLMClient.stream`; text deltas become sentences for the sink as they
 complete; requested tools run and their results go back to the model until
 it stops or `JARVIS_MAX_TOOL_ROUNDS` is reached. A turn with tools always
@@ -360,9 +361,14 @@ durations, failures, limits hit) for the dashboard (ADR-0014).
 | `VectorStore` Protocol: `ChromaVectorStore` / `InMemoryVectorStore` | embeddings of turns and notes | recall by meaning; rebuildable from SQLite |
 
 `UserProfile` is a view over `profile.*` facts. `recall()` returns profile,
-facts, recent turns and semantic hits trimmed to a character budget. A
-conversation's summary is written when the session ends. All data stays
-under `Settings.data_dir` (ADR-0008).
+facts, recent turns and semantic hits trimmed to a character budget.
+Answers that came from tools are never part of it: those exchanges are left
+out of the recent turns and their answers are cut off semantic hits, so live
+data is always fetched again (ADR-0029). Recalled turns are framed as history,
+not instructions; the profile's name travels separately (`user_name`) and the
+persona states it as the form of address above them. A conversation's
+summary is written when the session ends. All data stays under
+`Settings.data_dir` (ADR-0008).
 
 ## 8. Proactive behaviour and routines
 

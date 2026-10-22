@@ -102,6 +102,20 @@ async def test_messages_round_trip_with_tool_calls(store: SqliteStore, clock: Fa
     assert conversation.started_at == EPOCH
 
 
+async def test_tool_answer_ids_picks_assistant_replies_that_called_tools(
+    store: SqliteStore,
+) -> None:
+    conversation = await store.start_conversation()
+    calls = ({"name": "list_todos"},)
+    question = await store.add_message(conversation.id, Role.USER, "my list?", calls)
+    tool_answer = await store.add_message(conversation.id, Role.ASSISTANT, "Milk.", calls)
+    chat = await store.add_message(conversation.id, Role.ASSISTANT, "Hello.")
+
+    found = await store.tool_answer_ids([question.id, tool_answer.id, chat.id, 999])
+
+    assert found == {tool_answer.id}
+
+
 async def test_recent_messages_keeps_the_newest_in_chronological_order(
     store: SqliteStore,
 ) -> None:

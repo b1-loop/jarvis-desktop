@@ -113,13 +113,32 @@ async def test_the_reminder_check_reads_the_store(tmp_path: Path) -> None:
         await memory.add_reminder("tvätten", MOMENT + timedelta(minutes=5, seconds=20))
         probe = compare.Probe(answer="Okej.", memory=memory, asked_at=MOMENT)
 
-        assert await compare.check_reminder(probe)
+        assert await compare.reminder_check(compare.LAUNDRY)(probe)
+        assert not await compare.reminder_check(compare.MUM)(probe)  # wrong reminder
         assert not await compare.check_todo_added(probe)
+
+
+async def test_the_relisting_case_changes_the_list_behind_the_models_back(
+    tmp_path: Path,
+) -> None:
+    (case,) = [case for case in compare.CASES if case.label == "list todos again"]
+    async with SqliteStore(tmp_path / "memory.sqlite3") as store:
+        memory = MemoryManager(store, InMemoryVectorStore())
+        await memory.add_todo("mjölk")
+        assert case.setup is not None
+        await case.setup(memory)
+
+        stale = compare.Probe(answer="Mjölk.", memory=memory, asked_at=MOMENT)
+        fresh = compare.Probe(answer="Mjölk och bröd.", memory=memory, asked_at=MOMENT)
+
+        assert [todo.text for todo in await memory.list_todos()] == ["mjölk", "bröd"]
+        assert not await case.check(stale)
+        assert await case.check(fresh)
 
 
 def test_the_report_has_a_row_per_request_and_totals(make_settings: Any) -> None:
     del make_settings
-    case = compare.CASES[5]
+    (case,) = [case for case in compare.CASES if case.label == "calculation"]
     report = TurnReport(user_text=case.request, reply="Det blir 391.")
     outcome = compare.Outcome(case, report, True, 0.8, 1.5)
     run = compare.RunResult(label="qwen3:8b (think off)", outcomes=[outcome])
@@ -138,3 +157,43 @@ def test_settings_use_the_swedish_voice_and_the_temp_dir(tmp_path: Path) -> None
     assert settings.data_dir == tmp_path
     assert settings.tts_voice == "sv-SE-MattiasNeural"
     assert settings.ollama_think is False
+
+
+async def test_the_name_case_plants_a_misheard_name_and_wants_the_profile_one(
+    tmp_path: Path,
+) -> None:
+    (case,) = [case for case in compare.CASES if case.label == "name from profile"]
+    async with SqliteStore(tmp_path / "memory.sqlite3") as store:
+        memory = MemoryManager(store, InMemoryVectorStore())
+        assert case.setup is not None
+        await case.setup(memory)
+
+        context = await memory.recall(case.request)
+
+        assert context.user_name == "Bozhi"
+        assert "Ravel" in context.render()
+        for answer, expected in (
+            ("Du heter Bozhi.", True),
+            ("Du heter Ravel.", False),
+            ("Bozhi, eller Ravel?", False),
+        ):
+            probe = compare.Probe(answer=answer, memory=memory, asked_at=MOMENT)
+            assert await case.check(probe) is expected
+
+
+async def test_the_greeting_case_only_forbids_the_misheard_name() -> None:
+    (case,) = [case for case in compare.CASES if case.label == "greeting by name"]
+
+    def probe(answer: str) -> Any:
+        return compare.Probe(answer=answer, memory=None, asked_at=MOMENT)
+
+    assert await case.check(probe("Jag mår bra, tack!"))
+    assert await case.check(probe("Hej Bozhi!"))
+    assert not await case.check(probe("Hej Ravel!"))
+
+
+def test_case_filters_keep_the_usual_order() -> None:
+    args = compare.parse_args(["qwen3:8b", "--case", "calculation", "--case", "time"])
+
+    assert [case.label for case in compare.selected_cases(args)] == ["time", "calculation"]
+    assert compare.selected_cases(compare.parse_args(["qwen3:8b"])) == compare.CASES
