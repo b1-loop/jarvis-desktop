@@ -119,7 +119,7 @@ jobs:
       - name: Python can import the native modules
         run: uv run python -c "import jarvis._native as n; print(n.available_modules())"
       - name: Native-marked Python tests
-        run: uv run pytest -m native --no-cov
+        run: uv run pytest -m "native and not hardware" --no-cov
 
   # clang-tidy needs only the compile database and the sources FetchContent
   # places at configure time, never a compiled object, so it runs in its own

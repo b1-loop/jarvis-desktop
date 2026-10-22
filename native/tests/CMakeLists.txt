@@ -43,6 +43,7 @@ target_link_libraries(jarvis_tests PRIVATE
     jarvis::common
     jarvis::audio_engine
     jarvis::os_integration
+    wtsapi32
     Catch2::Catch2WithMain)
 # Model-backed tests skip themselves when the files are absent, so a checkout
 # without downloaded models still runs the rest of the suite. Fixtures are
