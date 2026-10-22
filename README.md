@@ -129,9 +129,10 @@ keywords and by a multilingual embedding model so Swedish requests find
 English tool descriptions, and never get to claim success for a tool that
 failed: [ADR-0020](docs/adr/0020-tool-selection-for-small-models.md). They are
 told the current time every turn, can set "in five minutes" reminders without
-date arithmetic, and never see an old tool answer in memory, so live data is
-always fetched again: [ADR-0027](docs/adr/0027-grounding-time-and-live-data.md). Full design,
-threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
+date arithmetic, never see an old tool answer in memory, so live data is
+always fetched again, and take the user's name from the profile rather than
+from a misheard turn: [ADR-0028](docs/adr/0028-grounding-time-and-live-data.md).
+Full design, threading model and data flow: [ARCHITECTURE.md](ARCHITECTURE.md); every
 decision with its reasons: [the ADRs](docs/adr/README.md).
 
 ## Latency
