@@ -79,12 +79,10 @@ clear message when `native/third_party/` is empty.
    `feat(audio): add ring buffer`, `fix(agent): handle empty tool result`, `docs: add ADR-0003`.
 5. Push and open a pull request with the output of the checks above.
 
-**CI status.** `.github/workflows/ci.yml` still exists and documents what
-CI runs (the sections below describe its caches and clang-tidy shards), but
-GitHub Actions is currently switched off in the repository settings to save
-Actions minutes. Until it is re-enabled, the pre-commit hooks and the
-commands in step 3 are the gate: run all of them, plus the native build when
-C++ changed, before asking for a merge.
+**CI status.** `.github/workflows/ci.yml` runs on every push and pull
+request (the sections below describe its caches and clang-tidy shards). Run
+the pre-commit hooks and the commands in step 3 locally first, plus the
+native build when C++ changed; a pull request is merged once CI passes.
 
 ## Tool versions: one source of truth
 
