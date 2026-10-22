@@ -320,6 +320,11 @@ class Settings(BaseSettings):
     overlay_boot_animation: bool = True
     overlay_theme: OverlayThemeName = "cyan"
 
+    # Integrations demo data
+    demo_integrations: bool = False
+    """Serve the ``Stub*`` sample mail, events and chats when no account is
+    connected. Off by default: unconnected services say so instead."""
+
 
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can

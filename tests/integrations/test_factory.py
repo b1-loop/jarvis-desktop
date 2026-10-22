@@ -36,10 +36,10 @@ def http() -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(lambda _r: httpx.Response(599)))
 
 
-def test_without_credentials_every_service_gets_its_stub(
+def test_demo_mode_without_credentials_gives_every_service_its_stub(
     make_settings: Callable[..., Settings], http: httpx.AsyncClient
 ) -> None:
-    settings = make_settings()
+    settings = make_settings(demo_integrations=True)
 
     assert type(build_email_providers(settings, http)[0]) is StubEmailProvider
     assert type(build_calendar_providers(settings, http)[0]) is StubCalendarProvider
@@ -102,7 +102,7 @@ def test_spotify_requires_both_id_and_secret(
         spotify_client_id="fake-id", spotify_client_secret="fake-secret", data_dir=tmp_path
     )
 
-    assert type(build_music_providers(half, http)[0]) is StubMusicProvider
+    assert build_music_providers(half, http) == []
     assert type(build_music_providers(full, http)[0]) is SpotifyProvider
     assert (tmp_path / "tokens").is_dir()
 
@@ -125,7 +125,7 @@ def test_home_assistant_requires_url_and_token(
     url_only = make_settings(home_assistant_url="http://ha.local:8123")
     both = make_settings(home_assistant_url="http://ha.local:8123", home_assistant_token="fake")
 
-    assert type(build_smart_home_providers(url_only, http)[0]) is StubSmartHomeProvider
+    assert build_smart_home_providers(url_only, http) == []
     assert type(build_smart_home_providers(both, http)[0]) is HomeAssistantProvider
 
 
@@ -135,3 +135,17 @@ def test_default_token_store_lives_under_data_dir(
     factory = IntegrationFactory(make_settings(data_dir=tmp_path), http)
 
     assert factory._store.path_for("google") == tmp_path / "tokens" / "google.json"
+
+
+def test_without_credentials_no_service_pretends_to_be_connected(
+    make_settings: Callable[..., Settings], http: httpx.AsyncClient
+) -> None:
+    # Regression: stub sample data used to be served by default, and the
+    # proactive meeting trigger announced a fixture meeting as real.
+    settings = make_settings()
+
+    assert build_email_providers(settings, http) == []
+    assert build_calendar_providers(settings, http) == []
+    assert build_music_providers(settings, http) == []
+    assert build_chat_providers(settings, http) == []
+    assert build_smart_home_providers(settings, http) == []

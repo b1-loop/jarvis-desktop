@@ -25,6 +25,16 @@ from jarvis.audio.models import AudioModelPaths
 from jarvis.utils.errors import ConfigError, JarvisError
 from jarvis.utils.logging import get_logger
 
+SAMPLE_RATE: int = 16_000
+"""Capture rate of the native engine; event positions count samples at this rate."""
+
+DEFAULT_SILENCE_END_MS: int = 700
+"""The native segmenter's default silence hangover before ``SPEECH_ENDED``."""
+
+FOLLOW_ON_SPEECH_MS: int = 300
+"""Speech after the wake phrase shorter than this means the user only said
+the wake phrase and is waiting for the earcon, not that they asked something."""
+
 Samples = NDArray[np.float32]
 """Mono float32 PCM in [-1, 1]."""
 
@@ -176,12 +186,20 @@ class AudioEngine:
         *,
         poll_interval: float = 0.01,
         max_utterance_seconds: float = 15.0,
+        silence_end_ms: int = DEFAULT_SILENCE_END_MS,
     ) -> None:
         self._native = native
         self._poll_interval = poll_interval
         self._max_utterance_seconds = max_utterance_seconds
+        self._silence_end_samples = silence_end_ms * SAMPLE_RATE // 1000
         self._events: asyncio.Queue[AudioEvent] = asyncio.Queue()
         self._poller: asyncio.Task[None] | None = None
+        # Tracked from every event as it is polled, independent of the queue,
+        # because the queue is cleared before each capture.
+        self._in_speech = False
+        self._wake_in_speech = False  # the wake phrase was part of the current speech
+        self._wake_seen_before_end = False  # ... of the speech that ended last
+        self._last_wake_position = 0
 
     async def __aenter__(self) -> AudioEngine:
         await self.start()
@@ -299,11 +317,61 @@ class AudioEngine:
         """
         self.set_listening(True)
         try:
-            heard = speech_in_progress or await self._speech_starts(start_timeout)
-            truncated = heard and not await self._speech_ends()
+            if speech_in_progress:
+                heard, truncated = True, not await self._speech_ends()
+            elif self._in_speech:
+                heard, truncated = await self._continue_after_wake_phrase(start_timeout)
+            else:
+                heard = await self._speech_starts(start_timeout)
+                truncated = heard and not await self._speech_ends()
         finally:
             self.set_listening(False)
         return Utterance(self.take_captured(), speech_detected=heard, truncated=truncated)
+
+    @property
+    def speech_active(self) -> bool:
+        """True between the VAD's ``SPEECH_STARTED`` and ``SPEECH_ENDED``."""
+        return self._in_speech
+
+    async def _continue_after_wake_phrase(self, start_timeout: float | None) -> tuple[bool, bool]:
+        """Capture when the user was already talking as listening began.
+
+        "Hey Jarvis, what time is it" in one breath: the VAD reported the start
+        of that speech before the wake word fired, and the event was cleared
+        with the rest of the queue, so only the end is awaited. If the speech
+        ends right after the wake phrase, the user is waiting for the earcon;
+        then the real request is awaited as usual.
+
+        Returns:
+            ``(heard, truncated)`` as in :class:`Utterance`.
+        """
+        ended = await self._wait_for_end()
+        if ended is None:
+            return True, True
+        if not self._wake_in_speech_of(ended):
+            return True, False
+        heard = await self._speech_starts(start_timeout)
+        return heard, heard and not await self._speech_ends()
+
+    def _wake_in_speech_of(self, ended: AudioEvent) -> bool:
+        """True when the speech that just ended was only the wake phrase.
+
+        A hotkey pressed mid-sentence has no wake phrase in that speech, so the
+        whole speech is the request.
+        """
+        if not self._wake_seen_before_end:
+            return False
+        spoken_after_wake = ended.sample_position - self._last_wake_position
+        follow_on = spoken_after_wake - self._silence_end_samples
+        return follow_on < FOLLOW_ON_SPEECH_MS * SAMPLE_RATE // 1000
+
+    async def _wait_for_end(self) -> AudioEvent | None:
+        try:
+            async with asyncio.timeout(self._max_utterance_seconds):
+                return await self.next_event(AudioEventKind.SPEECH_ENDED)
+        except TimeoutError:
+            log.warning("audio.capture.timeout", limit_s=self._max_utterance_seconds)
+            return None
 
     async def _speech_starts(self, limit_s: float | None) -> bool:
         limit = self._max_utterance_seconds if limit_s is None else limit_s
@@ -316,19 +384,27 @@ class AudioEngine:
         return True
 
     async def _speech_ends(self) -> bool:
-        try:
-            async with asyncio.timeout(self._max_utterance_seconds):
-                await self.next_event(AudioEventKind.SPEECH_ENDED)
-        except TimeoutError:
-            log.warning("audio.capture.timeout", limit_s=self._max_utterance_seconds)
-            return False
-        return True
+        return await self._wait_for_end() is not None
+
+    def _track(self, event: AudioEvent) -> None:
+        if event.kind is AudioEventKind.SPEECH_STARTED:
+            self._in_speech = True
+            self._wake_in_speech = False
+        elif event.kind is AudioEventKind.SPEECH_ENDED:
+            self._wake_seen_before_end = self._wake_in_speech
+            self._in_speech = False
+            self._wake_in_speech = False
+        elif event.kind is AudioEventKind.WAKE_WORD_DETECTED:
+            self._last_wake_position = event.sample_position
+            self._wake_in_speech = self._in_speech
 
     async def _poll_forever(self) -> None:
         try:
             while True:
                 for native_event in self._native.poll_events():
-                    await self._events.put(_convert(native_event))
+                    event = _convert(native_event)
+                    self._track(event)
+                    await self._events.put(event)
                 await asyncio.sleep(self._poll_interval)
         except Exception:
             # A dead poller would make every waiter hang silently; make the
