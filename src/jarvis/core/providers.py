@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from jarvis import _native
-from jarvis.config import RuntimeMode, Settings
+from jarvis.config import LLMProvider, RuntimeMode, Settings
 from jarvis.llm.base import LLMClient
 from jarvis.llm.factory import create_llm_client
 from jarvis.stt.base import STT
@@ -118,10 +118,21 @@ def build_llm(settings: Settings) -> LLMClient:
         ConfigError: If the selected client's credentials, native build or
             model file are missing.
     """
-    if settings.mode is RuntimeMode.CLOUD or _local_mode_keeps_provider(settings):
+    provider = effective_llm_provider(settings)
+    if provider == settings.llm_provider:
         return create_llm_client(settings)
     log.info("providers.local_llm_selected", ignored_provider=settings.llm_provider)
-    return create_llm_client(settings.model_copy(update={"llm_provider": "local"}))
+    return create_llm_client(settings.model_copy(update={"llm_provider": provider}))
+
+
+def effective_llm_provider(settings: Settings) -> LLMProvider:
+    """The provider :func:`build_llm` will really use (LOCAL mode may override it).
+
+    The windowless app asks this before deciding whether to start Ollama.
+    """
+    if settings.mode is RuntimeMode.CLOUD or _local_mode_keeps_provider(settings):
+        return settings.llm_provider
+    return "local"
 
 
 def _local_mode_keeps_provider(settings: Settings) -> bool:

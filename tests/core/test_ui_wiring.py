@@ -3,11 +3,15 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 
+import pytest
+
 from jarvis.config import Settings
+from jarvis.core import ui_wiring
 from jarvis.core.events import EventBus
 from jarvis.core.ui_wiring import AppControls, build_dashboard, build_tray
-from jarvis.ui.dashboard import StubDashboard
+from jarvis.ui.dashboard import DashboardConfig, StubDashboard
 from jarvis.ui.tray import StubTray
+from jarvis.ui.view_model import DashboardModel
 from tests.core.voice_fakes import eventually
 
 MakeSettings = Callable[..., Settings]
@@ -76,7 +80,27 @@ async def test_disabled_dashboard_and_tray_are_stubs(make_settings: MakeSettings
     bus = EventBus()
     async with AsyncExitStack() as stack:
         dashboard = await build_dashboard(settings, bus, stack, memory=None)
-        tray = await build_tray(settings, bus, stack, AppControls(stop=lambda: None))
+        controls = AppControls(stop=lambda: None)
+        tray = await build_tray(settings, bus, stack, controls)
 
         assert isinstance(dashboard, StubDashboard)
         assert isinstance(tray, StubTray)
+        assert controls.tray is tray
+
+
+async def test_dashboard_start_visibility_comes_from_settings(
+    make_settings: MakeSettings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[bool] = []
+
+    async def fake_create(*_args: object, config: DashboardConfig, **_kwargs: object) -> object:
+        seen.append(config.start_visible)
+        return StubDashboard(DashboardModel(EventBus()))
+
+    monkeypatch.setattr(ui_wiring, "create_dashboard", fake_create)
+    async with AsyncExitStack() as stack:
+        await build_dashboard(
+            make_settings(dashboard_start_visible=False), EventBus(), stack, memory=None
+        )
+
+    assert seen == [False]

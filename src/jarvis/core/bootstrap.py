@@ -176,11 +176,15 @@ class Application:
         orchestrator: Runs the conversation.
         agent: The agent the orchestrator drives, exposed for inspection.
         resources: Cleanup callbacks, run in reverse order of creation.
+        controls: The tray menu's actions (show dashboard, quit); the
+            windowless app reuses them when a second launch asks the
+            running one to come forward.
     """
 
     orchestrator: Orchestrator
     agent: Agent
     resources: AsyncExitStack = field(default_factory=AsyncExitStack)
+    controls: AppControls | None = None
     _task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     _stop_requested: bool = field(default=False, init=False, repr=False)
 
@@ -261,7 +265,9 @@ async def _assemble(settings: Settings, overrides: Overrides, stack: AsyncExitSt
         routines=routines,
         invoker=invoker,
     )
-    await build_ui(settings, stack, bus=bus, store=store, application=application, front=front)
+    application.controls = await build_ui(
+        settings, stack, bus=bus, store=store, application=application, front=front
+    )
     return application
 
 

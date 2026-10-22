@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import io
 import logging
+import logging.handlers
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Final, TextIO, cast
 
 import structlog
@@ -18,6 +22,24 @@ from structlog.typing import EventDict, FilteringBoundLogger, WrappedLogger
 
 _SECRET_KEY_MARKERS: Final[tuple[str, ...]] = ("key", "token", "secret", "password")
 _REDACTED: Final = "***"
+_FILE_LOGGER_NAME: Final = "jarvis.file"
+DEFAULT_LOG_FILE_MAX_BYTES: Final = 1_000_000
+DEFAULT_LOG_FILE_BACKUPS: Final = 3
+
+
+@dataclass(frozen=True, slots=True)
+class LogFile:
+    """Where a windowless process writes its log, and how much of it to keep.
+
+    Attributes:
+        path: The active log file; rotated copies get ``.1``, ``.2``... suffixes.
+        max_bytes: Size at which the file is rotated.
+        backups: How many rotated copies to keep; older ones are deleted.
+    """
+
+    path: Path
+    max_bytes: int = DEFAULT_LOG_FILE_MAX_BYTES
+    backups: int = DEFAULT_LOG_FILE_BACKUPS
 
 
 def redact_secrets(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:
@@ -36,7 +58,11 @@ def redact_secrets(_logger: WrappedLogger, _method: str, event_dict: EventDict) 
 
 
 def configure_logging(
-    level: str = "INFO", *, json_output: bool = False, stream: TextIO | None = None
+    level: str = "INFO",
+    *,
+    json_output: bool = False,
+    stream: TextIO | None = None,
+    log_file: LogFile | None = None,
 ) -> None:
     """Configure structlog for the whole process.
 
@@ -47,13 +73,24 @@ def configure_logging(
             dashboard.
         stream: Where log lines go; ``sys.stderr`` by default. Characters
             its encoding cannot represent are escaped, never fatal.
+        log_file: Write to this size-capped rotating file instead of a
+            stream. Used by the windowless desktop app, which has no
+            stderr (``pythonw``/``uvw``). File lines are JSON, never coloured.
 
     Raises:
         KeyError: If ``level`` is not a known logging level name.
+        OSError: If ``log_file``'s directory cannot be created or opened.
     """
     min_level = logging.getLevelNamesMapping()[level.upper()]
     renderer: structlog.typing.Processor = (
-        structlog.processors.JSONRenderer() if json_output else structlog.dev.ConsoleRenderer()
+        structlog.processors.JSONRenderer()
+        if json_output or log_file is not None
+        else structlog.dev.ConsoleRenderer()
+    )
+    factory: Callable[..., Any] = (
+        structlog.PrintLoggerFactory(file=tolerant(stream or sys.stderr))
+        if log_file is None
+        else _file_logger_factory(log_file)
     )
     structlog.configure(
         processors=[
@@ -66,9 +103,41 @@ def configure_logging(
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(min_level),
-        logger_factory=structlog.PrintLoggerFactory(file=tolerant(stream or sys.stderr)),
+        logger_factory=factory,
         cache_logger_on_first_use=False,
     )
+
+
+def _file_logger_factory(log_file: LogFile) -> Callable[..., logging.Logger]:
+    """A structlog logger factory writing rendered lines to a rotating file.
+
+    structlog renders the whole event to one string; the standard library's
+    ``RotatingFileHandler`` only stores it and rotates by size. The stdlib
+    logger is private (no propagation) so third-party logging is unaffected,
+    and handlers from a previous configuration are closed, not leaked.
+    """
+    log_file.path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        log_file.path,
+        maxBytes=log_file.max_bytes,
+        backupCount=log_file.backups,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    close_file_logging()
+    file_logger = logging.getLogger(_FILE_LOGGER_NAME)
+    file_logger.addHandler(handler)
+    file_logger.setLevel(logging.DEBUG)
+    file_logger.propagate = False
+    return lambda *_args: file_logger
+
+
+def close_file_logging() -> None:
+    """Flush and close the rotating log file, if one is configured. Idempotent."""
+    file_logger = logging.getLogger(_FILE_LOGGER_NAME)
+    for handler in list(file_logger.handlers):
+        file_logger.removeHandler(handler)
+        handler.close()
 
 
 def tolerant(stream: TextIO) -> TextIO:
@@ -130,5 +199,11 @@ class _LazyLogger:
 #   (``backslashreplace``): a log line must never crash the caller, and the
 #   escaped text still shows which character it was. Streams that are not
 #   ``TextIOWrapper`` (pytest's capture, StringIO) accept any text already.
+# - File logging goes through a private stdlib logger only for its
+#   RotatingFileHandler: structlog still renders (and redacts) every line,
+#   and the stdlib's rotation is proven where a hand-rolled one would need
+#   tests for every edge. structlog calls level methods (info, error...)
+#   that stdlib loggers have; ``exception`` arrives as ``error`` with the
+#   traceback already rendered by format_exc_info, so it is not doubled.
 # - Redaction is a processor, not a convention, because a convention is only
 #   as good as the most tired contributor.

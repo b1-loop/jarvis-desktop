@@ -77,7 +77,14 @@ clear message when `native/third_party/` is empty.
 
 4. Commit with [Conventional Commits](https://www.conventionalcommits.org/):
    `feat(audio): add ring buffer`, `fix(agent): handle empty tool result`, `docs: add ADR-0003`.
-5. Push and open a pull request. CI must be green before merging.
+5. Push and open a pull request with the output of the checks above.
+
+**CI status.** `.github/workflows/ci.yml` still exists and documents what
+CI runs (the sections below describe its caches and clang-tidy shards), but
+GitHub Actions is currently switched off in the repository settings to save
+Actions minutes. Until it is re-enabled, the pre-commit hooks and the
+commands in step 3 are the gate: run all of them, plus the native build when
+C++ changed, before asking for a merge.
 
 ## Tool versions: one source of truth
 
@@ -178,7 +185,22 @@ nothing to register.
 Add the sources under `native/<component>/`, a Catch2 test under `native/tests/`,
 a pybind11 binding under `native/bindings/`, and a thin Python wrapper with a
 pure-Python fallback or a clear `NativeUnavailableError`. Public C++ APIs carry
-Doxygen comments. `clang-tidy` runs on every PR.
+Doxygen comments. Run `scripts/build_native.py --tidy` (or
+`--tidy-only --tidy-changed-since origin/main`) before the PR.
+
+## Working on the desktop app
+
+`jarvis --background` (what the shortcuts run) has no console: output goes
+to `data/logs/jarvis.log`, and a second launch only pokes the first one.
+While developing, keep using `uv run jarvis` or `--text-only` in a terminal,
+and quit any autostarted instance from its tray menu first: the single-
+instance lock only guards windowless launches, so a terminal session next
+to it would open the microphone a second time. Point a test run at a
+scratch directory with `JARVIS_DATA_DIR` to get its own lock and log. Code
+in `src/jarvis/app/` must import on Linux (CI): keep Windows-only calls
+behind `sys.platform` checks and their tests behind `skipif`. After
+changing the state palette, regenerate the icon with
+`uv run python scripts/make_icon.py` (a test fails if it is stale).
 
 ## Architecture decisions
 

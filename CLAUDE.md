@@ -115,6 +115,7 @@ docs/adr/      Architecture Decision Records
 - Long native builds (whisper.cpp, llama.cpp) exceed a 10-minute foreground limit: run `scripts/build_native.py` in the background. `--skip-tests` builds without running Catch2.
 - Ollama serves `qwen2.5:7b` at `http://localhost:11434`. The development machine has an NVIDIA GPU but not the CUDA cuBLAS library, so faster-whisper falls back to CPU; set `JARVIS_STT_DEVICE=cpu` for benchmarks to skip the attempt.
 - The workstation may be locked while agents run: desktop-dependent native and Python tests skip themselves (session lock probe), clipboard and window calls fail on a locked desktop, and CI runners may have no audio endpoint.
+- GitHub Actions is switched off in the repository settings (Actions minutes). `.github/workflows/ci.yml` still documents the pipeline; until it is re-enabled, run every check locally and paste the results into the PR instead of waiting for CI.
 - Someone may be sitting at the computer: never play audio through the real speakers from automated runs. `scripts/benchmark_latency.py` uses a silent null sink by default (`--sink device` only when asked), and `hardware`-marked tests are run by hand only.
 - Set `PYTHONIOENCODING=utf-8` when redirecting Jarvis output to a file (the Windows console code page cannot encode every character the tools print).
 - Shared scratch files from parallel agents need a unique prefix; a stray `wave.py` in a shared scratch directory once shadowed the standard library for scripts run from there (run helper scripts with `python -I`).

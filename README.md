@@ -52,6 +52,9 @@ scheduling. No native thread ever takes the GIL.
   offline with whisper.cpp + llama.cpp + Piper.
 - **Status overlay, tray icon and dashboard** that stay in sync through one
   event bus.
+- **A desktop app.** Shortcuts on the desktop, in the Start menu and in
+  autostart launch a windowless, single-instance Jarvis whose tray icon is
+  the app; it starts Ollama when needed and logs to a rotating file.
 - **Honest degradation.** No audio build, models or microphone: text mode,
   with the reason. No wake-word models: hotkey only. TTS failing: printed
   answers. No CUDA libraries: CPU speech recognition. No credentials:
@@ -226,6 +229,7 @@ uv run jarvis                  # voice, default configuration, wake word "hey ja
 uv run jarvis --no-wakeword    # hotkey only (push to talk)
 uv run jarvis --mode local     # fully offline: whisper.cpp + llama.cpp + Piper
 uv run jarvis --text-only      # type instead of talk; no audio devices or native build needed
+uv run jarvis --background     # desktop app: no console, tray icon only, one instance, log file
 ```
 
 - **Wake word.** Say "Hey Jarvis", wait for the short beep, then speak.
@@ -261,6 +265,39 @@ uv run jarvis --text-only      # type instead of talk; no audio devices or nativ
   mid-sentence. Use headphones or a lower volume.
 - **Leaving.** Say "goodbye", choose Quit in the tray menu, or press Ctrl+C.
 
+### Install as an app
+
+No PowerShell needed after this. From the checkout, once:
+
+```powershell
+uv run python scripts/install_shortcuts.py --autostart
+```
+
+This creates a **Jarvis** shortcut on the desktop, in the Start menu and in
+your Startup folder (`shell:startup`), so Jarvis starts with Windows. Each
+one runs `uvw run --project <checkout> jarvis --background`: no console
+window, the tray icon is the app. On start you get one notification,
+"Jarvis is listening; say 'Hey Jarvis' or press Ctrl+Alt+J" (it also tends
+to wake on the Swedish "Hej Jarvis"). Double-click the tray icon or pick
+Show dashboard to open the dashboard. Opening a shortcut while Jarvis is
+already running brings that one forward instead of starting a second one.
+If Ollama is the LLM and is not running, Jarvis starts it, hidden.
+
+- **Choose what to create:** `--no-desktop`, `--no-start-menu`,
+  `--autostart` / `--no-autostart` (the options describe the end state, so
+  `--no-autostart` removes an autostart shortcut made earlier).
+- **Remove it:** `uv run python scripts/install_shortcuts.py --uninstall`
+  deletes exactly the shortcuts the script created (recorded in
+  `data/desktop-shortcuts.json`).
+- **Log:** `data\logs\jarvis.log` in the checkout (rotated at 1 MB, three
+  backups). If voice cannot start (native build, models, microphone), the
+  notification and the tray tooltip say why and point there; Quit in the
+  tray menu exits.
+
+The shortcuts point at the checkout, so run the script again if you move
+it. [ADR-0021](docs/adr/0021-desktop-launcher.md) explains why this is a
+shortcut to `uvw` rather than a frozen `.exe`.
+
 ## Status
 
 | Step | Scope | State |
@@ -282,6 +319,8 @@ uv run jarvis --text-only      # type instead of talk; no audio devices or nativ
 
 ## Roadmap
 
+- **A signed, frozen installer** instead of shortcuts to `uvw` once a build
+  pipeline bundles the native modules and models (ADR-0021).
 - **macOS and Linux `Platform` backends** (and the matching ONNX Runtime
   download): the interface exists, only `WindowsPlatform` implements it.
 - **Acoustic echo cancellation** (WebRTC APM) so barge-in works on
@@ -345,7 +384,13 @@ uv run jarvis --text-only      # type instead of talk; no audio devices or nativ
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). The checks every commit passes:
+See [CONTRIBUTING.md](CONTRIBUTING.md). The GitHub Actions workflow
+(`.github/workflows/ci.yml`) documents the full pipeline (lint, types,
+Python tests on Linux, the Windows native build with Catch2 and
+native-marked tests, sharded clang-tidy, a secrets scan), but it is
+currently switched off in the repository settings to save Actions minutes;
+the same checks run locally through the pre-commit hooks and these
+commands:
 
 ```powershell
 uv run ruff check . ; uv run ruff format --check . ; uv run mypy ; uv run pytest -m "not hardware"

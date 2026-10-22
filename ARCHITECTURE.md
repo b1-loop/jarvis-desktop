@@ -29,9 +29,10 @@ jarvis-desktop/
     tests/                  Catch2, one executable
     third_party/            whisper.cpp, llama.cpp (git submodules)
   src/jarvis/
-    __main__.py             CLI (typer): --mode, --text-only, --no-wakeword
+    __main__.py             CLI (typer): --mode, --text-only, --no-wakeword, --background
     config.py               pydantic-settings, the only reader of environment variables
     _native/                loader for the compiled modules (the .pyd files are git-ignored)
+    app/                    windowless desktop app: background session, single instance, shortcuts, icon, Ollama autostart
     core/                   composition root (bootstrap, voice_bootstrap, providers, ui_wiring,
                             proactive_wiring), event bus, state machine, orchestrator,
                             voice I/O, triggers, barge-in, latency probes, overlay bridge
@@ -390,6 +391,20 @@ latency statistics, memory inspector) for both front ends; both run on their
 own threads and receive immutable snapshots from `ui/view_model.py`
 (ADR-0011, ADR-0015).
 
+### Desktop app
+
+`scripts/install_shortcuts.py` writes desktop, Start-menu and (optionally)
+Startup shortcuts that run `uvw run --project <checkout> jarvis
+--background`. `--background` (or a process without stdout) selects the
+windowless session in `jarvis.app.background`: logs go to a rotating
+JSON-lines file (`data/logs/jarvis.log`), an OS file lock
+(`data/jarvis.lock`) keeps one instance and a second launch asks the first,
+over a loopback socket served on the event loop with a random token, to
+show its dashboard; Ollama is started hidden when it is the LLM and not
+answering; voice mode runs with the dashboard hidden and the tray icon as
+the only surface. A failure is reported as a notification plus a tray
+tooltip naming the log (ADR-0021).
+
 ## 12. Error handling and degradation
 
 One exception hierarchy rooted at `jarvis.utils.errors.JarvisError`
@@ -416,6 +431,8 @@ ladder, as implemented:
 | Vision unavailable for the provider | the screen tools say so | `bootstrap.build_vision` |
 | psutil missing | battery trigger skipped with a warning | `bootstrap.build_battery_source` |
 | Overlay, tray or dashboard cannot start | stubs; the session continues | `ui/` factories |
+| Windowless app cannot start voice | notification and tray tooltip with the reason and the log path; Quit exits | `app/background.py` |
+| Ollama not running (windowless app) | started hidden, waited for up to `JARVIS_OLLAMA_START_TIMEOUT_SECONDS` | `app/ollama_launcher.py` |
 
 ## 13. Native build
 
@@ -429,8 +446,9 @@ local inference and overlay features (ADR-0002). Options:
 `JARVIS_BUILD_OVERLAY`. Third-party code comes in pinned: miniaudio and the
 ONNX Runtime binary by URL hash through FetchContent, Catch2 and Dear ImGui
 by tag, whisper.cpp and llama.cpp as submodules. Warnings are errors
-(`/W4 /WX`) for our code only; `--tidy` runs clang-tidy, which CI shards
-four ways (see `CONTRIBUTING.md`).
+(`/W4 /WX`) for our code only; `--tidy` runs clang-tidy, which the CI
+workflow shards four ways; the workflow is switched off in the repository
+settings for now, so the same commands run locally (see `CONTRIBUTING.md`).
 
 ## 14. Latency budget
 
@@ -473,5 +491,6 @@ Collected in `docs/adr/`. The headline ones: C++ for the audio hot path
 (0003), interfaces in front of every provider and the OS (0004, 0005),
 plugin tools with central confirmation (0006), SQLite plus Chroma (0008),
 own thin inference wrappers (0010), CLOUD vs LOCAL (0013), one orchestrator
-for text and voice (0014), native-first barge-in (0019) and per-turn tool
-selection for small models (0020).
+for text and voice (0014), native-first barge-in (0019), per-turn tool
+selection for small models (0020) and shortcuts to `uvw` rather than a
+frozen executable (0021).
