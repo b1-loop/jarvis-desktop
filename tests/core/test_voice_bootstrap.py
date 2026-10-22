@@ -102,7 +102,11 @@ async def test_wake_word_model_failure_falls_back_to_the_hotkey(
     asked: list[bool] = []
 
     def engine(
-        _paths: AudioModelPaths, *, wake_word: bool, min_speech_ms: int | None
+        _paths: AudioModelPaths,
+        *,
+        wake_word: bool,
+        min_speech_ms: int | None,
+        wake_word_threshold: float | None = None,
     ) -> BargeInEngine:
         asked.append(wake_word)
         if wake_word:
@@ -126,7 +130,11 @@ async def test_no_wakeword_flag_is_hotkey_only_without_a_warning(
     asked: list[bool] = []
 
     def engine(
-        _paths: AudioModelPaths, *, wake_word: bool, min_speech_ms: int | None
+        _paths: AudioModelPaths,
+        *,
+        wake_word: bool,
+        min_speech_ms: int | None,
+        wake_word_threshold: float | None = None,
     ) -> BargeInEngine:
         asked.append(wake_word)
         return BargeInEngine()

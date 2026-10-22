@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -369,3 +370,27 @@ async def test_speech_without_a_wake_phrase_is_the_request_itself(
         utterance = await asyncio.wait_for(capture, WAIT)
 
     assert utterance.speech_detected
+
+
+def test_wake_word_threshold_reaches_the_native_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, float] = {}
+
+    class FakeConfig:
+        def __init__(self) -> None:
+            self.pipeline = SimpleNamespace(
+                wake_word_threshold=0.5, segmenter=SimpleNamespace(min_speech_ms=200)
+            )
+
+    def fake_engine(_vad: object, _wake: object, config: FakeConfig) -> object:
+        captured["threshold"] = config.pipeline.wake_word_threshold
+        return object()
+
+    module = SimpleNamespace(
+        EngineConfig=FakeConfig, ModelError=RuntimeError, AudioEngine=fake_engine
+    )
+    monkeypatch.setattr("jarvis.audio.engine._native.load", lambda _name: module)
+    monkeypatch.setattr(AudioModelPaths, "missing", lambda _self: ())
+
+    create_native_engine(AudioModelPaths.in_directory(Path()), wake_word_threshold=0.8)
+
+    assert captured["threshold"] == pytest.approx(0.8)

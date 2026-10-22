@@ -203,3 +203,12 @@ def test_empty_env_values_mean_not_set(
 
     assert settings.spotify_client_id is None
     assert settings.anthropic_api_key is None
+
+
+def test_wake_word_threshold_defaults_above_observed_false_triggers(
+    make_settings: Callable[..., Settings],
+) -> None:
+    # Swedish speech near the microphone scored 0.64-0.71; real wake phrases 0.92+.
+    assert make_settings().wake_word_threshold == pytest.approx(0.8)
+    with pytest.raises(ValidationError):
+        make_settings(wake_word_threshold=1.0)
