@@ -28,6 +28,7 @@ dependencies = [
   "pyyaml>=6.0",
   "tzdata>=2024.1",
   "httpx>=0.27",
+  "tzdata>=2024.1", # IANA zones for zoneinfo on Windows, which ships none
 ]
 
 [project.optional-dependencies]
@@ -89,6 +90,9 @@ artifacts = ["src/jarvis/_native/*.pyd", "src/jarvis/_native/*.so"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests", "scripts"]
+# Agent worktrees live under .claude/ inside the checkout; whisper.cpp and
+# llama.cpp ship their own Python scripts with their own style.
+extend-exclude = [".claude", "native/third_party"]
 
 [tool.ruff.lint]
 select = [
@@ -126,6 +130,9 @@ convention = "google"
 "tests/**" = ["D", "S105", "S106", "PLR2004", "ARG001", "ARG002"]
 "scripts/**" = ["T20", "S603", "S607"] # dev scripts print and run fixed commands
 "src/jarvis/__main__.py" = ["T20"] # CLI entry point prints by design
+# Optional-extra parsers are imported inside the functions that need them.
+"src/jarvis/integrations/documents.py" = ["PLC0415"]
+"src/jarvis/integrations/youtube.py" = ["PLC0415"]
 
 [tool.ruff.lint.pylint]
 max-statements = 30   # Clean Code: functions under 30 lines
@@ -153,6 +160,7 @@ module = [
   "edge_tts.*",
   "chromadb.*",
   "spotipy.*",
+  "msal.*",
   "pystray.*",
   "googleapiclient.*",
   "google_auth_oauthlib.*",

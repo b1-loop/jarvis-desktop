@@ -9,6 +9,7 @@
 #include "jarvis/audio/engine.hpp"
 #include "jarvis/audio/events.hpp"
 #include "jarvis/audio/microphone.hpp"
+#include "jarvis/audio/mp3_decoder.hpp"
 #include "jarvis/audio/open_wake_word.hpp"
 #include "jarvis/audio/pipeline.hpp"
 #include "jarvis/audio/playback.hpp"
@@ -73,10 +74,40 @@ std::unique_ptr<AudioEngine> makeEngine(const std::filesystem::path& vadModel,
 // Translators are consulted most-recently-registered first, so the base
 // class goes first and the derived classes after it.
 void defineExceptions(const py::module_& module) {
-    const auto& nativeError =
-        py::register_exception<jarvis::NativeError>(module, "NativeError", PyExc_RuntimeError);
-    py::register_exception<jarvis::AudioDeviceError>(module, "AudioDeviceError", nativeError.ptr());
-    py::register_exception<jarvis::ModelError>(module, "ModelError", nativeError.ptr());
+    const auto& nativeError = py::register_local_exception<jarvis::NativeError>(
+        module, "NativeError", PyExc_RuntimeError);
+    py::register_local_exception<jarvis::AudioDeviceError>(module, "AudioDeviceError",
+                                                           nativeError.ptr());
+    py::register_local_exception<jarvis::ModelError>(module, "ModelError", nativeError.ptr());
+    py::register_local_exception<jarvis::DecodeError>(module, "DecodeError", nativeError.ptr());
+}
+
+std::span<const std::byte> asBytes(const py::bytes& data) {
+    char* buffer = nullptr;
+    py::ssize_t length = 0;
+    if (PYBIND11_BYTES_AS_STRING_AND_SIZE(data.ptr(), &buffer, &length) != 0) {
+        throw py::error_already_set();
+    }
+    return std::as_bytes(std::span<const char>{buffer, static_cast<std::size_t>(length)});
+}
+
+void defineDecoding(py::module_& module) {
+    module.def(
+        "decode_mp3",
+        [](const py::bytes& data) {
+            // The bytes object is immutable and stays referenced by `data`,
+            // so its buffer can be read with the GIL released.
+            const auto bytes = asBytes(data);
+            DecodedAudio audio;
+            {
+                const py::gil_scoped_release release;
+                audio = decodeMp3(bytes);
+            }
+            return py::make_tuple(toArray(toMono(audio)), audio.sampleRate);
+        },
+        py::arg("data"),
+        "Decode a complete MP3 buffer to (mono float32 samples, sample_rate). "
+        "Raises DecodeError if no frame could be decoded.");
 }
 
 void defineConfig(const py::module_& module) {
@@ -180,4 +211,5 @@ PYBIND11_MODULE(jarvis_audio, module) {
     defineEvents(module);
     definePlayback(module);
     defineEngine(module);
+    defineDecoding(module);
 }

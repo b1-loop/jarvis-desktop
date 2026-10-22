@@ -25,16 +25,16 @@ is Python 3.12.
 | 1 | Plan | done |
 | 2 | Scaffold, tooling, CI | done |
 | 3 | C++ audio engine | done |
-| 4 | C++ Windows integration | **next** |
-| 5 | STT / TTS / LLM cloud providers | planned |
-| 6 | Agent core, text-only loop | planned |
+| 4 | C++ Windows integration | done |
+| 5 | STT / TTS / LLM cloud providers | done |
+| 6 | Agent core, text-only loop | framework done, agent loop pending |
 | 7 | Voice pipeline with barge-in | planned |
-| 8 | Phase 1 + 2 tools | planned |
+| 8 | Phase 1 + 2 tools | providers and web/document helpers done, tools pending |
 | 9 | Memory | done |
 | 10 | Proactive and routines | done |
 | 11 | Vision | planned |
-| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | planned |
-| 13 | Overlay and dashboard | planned |
+| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | C++ wrappers done, Python LOCAL mode pending |
+| 13 | Overlay and dashboard | overlay done, tray and dashboard pending |
 | 14 | Docs, ADRs, benchmark | planned |
 
 ## Architecture
@@ -76,6 +76,7 @@ Two runtime modes:
 | Mode | LLM | STT | TTS | Network |
 | --- | --- | --- | --- | --- |
 | `cloud` (default) | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
+| `cloud` + `JARVIS_LLM_PROVIDER=ollama` | Ollama (local HTTP API) | faster-whisper | edge-tts | TTS only |
 | `local` | llama.cpp | whisper.cpp | Piper | none |
 
 Full design, threading model and trade-offs: [ARCHITECTURE.md](ARCHITECTURE.md)

@@ -1,0 +1,6 @@
+[submodule "native/third_party/whisper.cpp"]
+	path = native/third_party/whisper.cpp
+	url = https://github.com/ggml-org/whisper.cpp
+[submodule "native/third_party/llama.cpp"]
+	path = native/third_party/llama.cpp
+	url = https://github.com/ggml-org/llama.cpp

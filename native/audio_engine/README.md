@@ -16,6 +16,7 @@ playback with barge-in. Exposed to Python as `jarvis_audio`.
 | `playback.hpp` | `Playback` | chunk queue drained under `try_lock`; `stop()` is barge-in |
 | `pipeline.hpp` | `AudioPipeline` | synchronous core: frame assembly, detection, pre-roll, capture, events |
 | `engine.hpp` | `AudioEngine` | threads, ring buffer, event queue, barge-in wiring |
+| `mp3_decoder.hpp` | `decodeMp3`, `toMono` | decodes a complete MP3 buffer (edge-tts speech) to float32 PCM via dr_mp3 |
 
 Interfaces (`AudioSource`, `AudioSink`, `VoiceActivityDetector`,
 `WakeWordDetector`) exist so the pipeline and engine are tested with fakes;

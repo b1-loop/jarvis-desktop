@@ -25,7 +25,7 @@ jarvis/
     overlay/              Dear ImGui status window
     bindings/             pybind11 modules: jarvis_audio, jarvis_os, jarvis_inference, jarvis_overlay
     tests/                Catch2
-    third_party/          whisper.cpp, llama.cpp (git submodules, added in step 12)
+    third_party/          whisper.cpp, llama.cpp (git submodules, pinned to release tags)
   src/jarvis/
     __main__.py           CLI entry point and composition root
     config.py             pydantic-settings, the only reader of environment variables
@@ -40,7 +40,7 @@ jarvis/
     proactive/            scheduler, triggers, routines
     integrations/         email, calendar, music, chat, smart home providers
     vision/               screenshot to vision model
-    ui/                   tray icon, dashboard
+    ui/                   overlay facade, tray icon, dashboard
     utils/                errors, logging, timing, retry, sandbox
   tests/                  mirrors src/
   scripts/                build_native, download_models, record_test_audio, benchmark_latency
@@ -57,11 +57,44 @@ Each stage is a class behind an abstract base in its package's `base.py`.
 Stages never call each other; the orchestrator moves data between them over
 `asyncio.Queue`s and publishes progress on the event bus.
 
-## 4. State machine *(step 6)*
+### Providers *(step 5)*
 
-`IDLE → LISTENING → THINKING → SPEAKING → IDLE`. Transitions are validated by
-`core/state_machine.py` and published as `StateChanged` events. Barge-in is the
-transition `SPEAKING → LISTENING` triggered by VAD activity during playback.
+| Stage | Interface | CLOUD | Ollama option | LOCAL *(step 12)* |
+| --- | --- | --- | --- | --- |
+| STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off-loop) | same | `WhisperCppSTT` |
+| TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | same | `PiperTTS` |
+| LLM | `llm.base.LLMClient` | `AnthropicClient` (streaming, tool use, vision) | `OllamaClient` | `LocalLlamaClient` |
+
+`llm.factory.create_llm_client` picks the LLM by `JARVIS_LLM_PROVIDER`.
+Providers receive their external dependency through a `Protocol`, so unit
+tests run on fakes and never touch the network or the native build.
+Streaming is sentence-by-sentence: `llm.streaming.SentenceSplitter` cuts
+text deltas into sentences, each sentence goes to `TTS.synthesize`, which
+yields PCM chunks while the rest downloads. Retries share one policy in
+`utils.retry`. See ADR-0005.
+
+## 4. State machine
+
+`IDLE → LISTENING → THINKING → SPEAKING → IDLE`. `core/state_machine.py`
+holds the current `AssistantState` and an explicit transition table:
+
+| From | To | Meaning |
+| --- | --- | --- |
+| IDLE | LISTENING | wake word or hotkey |
+| LISTENING | THINKING | end of speech, transcript ready |
+| LISTENING | IDLE | silence, nothing to do |
+| THINKING | SPEAKING | answer (or tool summary) ready |
+| THINKING | IDLE | nothing to say |
+| SPEAKING | IDLE | playback finished |
+| SPEAKING | LISTENING | barge-in: the user talked over Jarvis |
+
+Anything else raises `InvalidTransitionError`. Every transition is published
+as a `StateChanged` event on the `EventBus` (`core/events.py`), which is how
+the overlay, tray icon, dashboard and logs stay in sync without the
+orchestrator knowing about them. The bus is in-process and single-loop;
+each subscriber has a bounded queue that drops the oldest event (counted and
+logged) rather than ever blocking the publisher, because the publisher is
+the latency-critical voice path.
 
 ## 5. Threading model
 
@@ -72,6 +105,8 @@ transition `SPEAKING → LISTENING` triggered by VAD activity during playback.
 | Playback callback | miniaudio (C++) | drain the `Playback` chunk queue under `try_lock`; silence when contended or empty | playback mutex (never blocks) |
 | Event loop | Python asyncio | poll events every 10 ms, orchestrate STT/LLM/TTS, enqueue TTS chunks | engine mutex, playback mutex (brief) |
 | Executor threads | Python | STT and other CPU-bound Python work | none |
+| Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11 rendering, DPI changes | overlay model mutex (read) |
+| Generation | `GenerationStream` (C++) | llama.cpp decode loop; pushes text pieces into a queue that Python pulls from with the GIL released | stream mutex, cancellation token |
 
 Rules that keep this safe:
 
@@ -82,6 +117,9 @@ Rules that keep this safe:
 - `AudioPipeline` is single-threaded by construction. The engine wraps every
   call to it in one mutex; the Python side only takes that mutex for
   microsecond-scale operations (poll, toggle listening, take audio).
+- The overlay never calls back into Python either: the event loop pushes
+  state, levels and text through setters that take the model mutex for
+  nanoseconds, and the UI thread draws a snapshot (ADR-0011).
 - Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
   when a barge-in target is set, so it takes effect on the next device period
   without waiting for the event loop. Python learns about it afterwards via
@@ -101,10 +139,52 @@ Detection parameters (thresholds, hysteresis, cooldown, pre-roll) live in
 `PipelineConfig` and are exposed to Python unchanged. ADR-0003 records why
 this layer is C++.
 
-## 6. Agent and tools *(step 6)*
+### OS integration
 
-Tool discovery, pydantic validation, confirmation policy and the LLM tool-call
-protocol. Covered by ADR-0005 and ADR-0006.
+Tools talk to the operating system only through
+`jarvis.os_integration.Platform` (an ABC with async methods and plain
+dataclasses). `WindowsPlatform` implements it over the `jarvis_os` module
+and runs every native call in `asyncio.to_thread`; `StubPlatform` records
+calls for text-only mode and tests. On the C++ side each capability is one
+header/source pair behind a small interface (`WindowManager`,
+`ProcessControl`, `SystemControls`, `Screenshotter`, `TextInjector`,
+`Notifier`, `Clipboard`) with no Win32 types in public headers.
+
+Two more native threads join the table above, both created lazily and
+released by `Platform.close()`:
+
+| Thread | Owner | Work | Shares |
+| --- | --- | --- | --- |
+| Hotkey loop | `HotkeyManager` (C++) | `RegisterHotKey` is thread-affine; this thread registers and pumps `WM_HOTKEY` into a queue Python polls | event queue mutex |
+| Notifier loop | `BalloonNotifier` (C++) | owns the hidden window and tray icon that `Shell_NotifyIcon` requires to outlive any Python executor thread | task queue mutex |
+
+Everything else (windows, processes, volume, brightness, screenshot,
+clipboard) runs on the calling executor thread with per-call COM
+initialisation. ADR-0004 records the interface split and the notification
+and brightness choices.
+
+## 6. Agent and tools *(agent loop: step 6, pending)*
+
+A tool is one module in `jarvis/tools/` defining a `Tool` subclass: `name`,
+`description`, a pydantic `Input` model, a `category`, a risk declaration
+(`requires_confirmation` or a per-call `needs_confirmation`) and `async run()`.
+`agent/registry.py` discovers every plugin with `pkgutil`, records broken ones
+as `DiscoveryFailure`s instead of crashing, and produces the Anthropic-style
+`{name, description, input_schema}` definitions from the pydantic models.
+
+Tools receive services only through `ToolContext` (settings, event bus,
+clock, confirmation callback, OS and memory facades as Protocols) and return
+a `ToolResult` with `spoken` (for TTS), `detail` (for the LLM and dashboard)
+and `data` (JSON). Invalid arguments and tool failures become `ok=False`
+results, never exceptions in the agent loop.
+
+`agent/confirmation.py` is the only place that decides whether to ask the
+user: the tool's declaration, a list of always-confirm categories and the
+`JARVIS_CONFIRM_DESTRUCTIVE` trusted-mode flag. Shell commands additionally
+pass through `utils/sandbox.py` (argv only, denylist, allowlist, working
+root, scrubbed environment, timeout, output cap). The agent loop that turns
+a transcript into tool calls and a spoken summary (`agent/loop.py`) depends
+on the LLM interface and lands with it. See ADR-0006.
 
 ## 7. Memory *(step 9)*
 
@@ -118,6 +198,15 @@ protocol. Covered by ADR-0005 and ADR-0006.
 `UserProfile` is a view over `profile.*` facts. `recall()` returns profile +
 facts + recent turns + semantic hits trimmed to a character budget. All data
 stays under `Settings.data_dir`. See ADR-0008.
+
+## 7a. Local inference *(step 12)*
+
+`native/inference` wraps whisper.cpp and llama.cpp (ADR-0010). Transcription
+is one blocking call with the GIL released. Generation runs on a native
+thread that fills a queue; Python pulls pieces from a `GenerationStream`
+and can cancel it, so the LLM path follows the same no-GIL-on-native-threads
+rule as the audio engine. The Python `STT` / `LLMClient` providers over this
+module are the second half of step 12.
 
 ## 8. Native build *(step 2)*
 

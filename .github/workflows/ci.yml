@@ -64,7 +64,7 @@ jobs:
           submodules: recursive
       - uses: astral-sh/setup-uv@v4
       - run: uv python install 3.12
-      - run: uv sync --group dev
+      - run: uv sync --all-extras --group dev
       - name: Download ONNX models (cached by hash check)
         run: uv run python scripts/download_models.py
       - uses: ilammy/msvc-dev-cmd@v1
@@ -82,7 +82,7 @@ jobs:
       - name: Python can import the native modules
         run: uv run python -c "import jarvis._native as n; print(n.available_modules())"
       - name: Native-marked Python tests
-        run: uv run pytest -m native --no-cov
+        run: uv run pytest -m "native and not hardware" --no-cov
 
   secrets-scan:
     name: Secrets scan

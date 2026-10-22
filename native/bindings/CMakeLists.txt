@@ -19,5 +19,16 @@ target_link_libraries(jarvis_audio PRIVATE jarvis::audio_engine)
 jarvis_copy_onnxruntime_dll(jarvis_audio)
 
 jarvis_add_python_module(jarvis_os jarvis_os_module.cpp)
-jarvis_add_python_module(jarvis_inference jarvis_inference_module.cpp)
-jarvis_add_python_module(jarvis_overlay jarvis_overlay_module.cpp)
+target_link_libraries(jarvis_os PRIVATE jarvis::os_integration)
+
+if(JARVIS_BUILD_INFERENCE)
+    jarvis_add_python_module(jarvis_inference jarvis_inference_module.cpp)
+    target_link_libraries(jarvis_inference PRIVATE jarvis::inference)
+else()
+    jarvis_add_python_module(jarvis_inference jarvis_inference_scaffold.cpp)
+endif()
+
+if(JARVIS_BUILD_OVERLAY)
+    jarvis_add_python_module(jarvis_overlay jarvis_overlay_module.cpp)
+    target_link_libraries(jarvis_overlay PRIVATE jarvis::overlay)
+endif()
