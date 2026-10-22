@@ -106,6 +106,8 @@ the latency-critical voice path.
 | Event loop | Python asyncio | poll events every 10 ms, orchestrate STT/LLM/TTS, enqueue TTS chunks | engine mutex, playback mutex (brief) |
 | Executor threads | Python | STT and other CPU-bound Python work | none |
 | Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11 rendering, DPI changes | overlay model mutex (read) |
+| Tray thread | `TrayIcon` (Python, pystray) | Win32 message loop for the notification-area icon; menu clicks go back to the loop with `call_soon_threadsafe` | pre-rendered icon images (read-only) |
+| Dashboard thread | `Dashboard` (Python, tkinter) | owns the Tk interpreter and every widget; drains a `queue.Queue` of immutable snapshots every 100 ms; the refresh button hops back with `call_soon_threadsafe` | snapshot queue |
 | Generation | `GenerationStream` (C++) | llama.cpp decode loop; pushes text pieces into a queue that Python pulls from with the GIL released | stream mutex, cancellation token |
 
 Rules that keep this safe:
@@ -120,6 +122,10 @@ Rules that keep this safe:
 - The overlay never calls back into Python either: the event loop pushes
   state, levels and text through setters that take the model mutex for
   nanoseconds, and the UI thread draws a snapshot (ADR-0011).
+- The tray and dashboard threads never touch the event bus or the view
+  model: the loop pushes immutable snapshots (dashboard) or swaps a
+  pre-rendered image (tray), and user actions come back only through
+  `call_soon_threadsafe` (ADR-0015).
 - Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
   when a barge-in target is set, so it takes effect on the next device period
   without waiting for the event loop. Python learns about it afterwards via
