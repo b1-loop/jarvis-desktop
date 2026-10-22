@@ -20,13 +20,30 @@ onboarding guide for anyone (including future me) touching the code.
 
 ```powershell
 git clone --recurse-submodules https://github.com/b1-loop/jarvis-desktop.git
-cd jarvis
-uv sync --all-extras                     # Python deps + dev tools
+cd jarvis-desktop
+uv sync --all-extras --group dev                 # Python deps + dev tools
 uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
-uv run python scripts/build_native.py    # builds native/ into src/jarvis/_native/
-uv run python scripts/download_models.py # VAD and wake word; add --local for whisper.cpp / llama.cpp models
-copy .env.example .env                   # then fill in your keys
+uv run python scripts/build_native.py            # builds native/ into src/jarvis/_native/, runs Catch2
+uv run python scripts/download_models.py --local # VAD + wake word; --local adds whisper.cpp, llama.cpp, Piper
+ollama pull qwen2.5:7b                           # the default LLM (install Ollama first)
+copy .env.example .env                           # optional keys: Claude, integrations
 ```
+
+`scripts/build_native.py` options:
+
+| Flag | Effect |
+| --- | --- |
+| `--preset windows-release` (default), `windows-debug`, `ci-windows` | CMake preset; `ci-windows` adds sccache and a shared FetchContent cache |
+| `--skip-tests` | build only, do not run the Catch2 suite |
+| `--clean` | delete the build tree first |
+| `--tidy` | build, test, then run clang-tidy on every file |
+| `--tidy-only` | configure and lint without building |
+| `--tidy-changed-since <ref>` | lint only the `.cpp` files changed since `<ref>` (all files when a header or CMake file changed) |
+| `--tidy-shard i/n`, `--jobs N` | lint one interleaved shard, with N parallel processes (what CI does) |
+
+`scripts/download_models.py` verifies every file by SHA-256 and skips
+files that already match; `--force` re-downloads, `--models-dir` changes
+the target (default `JARVIS_MODELS_DIR`).
 
 Run the assistant:
 
@@ -47,9 +64,16 @@ clear message when `native/third_party/` is empty.
 3. Run the full check locally (pre-commit does most of it automatically):
 
    ```powershell
-   uv run ruff check . ; uv run ruff format --check . ; uv run mypy ; uv run pytest
+   uv run ruff check . ; uv run ruff format --check . ; uv run mypy ; uv run pytest -m "not hardware"
    uv run python scripts/build_native.py --tidy   # native build, Catch2 tests, clang-tidy
    ```
+
+   Test markers (`pyproject.toml`): `native` needs the compiled modules and
+   skips without them; `hardware` opens a real microphone or speakers and
+   never runs in CI (`uv run pytest -m hardware` by hand); `integration`
+   wires several modules with mocked I/O. CI's Linux lane runs
+   `-m "not native and not hardware"`, the Windows lane the `native` tests
+   after the C++ build. Coverage must stay above 80 %.
 
 4. Commit with [Conventional Commits](https://www.conventionalcommits.org/):
    `feat(audio): add ring buffer`, `fix(agent): handle empty tool result`, `docs: add ADR-0003`.
@@ -104,6 +128,32 @@ lands. Locally, `--tidy` keeps building first and lints everything;
 To reproduce the CI build locally, install sccache and run
 `uv run python scripts/build_native.py --preset ci-windows`. Day-to-day work
 uses `windows-release` or `windows-debug`, which need neither.
+
+## Running the benchmark
+
+`scripts/benchmark_latency.py` speaks fixed English and Swedish prompts
+into the real voice pipeline and prints the README's latency table:
+
+```powershell
+$env:JARVIS_STT_DEVICE = "cpu"   # only if the CUDA libraries are missing
+uv run python scripts/benchmark_latency.py                   # cloud-like and local, 3 runs per prompt, silent
+uv run python scripts/benchmark_latency.py --modes cloud --languages en --runs 10
+uv run python scripts/benchmark_latency.py --sink device     # play the answers through the speakers
+```
+
+The default null sink "plays" answers at the real-time rate without sound,
+so the benchmark never talks over the person at the computer. Every stage
+up to the hand-off to the device is identical; real playback adds one
+device period (about 10 ms) before the sound is audible.
+
+Prompts are synthesised once with edge-tts and cached under
+`data/bench/prompts/`; a `jarvis_audio.ReplayFeed` replaces the microphone,
+so the native VAD, segmenter and barge-in run unchanged. It needs Ollama for
+the cloud-like mode, `download_models.py --local` for the local mode, the
+native build, and the network for edge-tts. Results go to
+`data/bench/results.json` (ignored by version control); a full run takes about 20 minutes.
+`scripts/benchmark_local.py` is the narrower provider-by-provider
+comparison behind ADR-0013.
 
 ## Code rules
 

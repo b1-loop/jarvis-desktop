@@ -1,6 +1,6 @@
 """``LLMClient`` interface and the provider-neutral message, tool and event types.
 
-The agent loop (step 6) speaks only these types. Each provider converts them
+The agent loop speaks only these types. Each provider converts them
 to and from its wire format, so switching between Claude, Ollama and the
 local llama.cpp wrapper is a configuration change and the agent never
 learns which one answered. Streaming is the only mode: text arrives as

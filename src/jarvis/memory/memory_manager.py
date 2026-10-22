@@ -29,8 +29,9 @@ log = get_logger(__name__)
 Summariser = Callable[[Sequence[Message]], Awaitable[str]]
 """Turns a conversation into a short "what was discussed" text.
 
-The LLM-backed implementation arrives with the agent (step 6); until then
-``truncating_summariser`` keeps the first words of the exchange.
+The composition root does not wire an LLM-backed summariser (it would cost
+a model call at every shutdown), so ``truncating_summariser``, which keeps
+the first words of the exchange, is what runs today.
 """
 
 DEFAULT_CONTEXT_BUDGET_CHARS: Final = 4_000

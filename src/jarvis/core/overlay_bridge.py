@@ -128,6 +128,5 @@ class OverlayBridge:
 # - The level pump runs only one source at a time, chosen by state, so the
 #   waveform shows the user while they talk and Jarvis while it talks, and
 #   stays flat when idle instead of drawing room noise.
-# - The tray icon and dashboard (step 13, feat/tray-dashboard) subscribe to
-#   the same events; they are wired next to this bridge in
-#   core/voice_bootstrap.py when that branch lands.
+# - The tray icon and dashboard subscribe to the same events; they are
+#   built for both front ends by bootstrap.build_ui (core/ui_wiring.py).

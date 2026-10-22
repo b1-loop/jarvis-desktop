@@ -91,7 +91,7 @@ class STT(ABC):
 
 # Design notes:
 # - Segments carry timings even though the agent only needs text: the
-#   latency benchmark (step 14) and the dashboard transcript view use them,
+#   latency benchmark and the dashboard transcript view use them,
 #   and they are free to keep.
 # - An empty transcript is a value, not an error. Silence after a wake word
 #   is normal and the orchestrator simply returns to IDLE.

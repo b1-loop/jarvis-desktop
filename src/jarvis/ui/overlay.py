@@ -8,8 +8,8 @@ state through cheap, thread-safe setters and never receives callbacks.
 The native window is injected through the :class:`NativeOverlay` Protocol
 so the facade is unit-tested with fakes, and :class:`StubOverlay` stands in
 for it in text-only mode or when the native build is missing. The
-orchestrator (step 7) is the only intended caller of the setters; the tray
-icon and dashboard (later in step 13) will read the same state.
+overlay bridge (``core/overlay_bridge.py``) is the only caller of the
+setters; the tray icon and dashboard read the same state from the event bus.
 """
 
 from __future__ import annotations
