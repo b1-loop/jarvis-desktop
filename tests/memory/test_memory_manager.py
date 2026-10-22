@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -254,3 +254,39 @@ async def test_reminders_pass_through(manager: MemoryManager, clock: FakeClock) 
     assert [r.id for r in await manager.pop_due_reminders()] == [due.id]
     assert await manager.list_reminders() == []
     assert len(await manager.list_reminders(include_fired=True)) == 1
+
+
+def test_tool_answers_in_recent_turns_are_marked_stale() -> None:
+    at = datetime(2026, 10, 22, 9, 11, tzinfo=UTC)
+    user = Message(
+        id=1,
+        conversation_id=1,
+        role=Role.USER,
+        content="what time is it?",
+        tool_calls=(),
+        created_at=at,
+    )
+    answer = Message(
+        id=2,
+        conversation_id=1,
+        role=Role.ASSISTANT,
+        content="It is 09:11.",
+        tool_calls=({"name": "current_time", "ok": True},),
+        created_at=at,
+    )
+    chat = Message(
+        id=3,
+        conversation_id=1,
+        role=Role.ASSISTANT,
+        content="Nice to meet you.",
+        tool_calls=(),
+        created_at=at,
+    )
+
+    text = RecalledContext(profile="", facts=(), recent=(user, answer, chat), semantic=()).render()
+
+    assert "what time is it?" in text
+    assert "09:11." not in text
+    assert "answered using current_time" in text
+    assert "out of date" in text
+    assert "Nice to meet you." in text
