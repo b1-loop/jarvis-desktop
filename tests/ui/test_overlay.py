@@ -1,0 +1,253 @@
+from types import ModuleType
+
+import pytest
+
+from jarvis import _native
+from jarvis.ui.overlay import (
+    NativeOverlay,
+    Overlay,
+    OverlayConfig,
+    OverlayCorner,
+    OverlayError,
+    OverlayState,
+    StubOverlay,
+    create_native_overlay,
+    create_overlay,
+)
+from jarvis.utils.errors import JarvisError, NativeUnavailableError
+from tests.ui.fakes import FakeNativeOverlay
+
+
+@pytest.fixture
+def native() -> FakeNativeOverlay:
+    return FakeNativeOverlay()
+
+
+@pytest.fixture
+def overlay(native: FakeNativeOverlay) -> Overlay:
+    return Overlay(native)
+
+
+def test_state_names_mirror_the_native_enum() -> None:
+    assert [state.value for state in OverlayState] == ["IDLE", "LISTENING", "THINKING", "SPEAKING"]
+    assert [corner.value for corner in OverlayCorner] == [
+        "TOP_LEFT",
+        "TOP_RIGHT",
+        "BOTTOM_LEFT",
+        "BOTTOM_RIGHT",
+    ]
+
+
+def test_overlay_starts_idle_and_running(overlay: Overlay) -> None:
+    assert overlay.state is OverlayState.IDLE
+    assert overlay.running
+    assert overlay.visible
+
+
+def test_set_state_forwards_the_member_name(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    overlay.set_state(OverlayState.LISTENING)
+
+    assert overlay.state is OverlayState.LISTENING
+    assert native.calls == [("set_state", "LISTENING")]
+
+
+def test_text_and_levels_are_forwarded_in_order(
+    overlay: Overlay, native: FakeNativeOverlay
+) -> None:
+    overlay.push_level(0.4)
+    overlay.set_transcript("hello")
+    overlay.set_response("hi there")
+    overlay.flash_wake_word()
+
+    assert native.calls == [
+        ("push_level", 0.4),
+        ("set_transcript", "hello"),
+        ("set_response", "hi there"),
+        ("flash_wake_word", None),
+    ]
+
+
+def test_levels_are_coerced_to_float(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    overlay.push_level(1)
+
+    assert native.calls == [("push_level", 1.0)]
+    assert isinstance(native.calls[0][1], float)
+
+
+def test_show_and_hide_toggle_visibility(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    overlay.hide()
+    assert not overlay.visible
+
+    overlay.show()
+    assert overlay.visible
+    assert native.names() == ["set_visible", "set_visible"]
+
+
+def test_close_is_idempotent_and_stops_running(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    overlay.close()
+    overlay.close()
+
+    assert not overlay.running
+    assert native.names() == ["close"]
+
+
+def test_setters_after_close_are_ignored(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    overlay.close()
+
+    overlay.set_state(OverlayState.SPEAKING)
+    overlay.push_level(0.5)
+    overlay.set_transcript("late")
+    overlay.set_response("late")
+    overlay.flash_wake_word()
+    overlay.show()
+    overlay.hide()
+
+    assert native.names() == ["close"]
+    assert overlay.state is OverlayState.SPEAKING  # the facade still remembers
+
+
+def test_context_manager_closes(native: FakeNativeOverlay) -> None:
+    with Overlay(native) as overlay:
+        assert overlay.running
+    assert not overlay.running
+    assert native.names() == ["close"]
+
+
+def test_running_reflects_a_dead_native_thread(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    native._running = False
+
+    assert not overlay.running
+
+
+def test_stub_overlay_satisfies_the_protocol_and_records_values() -> None:
+    stub: NativeOverlay = StubOverlay()
+    overlay = Overlay(stub)
+
+    overlay.set_state(OverlayState.THINKING)
+    overlay.push_level(0.2)
+    overlay.set_transcript("what time is it")
+    overlay.set_response("It is noon.")
+    overlay.flash_wake_word()
+    overlay.hide()
+
+    assert isinstance(stub, StubOverlay)
+    assert stub.state == "THINKING"
+    assert stub.levels == [0.2]
+    assert stub.transcript == "what time is it"
+    assert stub.response == "It is noon."
+    assert stub.wake_flashes == 1
+    assert not stub.visible()
+    assert stub.running()
+
+    overlay.close()
+    assert not stub.running()
+
+
+def test_overlay_error_is_a_jarvis_error() -> None:
+    assert issubclass(OverlayError, JarvisError)
+
+
+def test_config_defaults_are_the_documented_ones() -> None:
+    config = OverlayConfig()
+
+    assert config.corner is OverlayCorner.BOTTOM_RIGHT
+    assert (config.width, config.height, config.margin) == (380, 132, 24)
+    assert config.click_through
+    assert config.opacity == 235
+    assert (config.active_fps, config.idle_fps) == (60, 10)
+    assert (config.level_history, config.max_text_chars) == (64, 240)
+
+
+def test_create_overlay_disabled_returns_a_stub() -> None:
+    overlay = create_overlay(enabled=False)
+
+    assert isinstance(overlay._native, StubOverlay)
+
+
+def test_create_overlay_falls_back_to_a_stub_when_native_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(name: str) -> ModuleType:
+        raise NativeUnavailableError(name, "not built")
+
+    monkeypatch.setattr(_native, "load", unavailable)
+
+    overlay = create_overlay()
+
+    assert isinstance(overlay._native, StubOverlay)
+    assert overlay.running
+
+
+def test_create_overlay_falls_back_to_a_stub_when_the_window_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def no_device(config: OverlayConfig) -> Overlay:
+        raise OverlayError("no device")
+
+    monkeypatch.setattr("jarvis.ui.overlay.create_native_overlay", no_device)
+
+    overlay = create_overlay()
+
+    assert isinstance(overlay._native, StubOverlay)
+
+
+# --- against the compiled module -------------------------------------------
+
+pytestmark_native = pytest.mark.native
+
+
+@pytest.fixture
+def jarvis_overlay() -> ModuleType:
+    try:
+        return _native.load("jarvis_overlay")
+    except NativeUnavailableError:
+        pytest.skip("jarvis_overlay is not built")
+
+
+@pytestmark_native
+def test_native_module_mirrors_the_python_enums(jarvis_overlay: ModuleType) -> None:
+    assert set(jarvis_overlay.AssistantState.__members__) == {s.value for s in OverlayState}
+    assert set(jarvis_overlay.Corner.__members__) == {c.value for c in OverlayCorner}
+    assert issubclass(jarvis_overlay.OverlayError, jarvis_overlay.NativeError)
+    assert "step 13" in jarvis_overlay.IMPLEMENTATION_STATUS
+
+
+@pytestmark_native
+def test_native_window_round_trips_state_through_the_facade(jarvis_overlay: ModuleType) -> None:
+    config = OverlayConfig(corner=OverlayCorner.TOP_LEFT, opacity=200)
+    try:
+        overlay = create_native_overlay(config)
+    except OverlayError as exc:
+        pytest.skip(f"overlay window unavailable here: {exc}")
+
+    with overlay:
+        assert overlay.running
+        overlay.set_state(OverlayState.LISTENING)
+        overlay.push_level(0.5)
+        overlay.set_transcript("smoke test")
+        overlay.set_response("ok")
+        overlay.flash_wake_word()
+        overlay.hide()
+
+        snapshot = overlay._native.snapshot()  # type: ignore[attr-defined]
+        assert snapshot.state == jarvis_overlay.AssistantState.LISTENING
+        assert snapshot.levels[-1] == pytest.approx(0.5)
+        assert snapshot.transcript == "smoke test"
+        assert snapshot.response == "ok"
+        assert snapshot.wake_flash > 0
+        assert not snapshot.visible
+        assert not overlay.visible
+    assert not overlay.running
+
+
+@pytestmark_native
+def test_native_set_state_rejects_unknown_names(jarvis_overlay: ModuleType) -> None:
+    try:
+        window = jarvis_overlay.OverlayWindow()
+    except jarvis_overlay.OverlayError as exc:
+        pytest.skip(f"overlay window unavailable here: {exc}")
+    with window:
+        window.set_state(jarvis_overlay.AssistantState.SPEAKING)
+        assert window.state() == jarvis_overlay.AssistantState.SPEAKING
+        with pytest.raises(ValueError, match="unknown assistant state"):
+            window.set_state("DANCING")

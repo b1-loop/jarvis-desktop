@@ -22,7 +22,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(JARVIS_BUILD_TESTS "Build the Catch2 unit tests" ON)
 option(JARVIS_BUILD_INFERENCE "Build the whisper.cpp / llama.cpp wrappers (lands in step 12)" OFF)
-option(JARVIS_BUILD_OVERLAY "Build the Dear ImGui overlay (lands in step 13)" OFF)
+option(JARVIS_BUILD_OVERLAY "Build the Dear ImGui overlay and the jarvis_overlay module" ON)
 
 set(JARVIS_PYTHON_NATIVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../src/jarvis/_native"
     CACHE PATH "Directory that receives the built Python extension modules")

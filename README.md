@@ -34,7 +34,7 @@ is Python 3.12.
 | 10 | Proactive and routines | done |
 | 11 | Vision | planned |
 | 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | planned |
-| 13 | Overlay and dashboard | planned |
+| 13 | Overlay and dashboard | overlay done, tray and dashboard pending |
 | 14 | Docs, ADRs, benchmark | planned |
 
 ## Architecture
