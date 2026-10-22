@@ -1,12 +1,21 @@
 import math
 from collections.abc import Callable
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
+from structlog.testing import CapturingLogger
 
 from jarvis.config import Settings
+from jarvis.stt import faster_whisper as faster_whisper_module
 from jarvis.stt.base import ENGINE_SAMPLE_RATE, STT, Transcript, TranscriptionError
-from jarvis.stt.faster_whisper import FasterWhisperSTT, resample_linear
+from jarvis.stt.faster_whisper import (
+    FasterWhisperSTT,
+    is_gpu_library_error,
+    missing_gpu_library,
+    resample_linear,
+)
 from jarvis.utils.errors import JarvisError
 from tests.stt.fakes import FakeInfo, FakeSegment, FakeWhisperModel
 
@@ -184,3 +193,147 @@ def test_from_settings_builds_a_lazy_provider(make_settings: Callable[..., Setti
 
     assert isinstance(stt, FasterWhisperSTT)
     assert not stt.loaded  # nothing downloaded or loaded until first use
+
+
+# -- CPU fallback when CUDA libraries are missing (device=auto) ---------------
+
+CUBLAS_MISSING = "Library cublas64_12.dll is not found or cannot be loaded"
+"""CTranslate2's own message on a machine with a GPU but no CUDA runtime."""
+
+
+class Factory:
+    """Counts loads and hands out the given model, or raises the given error."""
+
+    def __init__(self, model: FakeWhisperModel | None = None, error: str | None = None) -> None:
+        self.model = model or FakeWhisperModel(info=FakeInfo(duration=0.5))
+        self.error = error
+        self.loads = 0
+
+    def __call__(self) -> FakeWhisperModel:
+        self.loads += 1
+        if self.error is not None:
+            raise RuntimeError(self.error)
+        return self.model
+
+
+@pytest.fixture
+def logs(monkeypatch: pytest.MonkeyPatch) -> CapturingLogger:
+    logger = CapturingLogger()
+    monkeypatch.setattr(faster_whisper_module, "log", logger)
+    return logger
+
+
+def warnings(logger: CapturingLogger) -> list[dict[str, Any]]:
+    return [call.kwargs for call in logger.calls if call.method_name == "warning"]
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (CUBLAS_MISSING, True),
+        ("Could not load library cudnn_ops64_9.dll. Error code 126", True),
+        ("CUDA driver version is insufficient for CUDA runtime library", True),
+        ("CUDA out of memory", False),
+        ("model file is corrupt", False),
+    ],
+)
+def test_gpu_library_errors_are_told_apart(message: str, expected: bool) -> None:
+    assert is_gpu_library_error(RuntimeError(message)) is expected
+
+
+def test_the_missing_library_is_named() -> None:
+    assert missing_gpu_library(RuntimeError(CUBLAS_MISSING)) == "cublas64_12.dll"
+    assert missing_gpu_library(RuntimeError("CUDA driver library")) == "a CUDA runtime library"
+
+
+async def test_a_load_failure_falls_back_to_cpu_once(logs: CapturingLogger) -> None:
+    gpu, cpu = Factory(error=CUBLAS_MISSING), Factory()
+    stt = FasterWhisperSTT(gpu, cpu_fallback=cpu)
+
+    await stt.transcribe(one_second_of_noise())
+    await stt.transcribe(one_second_of_noise())
+
+    assert (gpu.loads, cpu.loads) == (1, 1)
+    assert len(cpu.model.calls) == 2
+    (warning,) = warnings(logs)
+    assert warning["missing"] == "cublas64_12.dll"
+
+
+async def test_a_first_transcription_failure_retries_on_cpu(logs: CapturingLogger) -> None:
+    gpu = Factory(FakeWhisperModel(failure=RuntimeError(CUBLAS_MISSING)))
+    cpu = Factory(FakeWhisperModel(segments=[FakeSegment(0.0, 1.0, " hi")]))
+    stt = FasterWhisperSTT(gpu, cpu_fallback=cpu)
+
+    first = await stt.transcribe(one_second_of_noise())
+    await stt.transcribe(one_second_of_noise())
+
+    assert first.text == "hi"
+    assert len(cpu.model.calls) == 2
+    assert len(warnings(logs)) == 1
+
+
+async def test_without_a_fallback_the_gpu_error_is_loud() -> None:
+    stt = FasterWhisperSTT(Factory(FakeWhisperModel(failure=RuntimeError(CUBLAS_MISSING))))
+
+    with pytest.raises(TranscriptionError, match="cublas64_12"):
+        await stt.transcribe(one_second_of_noise())
+
+
+async def test_other_errors_never_trigger_the_fallback() -> None:
+    cpu = Factory()
+    stt = FasterWhisperSTT(Factory(error="model file is corrupt"), cpu_fallback=cpu)
+
+    with pytest.raises(RuntimeError, match="corrupt"):
+        await stt.transcribe(one_second_of_noise())
+    assert cpu.loads == 0
+
+
+async def test_the_fallback_is_tried_only_once(logs: CapturingLogger) -> None:
+    gpu = Factory(FakeWhisperModel(failure=RuntimeError(CUBLAS_MISSING)))
+    cpu = Factory(FakeWhisperModel(failure=RuntimeError(CUBLAS_MISSING)))
+    stt = FasterWhisperSTT(gpu, cpu_fallback=cpu)
+
+    for _ in range(2):
+        with pytest.raises(TranscriptionError):
+            await stt.transcribe(one_second_of_noise())
+
+    assert cpu.loads == 1
+    assert len(warnings(logs)) == 1
+
+
+class FakeFasterWhisper:
+    """Stands in for the ``faster_whisper`` package; CUDA libraries are missing."""
+
+    def __init__(self) -> None:
+        self.devices: list[tuple[str, str]] = []
+
+    def WhisperModel(self, size: str, *, device: str, compute_type: str, **_: object) -> object:  # noqa: N802
+        self.devices.append((device, compute_type))
+        if device != "cpu":
+            raise RuntimeError(CUBLAS_MISSING)
+        return FakeWhisperModel(info=FakeInfo(duration=0.5))
+
+
+@pytest.mark.parametrize(("device", "falls_back"), [("auto", True), ("cuda", False)])
+async def test_from_settings_falls_back_only_for_the_auto_device(
+    monkeypatch: pytest.MonkeyPatch,
+    make_settings: Callable[..., Settings],
+    logs: CapturingLogger,
+    device: str,
+    falls_back: bool,
+) -> None:
+    package = FakeFasterWhisper()
+    monkeypatch.setattr(
+        faster_whisper_module.importlib,
+        "import_module",
+        lambda _name: SimpleNamespace(WhisperModel=package.WhisperModel),
+    )
+    stt = FasterWhisperSTT.from_settings(make_settings(stt_device=device))
+
+    if falls_back:
+        await stt.transcribe(one_second_of_noise())
+        assert package.devices == [("auto", "auto"), ("cpu", "int8")]
+    else:
+        with pytest.raises(RuntimeError, match="cublas64_12"):
+            await stt.transcribe(one_second_of_noise())
+        assert package.devices == [("cuda", "auto")]
