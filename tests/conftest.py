@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
+import structlog
 
 from jarvis.config import Settings
 
@@ -44,6 +45,10 @@ def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         if name.startswith("JARVIS_") or name in CREDENTIAL_VARIABLES:
             monkeypatch.delenv(name, raising=False)
     yield
+    # Loggers resolve the structlog configuration on every call, so one made
+    # by a test (the CLI configures it with a captured, later closed stream)
+    # must not outlive that test.
+    structlog.reset_defaults()
 
 
 @pytest.fixture

@@ -1,9 +1,21 @@
+import io
 import json
+from collections.abc import Iterator
 
 import pytest
 import structlog
 
 from jarvis.utils.logging import configure_logging, get_logger, redact_secrets
+
+created_at_import = get_logger("tests.logging.module_level")
+"""Like every ``log = get_logger(__name__)``: made before any configuration."""
+
+
+@pytest.fixture(autouse=True)
+def _restore_structlog_defaults() -> Iterator[None]:
+    """Each test configures structlog with pytest's captured stderr; undo that."""
+    yield
+    structlog.reset_defaults()
 
 
 @pytest.mark.parametrize(
@@ -49,6 +61,44 @@ def test_messages_below_the_configured_level_are_dropped(
     lines = capsys.readouterr().err.strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["event"] == "loud"
+
+
+def test_a_logger_created_before_configuration_obeys_the_later_level(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging("WARNING", json_output=True)
+
+    created_at_import.info("quiet")
+    created_at_import.warning("loud")
+
+    lines = capsys.readouterr().err.strip().splitlines()
+    assert [json.loads(line)["event"] for line in lines] == ["loud"]
+    assert json.loads(lines[0])["logger"] == "tests.logging.module_level"
+
+
+@pytest.mark.parametrize("json_output", [False, True])
+def test_non_ascii_messages_survive_a_cp1252_stream(json_output: bool) -> None:
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    configure_logging("INFO", json_output=json_output, stream=stream)
+
+    get_logger("tests.logging").warning("clipboard.failed", error="Åtkomst nekad → 0x5")
+    stream.flush()
+
+    written = raw.getvalue().decode("cp1252")
+    assert "clipboard.failed" in written
+    assert "tkomst nekad" in written
+
+
+def test_unencodable_characters_are_escaped_not_dropped() -> None:
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    configure_logging("INFO", stream=stream)
+
+    get_logger("tests.logging").info("arrow →")
+    stream.flush()
+
+    assert "\\u2192" in raw.getvalue().decode("cp1252")
 
 
 def test_level_names_are_case_insensitive() -> None:
