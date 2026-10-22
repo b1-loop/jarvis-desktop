@@ -381,9 +381,29 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
 - **Hotkey.** `Ctrl+Alt+J` (`JARVIS_HOTKEY`) does the same as the wake
   word. With `--no-wakeword`, or when the wake-word models are missing, it
   is the only trigger and Jarvis says so at start-up.
-- **Barge-in.** Talk over Jarvis: it stops at once and treats what you say
-  as the next request. Speech in the first 400 ms of an answer is ignored so
-  Jarvis does not interrupt itself (`JARVIS_BARGE_IN_ECHO_GUARD_MS`).
+- **Interrupting Jarvis (barge-in): headphones vs speakers.** Without echo
+  cancellation the microphone hears Jarvis through laptop speakers, and
+  "talking over it" would let Jarvis interrupt itself. `JARVIS_BARGE_IN_MODE`
+  decides what may interrupt an answer; the greeting says which applies:
+
+  | Mode | What interrupts Jarvis while it speaks |
+  | --- | --- |
+  | `auto` (default) | `voice` when the default output is headphones or a headset (Windows reports the device's form factor; device names containing "headphone", "headset" or "hörlur" also count), otherwise `wake_word`. Logged once as `barge_in.mode`. |
+  | `voice` | Talking over it: it stops at once and treats what you say as the next request. An onset no louder than the predicted echo of its own voice is ignored (`JARVIS_BARGE_IN_ECHO_RATIO`, 0 = no check), as is speech in the first 400 ms of an answer (`JARVIS_BARGE_IN_ECHO_GUARD_MS`). |
+  | `wake_word` | Only "Hey Jarvis", the hotkey or typing; plain speech and echo never stop it. After the wake word you hear the beep and speak your request. |
+  | `off` | Only the hotkey or typing. |
+
+  While Jarvis speaks the wake word needs a higher score
+  (`JARVIS_SPEAKING_WAKE_MARGIN`), and it is ignored for
+  `JARVIS_SELF_WAKE_GUARD_MS` after a sentence in which Jarvis says its own
+  name, so it cannot wake itself.
+- **Speech recognition on the GPU.** `uv sync --extra cloud --extra gpu`
+  installs NVIDIA's cuBLAS 12 and cuDNN 9 wheels; no CUDA toolkit is needed.
+  With `JARVIS_STT_DEVICE=auto` Jarvis then transcribes with
+  `large-v3-turbo` on CUDA (`JARVIS_STT_MODEL_GPU`), and falls back to
+  `small` on the CPU (`JARVIS_STT_MODEL_CPU`) when CUDA cannot load.
+  `JARVIS_STT_HOTWORDS` (default "Jarvis, Discord, Gmail, Spotify") biases
+  recognition towards names Whisper otherwise mishears.
 - **Confirmation.** Before sending, deleting, spending or changing the
   system, Jarvis asks; answer "yes" or "no". `JARVIS_CONFIRM_DESTRUCTIVE=false`
   is trusted mode.
@@ -393,7 +413,9 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
 - **Swedish and other languages.** Pick a voice and tell the recogniser
   the language, e.g. in `.env`:
   `JARVIS_TTS_VOICE=sv-SE-MattiasNeural` and `JARVIS_STT_LANGUAGE=sv`.
-  The persona answers in the voice's language. The wake word stays the
+  The persona answers in the voice's language, and a sentence that drifts
+  into Chinese, Japanese or Korean script is never spoken (the answer is
+  regenerated once instead). The wake word stays the
   English "Hey Jarvis"; in local mode use a Piper voice of that language
   (`JARVIS_LOCAL_TTS_MODEL`) and a multilingual ggml whisper model.
 - **Local mode.** `--mode local` needs `download_models.py --local` and
