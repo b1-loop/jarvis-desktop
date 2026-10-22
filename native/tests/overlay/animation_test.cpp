@@ -1,6 +1,8 @@
 #include "jarvis/overlay/animation.hpp"
 
+#include "jarvis/overlay/animator.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/scene.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -66,10 +68,15 @@ bool inFlight(const std::vector<anim::ParticlePoint>& points, const anim::Partic
 
 /// True when every progress of @p frame is at least that of @p previous.
 bool movesForward(const anim::BootFrame& previous, const anim::BootFrame& frame) {
-    return frame.ignite >= previous.ignite && frame.handoff >= previous.handoff &&
+    bool rings = true;
+    for (std::size_t i = 0; i < frame.ringArrival.size(); ++i) {
+        rings = rings && frame.ringArrival.at(i) >= previous.ringArrival.at(i);
+    }
+    return rings && frame.ignite >= previous.ignite && frame.handoff >= previous.handoff &&
            frame.spin >= previous.spin && frame.titleChars >= previous.titleChars &&
            frame.subtitle >= previous.subtitle && frame.bootOnly <= previous.bootOnly &&
-           near(frame.handoff + frame.bootOnly, 1.0F, kTolerance);
+           frame.globe >= previous.globe && frame.labels >= previous.labels &&
+           frame.act >= previous.act && near(frame.handoff + frame.bootOnly, 1.0F, kTolerance);
 }
 
 /// True when the blend's weights sum to 1 at every sample over [from, from + span].
@@ -238,14 +245,14 @@ TEST_CASE("the boot timeline hits its keyframes exactly", "[overlay][anim][boot]
     REQUIRE(start.scanAlpha == 0.0F);
     REQUIRE_FALSE(start.finished);
 
-    REQUIRE(timeline.evaluate(beats.igniteEnd).ignite == 1.0F);
+    REQUIRE(timeline.evaluate(beats.pointGrow).ignite == 1.0F);
     REQUIRE(timeline.evaluate(beats.titleStart).titleChars == 1);
     const float typedAt = beats.titleStart + (11.0F * beats.charInterval);
     REQUIRE(timeline.evaluate(typedAt + 1e-4F).titleChars == 12);
     REQUIRE(timeline.evaluate(beats.handoffStart).handoff == 0.0F);
     REQUIRE_THAT(timeline.evaluate(beats.handoffStart + (beats.handoffDuration * 0.5F)).handoff,
                  WithinAbs(0.5, kTolerance));
-    REQUIRE_THAT(timeline.evaluate(beats.scanStart + (beats.scanDuration * 0.5F)).scanAlpha,
+    REQUIRE_THAT(timeline.evaluate(beats.systemsStart + (beats.scanDuration * 0.5F)).scanAlpha,
                  WithinAbs(1.0, kTolerance));
 
     const anim::BootFrame end = timeline.evaluate(timeline.duration());
@@ -257,10 +264,10 @@ TEST_CASE("the boot timeline hits its keyframes exactly", "[overlay][anim][boot]
     REQUIRE_FALSE(end.cursorVisible);
 }
 
-TEST_CASE("the boot lasts about two and a half seconds", "[overlay][anim][boot]") {
+TEST_CASE("the boot lasts about four seconds", "[overlay][anim][boot]") {
     const anim::BootTimeline timeline;
-    REQUIRE(timeline.duration() > 2.2F);
-    REQUIRE(timeline.duration() < 2.8F);
+    REQUIRE(timeline.duration() > 3.6F);
+    REQUIRE(timeline.duration() < 4.4F);
 }
 
 TEST_CASE("boot progressions only ever move forward", "[overlay][anim][boot]") {

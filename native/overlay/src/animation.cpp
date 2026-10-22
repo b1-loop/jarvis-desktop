@@ -1,14 +1,16 @@
 #include "jarvis/overlay/animation.hpp"
 
+#include "jarvis/overlay/effects.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/scene.hpp"
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <string>
@@ -21,6 +23,7 @@ namespace {
 
 constexpr float kHalf = 0.5F;
 constexpr std::size_t kStateCount = 4;
+constexpr float kPi = std::numbers::pi_v<float>;
 /// Exponent of easeOutExpo; 10 makes f(1) within 0.1% of 1 before the snap.
 constexpr float kExpoSteepness = 10.0F;
 
@@ -36,20 +39,37 @@ constexpr unsigned kUnitBits = 24;
 constexpr unsigned kUnitShift = 64 - kUnitBits;
 constexpr float kUnitScale = 1.0F / static_cast<float>(1U << kUnitBits);
 
-// Boot: the centre flashes white-hot, then settles to an ember behind the rings.
-constexpr float kFlashPeak = 0.12F;
-constexpr float kFlashSettle = 0.7F;
+// Ignition: the centre flashes white-hot, then settles to an ember behind the rings.
+constexpr float kFlashSettle = 0.75F;
 constexpr float kFlashEmber = 0.18F;
-constexpr std::array<Keyframe, 3> kFlashTrack{{
-    {.time = 0.0F, .value = 0.0F, .easing = Easing::Linear},
-    {.time = kFlashPeak, .value = 1.0F, .easing = Easing::OutCubic},
-    {.time = kFlashSettle, .value = kFlashEmber, .easing = Easing::InOutCubic},
-}};
+constexpr float kShockStartRadius = 0.1F;
+constexpr float kShockSpread = 2.3F;
 /// One revolution of the radial sweep every this many seconds.
 constexpr float kSweepPeriod = 1.25F;
-/// The grid fades in and out over these fractions of a second.
-constexpr float kGridFadeIn = 0.15F;
-constexpr float kGridFadeOut = 0.35F;
+
+// Ring fly-in: from this far in front of the screen (in camera distances
+// of 4 units), tilted by up to this much, fading in over the first part.
+constexpr float kFlyCamera = 4.0F;
+constexpr float kFlyDepth = 2.8F;
+constexpr float kFlyTilt = 1.1F;
+constexpr float kFlyFadeIn = 0.35F;
+/// easeOutExpo passes 95% here: the moment a ring visibly "locks".
+constexpr float kLockShare = 0.43F;
+
+// Glitch spikes of the boot (strength, decay seconds).
+constexpr float kFlashGlitch = 0.9F;
+constexpr float kFlashGlitchDecay = 0.10F;
+constexpr float kLockGlitch = 0.32F;
+constexpr float kLockGlitchDecay = 0.06F;
+constexpr float kTitleGlitch = 0.55F;
+constexpr float kTitleGlitchDecay = 0.12F;
+constexpr float kTypeGlitch = 0.25F;
+constexpr float kTypeGlitchDecay = 0.04F;
+constexpr std::size_t kTypeGlitchEvery = 3;
+constexpr float kHandoffGlitch = 0.6F;
+constexpr float kHandoffGlitchDecay = 0.10F;
+/// A spike starts this much before its beat so it peaks on the beat.
+constexpr float kSpikeLead = 0.015F;
 
 // Particles fade in over the first 20% of their trip and dissolve into the
 // ring over the last 20%.
@@ -65,24 +85,40 @@ constexpr float kEnergyShare = 0.45F;
 constexpr float kShimmerTurns = 1.5F;
 constexpr float kShimmerSpeed = 2.3F;
 
-/// Smoothed levels below this count as silence for frame pacing.
-constexpr float kSilentLevel = 0.002F;
-
-float secondsSince(OverlayModel::Clock::time_point then,
-                   OverlayModel::Clock::time_point now) noexcept {
-    return std::chrono::duration<float>(now - then).count();
-}
-
 StateWeights oneHot(AssistantState state) noexcept {
     StateWeights weights{};
     weights.at(stateIndex(state)) = 1.0F;
     return weights;
 }
 
-/// Perceptual curve for an RMS level: quiet speech is ~0.05 RMS, which
-/// should already move the ring visibly.
-float perceptual(float level) noexcept {
-    return std::sqrt(clamp01(level));
+std::vector<GlitchSpike> bootSpikes(const BootBeats& b, std::size_t titleLength) {
+    std::vector<GlitchSpike> spikes;
+    spikes.push_back(
+        {.at = b.flashPeak - kSpikeLead, .strength = kFlashGlitch, .decay = kFlashGlitchDecay});
+    for (std::size_t i = 0; i < kRingCount; ++i) {
+        const float start = b.assemblyStart + (b.ringStagger * static_cast<float>(i));
+        spikes.push_back({.at = start + (b.ringFlight * kLockShare),
+                          .strength = kLockGlitch,
+                          .decay = kLockGlitchDecay});
+    }
+    spikes.push_back({.at = b.titleStart, .strength = kTitleGlitch, .decay = kTitleGlitchDecay});
+    for (std::size_t i = kTypeGlitchEvery; i < titleLength; i += kTypeGlitchEvery) {
+        spikes.push_back({.at = b.titleStart + (b.charInterval * static_cast<float>(i)),
+                          .strength = kTypeGlitch,
+                          .decay = kTypeGlitchDecay});
+    }
+    spikes.push_back(
+        {.at = b.handoffStart, .strength = kHandoffGlitch, .decay = kHandoffGlitchDecay});
+    return spikes;
+}
+
+/// Characters typed at @p interval per character since @p start, at most @p length.
+std::size_t typedChars(float time, float start, float interval, std::size_t length) noexcept {
+    if (time < start || interval <= 0.0F) {
+        return 0;
+    }
+    const auto typed = static_cast<std::size_t>((time - start) / interval) + 1;
+    return std::min(typed, length);
 }
 
 }  // namespace
@@ -194,7 +230,7 @@ float hashUnit(std::uint64_t index, std::uint64_t step) noexcept {
     return generator.nextUnit();
 }
 
-// --- particles --------------------------------------------------------------------------
+// --- boot particle stream -------------------------------------------------------------------
 
 ParticleField::ParticleField(std::uint64_t seed, ParticleConfig config) : config_(config) {
     SplitMix64 random{seed};
@@ -243,8 +279,16 @@ float ParticleField::settledAfter() const noexcept {
 
 // --- boot sequence -----------------------------------------------------------------------
 
+RingPose ringPose(float arrival) noexcept {
+    const float a = clamp01(arrival);
+    const float depth = kFlyDepth * (1.0F - a);
+    return RingPose{.scale = kFlyCamera / (kFlyCamera - depth),
+                    .tilt = kFlyTilt * (1.0F - a),
+                    .alpha = smoothstep(0.0F, kFlyFadeIn, a)};
+}
+
 BootTimeline::BootTimeline(BootBeats beats, std::string title)
-    : beats_(beats), title_(std::move(title)) {}
+    : beats_(beats), title_(std::move(title)), spikes_(bootSpikes(beats_, title_.size())) {}
 
 float BootTimeline::duration() const noexcept {
     return beats_.handoffStart + beats_.handoffDuration;
@@ -263,41 +307,92 @@ float BootTimeline::timelineTime(float sinceStart,
     return beats_.handoffStart + (time - skipAt);
 }
 
+BootAct BootTimeline::actAt(float time) const noexcept {
+    if (time < beats_.assemblyStart) {
+        return BootAct::Ignition;
+    }
+    if (time < beats_.systemsStart) {
+        return BootAct::Assembly;
+    }
+    if (time < beats_.handoffStart) {
+        return BootAct::SystemsCheck;
+    }
+    return BootAct::Handoff;
+}
+
+std::size_t BootTimeline::readoutChars(std::size_t line, std::size_t length,
+                                       float time) const noexcept {
+    const float start =
+        beats_.readoutStart + (beats_.readoutLineInterval * static_cast<float>(line));
+    return typedChars(time, start, beats_.readoutCharInterval, length);
+}
+
 BootFrame BootTimeline::evaluate(float time) const noexcept {
-    const BootBeats& b = beats_;
     BootFrame frame;
     frame.time = time;
-    frame.ignite = easeOutCubic(progress(time, 0.0F, b.igniteEnd));
-    frame.flash = sampleTrack(kFlashTrack, time);
+    frame.act = actAt(time);
+    evaluateIgnition(time, frame);
+    evaluateAssembly(time, frame);
+    evaluateSystems(time, frame);
+    evaluateHandoff(time, frame);
+    frame.glitch = glitchAmount(spikes_, time);
+    return frame;
+}
+
+void BootTimeline::evaluateIgnition(float time, BootFrame& frame) const noexcept {
+    const BootBeats& b = beats_;
+    const std::array<Keyframe, 3> flash{{
+        {.time = 0.0F, .value = 0.0F, .easing = Easing::Linear},
+        {.time = b.flashPeak, .value = 1.0F, .easing = Easing::OutCubic},
+        {.time = kFlashSettle, .value = kFlashEmber, .easing = Easing::InOutCubic},
+    }};
+    frame.ignite = easeOutCubic(progress(time, 0.0F, b.pointGrow));
+    frame.flash = sampleTrack(flash, time);
+    const float shock = progress(time, b.shockStart, b.shockDuration);
+    const bool shocking = time >= b.shockStart && shock < 1.0F;
+    frame.shockRadius = kShockStartRadius + (kShockSpread * easeOutCubic(shock));
+    frame.shockAlpha = shocking ? (1.0F - shock) * (1.0F - shock) : 0.0F;
+}
+
+void BootTimeline::evaluateAssembly(float time, BootFrame& frame) const noexcept {
+    const BootBeats& b = beats_;
+    for (std::size_t i = 0; i < frame.ringArrival.size(); ++i) {
+        const float start = b.assemblyStart + (b.ringStagger * static_cast<float>(i));
+        frame.ringArrival.at(i) = easeOutExpo(progress(time, start, b.ringFlight));
+    }
+    frame.globe = progress(time, b.globeStart, b.globeDuration);
+    frame.particleTime = time - b.particlesStart;
     frame.sweepAngle = (kTau * time / kSweepPeriod) - (kTau / 4.0F);
     frame.spin = easeOutCubic(progress(time, 0.0F, duration()));
-    frame.particleTime = time - b.particlesStart;
+}
 
-    const float scan = progress(time, b.scanStart, b.scanDuration);
+void BootTimeline::evaluateSystems(float time, BootFrame& frame) const noexcept {
+    const BootBeats& b = beats_;
+    frame.labels = easeOutCubic(progress(time, b.systemsStart, b.labelCount));
+    const float scan = progress(time, b.systemsStart, b.scanDuration);
     frame.scan = easeInOutCubic(scan);
-    const bool scanning = time >= b.scanStart && time <= b.scanStart + b.scanDuration;
-    frame.scanAlpha = scanning ? std::sin(std::numbers::pi_v<float> * scan) : 0.0F;
-
-    const float gridEnd = b.gridStart + b.gridDuration;
-    frame.grid = progress(time, b.gridStart, kGridFadeIn) *
-                 (1.0F - progress(time, gridEnd - kGridFadeOut, kGridFadeOut));
+    const bool scanning = time >= b.systemsStart && time <= b.systemsStart + b.scanDuration;
+    frame.scanAlpha = scanning ? std::sin(kPi * scan) : 0.0F;
 
     const std::size_t length = title_.size();
-    if (time >= b.titleStart && b.charInterval > 0.0F) {
-        const auto typed = static_cast<std::size_t>((time - b.titleStart) / b.charInterval) + 1;
-        frame.titleChars = std::min(typed, length);
-    }
-    const float typedAt = b.titleStart + (static_cast<float>(length - 1) * b.charInterval);
+    frame.titleChars = typedChars(time, b.titleStart, b.charInterval, length);
+    const float typedAt =
+        b.titleStart + (static_cast<float>(length > 0 ? length - 1 : 0) * b.charInterval);
     const bool typing = time >= b.titleStart && frame.titleChars < length;
     const bool blinkOn =
         b.cursorBlink > 0.0F && std::fmod(time - typedAt, 2.0F * b.cursorBlink) < b.cursorBlink;
     frame.cursorVisible = time < b.handoffStart && (typing || (time >= typedAt && blinkOn));
-
     frame.subtitle = easeOutCubic(progress(time, b.subtitleStart, b.subtitleDuration));
-    frame.handoff = easeInOutCubic(progress(time, b.handoffStart, b.handoffDuration));
+}
+
+void BootTimeline::evaluateHandoff(float time, BootFrame& frame) const noexcept {
+    const BootBeats& b = beats_;
+    const float p = progress(time, b.handoffStart, b.handoffDuration);
+    frame.handoff = easeInOutCubic(p);
+    const float speed = std::sin(kPi * p);
+    frame.whip = speed * speed;
     frame.bootOnly = 1.0F - frame.handoff;
     frame.finished = time >= duration();
-    return frame;
 }
 
 // --- state animations ---------------------------------------------------------------------
@@ -340,15 +435,7 @@ LevelSmoother::LevelSmoother(float attackSeconds, float releaseSeconds) noexcept
     : attack_(attackSeconds), release_(releaseSeconds) {}
 
 float LevelSmoother::update(float target, float dtSeconds) noexcept {
-    if (dtSeconds <= 0.0F) {
-        return value_;
-    }
-    const float tau = target > value_ ? attack_ : release_;
-    if (tau <= 0.0F) {
-        value_ = target;
-        return value_;
-    }
-    value_ += (target - value_) * (1.0F - std::exp(-dtSeconds / tau));
+    value_ = approach(value_, target, dtSeconds, attack_, release_);
     return value_;
 }
 
@@ -381,69 +468,13 @@ void radialWaveform(std::span<const float> levels, float energy, float time, flo
         float history = 0.0F;
         if (!levels.empty()) {
             const auto age = std::lround(distance * static_cast<float>(levels.size() - 1));
-            history = perceptual(*std::next(levels.rbegin(), age));
+            history = perceptualLevel(*std::next(levels.rbegin(), age));
         }
         const float shimmer =
             kHalf + (kHalf * std::sin((distance * kTau * kShimmerTurns) + (time * kShimmerSpeed)));
         const float drive = (kHistoryShare * history) + (kEnergyShare * clamp01(energy) * shimmer);
         spoke = base + ((1.0F - base) * clamp01(drive));
     }
-}
-
-// --- the animator ---------------------------------------------------------------------------
-
-OverlayAnimator::OverlayAnimator(Clock::time_point epoch, AnimatorConfig config,
-                                 BootTimeline timeline)
-    : epoch_(epoch),
-      config_(config),
-      timeline_(std::move(timeline)),
-      particles_(config.particleSeed),
-      blend_(config.crossFadeSeconds),
-      smoother_(config.attackSeconds, config.releaseSeconds) {}
-
-std::optional<BootFrame> OverlayAnimator::bootFrame(const OverlaySnapshot& snapshot,
-                                                    Clock::time_point now) const noexcept {
-    if (!snapshot.bootStartedAt.has_value()) {
-        return std::nullopt;
-    }
-    const Clock::time_point start = *snapshot.bootStartedAt;
-    std::optional<float> skippedAfter;
-    if (snapshot.bootSkippedAt.has_value()) {
-        skippedAfter = secondsSince(start, *snapshot.bootSkippedAt);
-    }
-    const float time = timeline_.timelineTime(secondsSince(start, now), skippedAfter);
-    BootFrame frame = timeline_.evaluate(time);
-    if (frame.finished) {
-        return std::nullopt;
-    }
-    return frame;
-}
-
-const AnimationFrame& OverlayAnimator::advance(const OverlaySnapshot& snapshot,
-                                               Clock::time_point now) {
-    const float time = secondsSince(epoch_, now);
-    const float dt = lastTime_.has_value() ? time - *lastTime_ : 0.0F;
-    lastTime_ = time;
-
-    blend_.setTarget(snapshot.state, time);
-    const bool showsLevel =
-        snapshot.state == AssistantState::Listening || snapshot.state == AssistantState::Speaking;
-    const float latest = snapshot.levels.empty() ? 0.0F : snapshot.levels.back();
-
-    frame_.time = time;
-    frame_.boot = bootFrame(snapshot, now);
-    frame_.weights = blend_.weights(time);
-    frame_.level = smoother_.update(showsLevel ? perceptual(latest) : 0.0F, dt);
-    frame_.breathing = breathing(time, config_.breathingPeriod);
-    frame_.ripple = wakeRipple(snapshot.wakeFlash, config_.rippleSpread);
-    return frame_;
-}
-
-Pace OverlayAnimator::pace(const OverlaySnapshot& snapshot) const noexcept {
-    const bool busy = frame_.boot.has_value() || blend_.transitioning(frame_.time) ||
-                      snapshot.wakeFlash > 0.0F || snapshot.state != AssistantState::Idle ||
-                      smoother_.value() > kSilentLevel;
-    return busy ? Pace::Active : Pace::Idle;
 }
 
 // --- frame statistics -------------------------------------------------------------------------
@@ -461,18 +492,26 @@ void FrameStatsAccumulator::record(double renderMs, double intervalMs) noexcept 
                             : stats_.intervalMs + ((intervalMs - stats_.intervalMs) * smoothing_);
 }
 
+void FrameStatsAccumulator::recordGpu(double gpuMs) noexcept {
+    ++stats_.gpuFrames;
+    stats_.gpuMs =
+        stats_.gpuFrames == 1 ? gpuMs : stats_.gpuMs + ((gpuMs - stats_.gpuMs) * smoothing_);
+}
+
 }  // namespace jarvis::overlay::anim
 
 // Design notes:
-// - Time, not frames: every public function takes seconds. The only state
-//   carried between frames is the level smoother, and its coefficient is
-//   1 - exp(-dt/tau), which composes exactly: two half-steps equal one step.
-// - Particles are closed-form (start, delay, travel, swirl) rather than
-//   integrated, so a dropped frame cannot change where they land and a test
-//   can ask for t = 0.37 s directly.
+// - Time, not frames: every public function takes seconds. State carried
+//   between frames lives in animator.cpp, and each piece of it composes
+//   exactly across frame intervals.
+// - The boot particle stream is closed-form (start, delay, travel, swirl)
+//   rather than integrated, so a dropped frame cannot change where it lands
+//   and a test can ask for t = 0.37 s directly.
 // - A skipped boot jumps to the handoff instead of to the end: the panel
 //   still glides into its corner, which is what makes a skip feel deliberate
-//   rather than broken.
+//   rather than broken. Any state change other than Idle does the same.
+// - The glitch spikes are derived from the beats in the constructor, so a
+//   retimed beat moves its glitch with it and the envelope cannot drift.
 // - SplitMix64 instead of <random>: the distributions in <random> are
 //   implementation-defined, so "deterministic with a fixed seed" would only
 //   hold per standard library.

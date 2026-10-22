@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -127,13 +128,30 @@ void OverlayModel::flashWakeWord(Clock::time_point now) {
 }
 
 bool OverlayModel::playBoot(Clock::time_point now) {
+    return playBoot(BootReadout{}, now);
+}
+
+bool OverlayModel::playBoot(BootReadout readout, Clock::time_point now) {
+    auto bounded = std::make_shared<const BootReadout>(boundedReadout(std::move(readout)));
     const std::scoped_lock lock(mutex_);
     if (bootStartedAt_.has_value()) {
         return false;
     }
     bootStartedAt_ = now;
+    bootReadout_ = std::move(bounded);
     touch();
     return true;
+}
+
+BootReadout OverlayModel::boundedReadout(BootReadout readout) const {
+    if (readout.size() > limits_.maxReadoutLines) {
+        readout.resize(limits_.maxReadoutLines);
+    }
+    for (ReadoutLine& line : readout) {
+        line.label = truncateUtf8Head(line.label, limits_.maxReadoutLabelChars);
+        line.value = truncateUtf8Head(line.value, limits_.maxReadoutValueChars);
+    }
+    return readout;
 }
 
 bool OverlayModel::skipBoot(Clock::time_point now) {
@@ -157,6 +175,7 @@ OverlaySnapshot OverlayModel::snapshot(Clock::time_point now) const {
         .wakeFlash = wakeFlashAt(now),
         .bootStartedAt = bootStartedAt_,
         .bootSkippedAt = bootSkippedAt_,
+        .bootReadout = bootReadout_,
         .revision = revision_.load(std::memory_order_relaxed),
     };
 }

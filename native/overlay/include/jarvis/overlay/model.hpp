@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -53,6 +54,18 @@ private:
     std::size_t next_{0};
 };
 
+/// One line of the boot sequence's diagnostic readout, e.g. "MODEL" /
+/// "qwen2.5:7b". The values are real: Python passes what it is running.
+struct ReadoutLine {
+    std::string label;
+    std::string value;
+
+    [[nodiscard]] bool operator==(const ReadoutLine&) const noexcept = default;
+};
+
+/// The readout, in display order.
+using BootReadout = std::vector<ReadoutLine>;
+
 /// Immutable copy of everything the UI thread needs for one frame.
 struct OverlaySnapshot {
     AssistantState state{AssistantState::Idle};
@@ -69,6 +82,9 @@ struct OverlaySnapshot {
     std::optional<std::chrono::steady_clock::time_point> bootStartedAt;
     /// When the boot sequence was skipped, if it was.
     std::optional<std::chrono::steady_clock::time_point> bootSkippedAt;
+    /// Diagnostic lines shown during the boot's systems check; shared, not
+    /// copied, because it never changes once the boot has started.
+    std::shared_ptr<const BootReadout> bootReadout;
     /// Incremented by every mutation; lets the renderer slow down when idle.
     std::uint64_t revision{0};
 };
@@ -81,6 +97,11 @@ struct ModelLimits {
     std::size_t maxTextChars = 240;
     /// How long the wake-word flash stays visible.
     std::chrono::milliseconds wakeFlashDuration{600};
+    /// Boot readout lines kept; later ones are dropped.
+    std::size_t maxReadoutLines = 6;
+    /// Characters kept per readout label and per value (the head wins).
+    std::size_t maxReadoutLabelChars = 12;
+    std::size_t maxReadoutValueChars = 34;
 };
 
 /// The overlay's state, owned by the window and mutated from Python.
@@ -111,6 +132,11 @@ public:
     /// @return true if this call started it.
     bool playBoot(Clock::time_point now = Clock::now());
 
+    /// Same, with a diagnostic @p readout for the systems check. Lines and
+    /// characters beyond the limits are dropped. A repeat call changes
+    /// nothing, including the readout.
+    bool playBoot(BootReadout readout, Clock::time_point now = Clock::now());
+
     /// Skip the boot sequence at @p now (it still eases into the corner).
     /// @return true if a started, not yet skipped boot was skipped.
     bool skipBoot(Clock::time_point now = Clock::now());
@@ -129,6 +155,8 @@ public:
 private:
     /// Caller holds mutex_.
     void touch() noexcept;
+    /// @p readout cut to the limits; no lock needed.
+    [[nodiscard]] BootReadout boundedReadout(BootReadout readout) const;
     [[nodiscard]] float wakeFlashAt(Clock::time_point now) const;
 
     ModelLimits limits_;
@@ -141,6 +169,7 @@ private:
     std::optional<Clock::time_point> wakeFlashAt_;
     std::optional<Clock::time_point> bootStartedAt_;
     std::optional<Clock::time_point> bootSkippedAt_;
+    std::shared_ptr<const BootReadout> bootReadout_;
     std::atomic<std::uint64_t> revision_{0};
 };
 
