@@ -33,7 +33,7 @@ is Python 3.12.
 | 9 | Memory | done |
 | 10 | Proactive and routines | done |
 | 11 | Vision | planned |
-| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | planned |
+| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | C++ wrappers done, Python LOCAL mode pending |
 | 13 | Overlay and dashboard | overlay done, tray and dashboard pending |
 | 14 | Docs, ADRs, benchmark | planned |
 

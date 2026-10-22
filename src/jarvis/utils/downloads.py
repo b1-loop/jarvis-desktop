@@ -11,13 +11,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
-from typing import Final
+from typing import IO, Final
 
 import httpx
 
 from jarvis.utils.errors import JarvisError
 
-_CHUNK_BYTES: Final = 64 * 1024
+_CHUNK_BYTES: Final = 1024 * 1024
 
 
 class DownloadError(JarvisError):
@@ -43,46 +43,48 @@ async def download_verified(
 ) -> None:
     """Fetch ``url`` into ``destination`` and verify it.
 
-    The body is streamed and hashed as it arrives, written to a sibling
-    ``.part`` file in a worker thread, and renamed into place only after the
-    hash matches.
+    The body is streamed to a sibling ``.part`` file and hashed as it
+    arrives, so a 500 MB GGUF never sits in memory, and the file is renamed
+    into place only after the hash matches.
 
     Raises:
         DownloadError: On any HTTP failure or hash mismatch; nothing is left
             at ``destination`` in that case.
     """
+    partial = destination.with_name(destination.name + ".part")
+    await asyncio.to_thread(destination.parent.mkdir, parents=True, exist_ok=True)
     try:
-        body = await _fetch(client, url)
+        actual = await _stream_to_file(client, url, partial)
     except httpx.HTTPError as error:
+        await asyncio.to_thread(partial.unlink, missing_ok=True)
         raise DownloadError(f"failed to download {url}: {error}") from error
-    actual = hashlib.sha256(body).hexdigest()
     if actual != sha256:
+        await asyncio.to_thread(partial.unlink, missing_ok=True)
         raise DownloadError(
             f"checksum mismatch for {url}: expected {sha256}, got {actual}. "
             "The upstream file may have changed; refusing to use it."
         )
-    await asyncio.to_thread(_write_atomically, destination, body)
+    await asyncio.to_thread(partial.replace, destination)
 
 
-async def _fetch(client: httpx.AsyncClient, url: str) -> bytes:
-    chunks = bytearray()
-    async with client.stream("GET", url, follow_redirects=True) as response:
-        response.raise_for_status()
-        async for chunk in response.aiter_bytes(_CHUNK_BYTES):
-            chunks.extend(chunk)
-    return bytes(chunks)
-
-
-def _write_atomically(destination: Path, body: bytes) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    partial = destination.with_name(destination.name + ".part")
-    partial.write_bytes(body)
-    partial.replace(destination)
+async def _stream_to_file(client: httpx.AsyncClient, url: str, partial: Path) -> str:
+    """Write the response body to ``partial``; return its SHA-256 hex digest."""
+    digest = hashlib.sha256()
+    handle: IO[bytes] = await asyncio.to_thread(partial.open, "wb")
+    try:
+        async with client.stream("GET", url, follow_redirects=True) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes(_CHUNK_BYTES):
+                digest.update(chunk)
+                await asyncio.to_thread(handle.write, chunk)
+    finally:
+        await asyncio.to_thread(handle.close)
+    return digest.hexdigest()
 
 
 # Design notes:
-# - The whole body is held in memory before writing. Audio models are a few
-#   megabytes; if a future local-LLM download needs gigabytes, switch to
-#   hashing on the fly and streaming to the .part file in a thread.
+# - Streaming to disk replaced the earlier buffer-everything approach when
+#   the LOCAL-mode models (hundreds of megabytes) joined the manifest.
 # - File I/O goes through asyncio.to_thread so the event loop (and any audio
-#   polling on it) never blocks on the disk.
+#   polling on it) never blocks on the disk; one megabyte per hop keeps the
+#   thread hand-offs negligible next to the network time.

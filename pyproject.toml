@@ -90,8 +90,9 @@ artifacts = ["src/jarvis/_native/*.pyd", "src/jarvis/_native/*.so"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests", "scripts"]
-# Agent worktrees live under .claude/ inside the checkout; they are separate repos.
-extend-exclude = [".claude"]
+# Agent worktrees live under .claude/ inside the checkout; whisper.cpp and
+# llama.cpp ship their own Python scripts with their own style.
+extend-exclude = [".claude", "native/third_party"]
 
 [tool.ruff.lint]
 select = [

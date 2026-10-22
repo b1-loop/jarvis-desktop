@@ -25,7 +25,7 @@ jarvis/
     overlay/              Dear ImGui status window
     bindings/             pybind11 modules: jarvis_audio, jarvis_os, jarvis_inference, jarvis_overlay
     tests/                Catch2
-    third_party/          whisper.cpp, llama.cpp (git submodules, added in step 12)
+    third_party/          whisper.cpp, llama.cpp (git submodules, pinned to release tags)
   src/jarvis/
     __main__.py           CLI entry point and composition root
     config.py             pydantic-settings, the only reader of environment variables
@@ -106,6 +106,7 @@ the latency-critical voice path.
 | Event loop | Python asyncio | poll events every 10 ms, orchestrate STT/LLM/TTS, enqueue TTS chunks | engine mutex, playback mutex (brief) |
 | Executor threads | Python | STT and other CPU-bound Python work | none |
 | Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11 rendering, DPI changes | overlay model mutex (read) |
+| Generation | `GenerationStream` (C++) | llama.cpp decode loop; pushes text pieces into a queue that Python pulls from with the GIL released | stream mutex, cancellation token |
 
 Rules that keep this safe:
 
@@ -197,6 +198,15 @@ on the LLM interface and lands with it. See ADR-0006.
 `UserProfile` is a view over `profile.*` facts. `recall()` returns profile +
 facts + recent turns + semantic hits trimmed to a character budget. All data
 stays under `Settings.data_dir`. See ADR-0008.
+
+## 7a. Local inference *(step 12)*
+
+`native/inference` wraps whisper.cpp and llama.cpp (ADR-0010). Transcription
+is one blocking call with the GIL released. Generation runs on a native
+thread that fills a queue; Python pulls pieces from a `GenerationStream`
+and can cancel it, so the LLM path follows the same no-GIL-on-native-threads
+rule as the audio engine. The Python `STT` / `LLMClient` providers over this
+module are the second half of step 12.
 
 ## 8. Native build *(step 2)*
 

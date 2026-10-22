@@ -27,6 +27,16 @@ add_executable(jarvis_tests
     os/system_controls_test.cpp
     os/text_encoding_test.cpp
     os/window_manager_test.cpp)
+if(JARVIS_BUILD_INFERENCE)
+    target_sources(jarvis_tests PRIVATE
+        inference/cancellation_token_test.cpp
+        inference/chat_template_test.cpp
+        inference/generation_stream_test.cpp
+        inference/llama_generator_test.cpp
+        inference/stop_matcher_test.cpp
+        inference/whisper_transcriber_test.cpp)
+    target_link_libraries(jarvis_tests PRIVATE jarvis::inference)
+endif()
 
 target_include_directories(jarvis_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(jarvis_tests PRIVATE
