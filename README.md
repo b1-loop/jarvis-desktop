@@ -709,10 +709,9 @@ shortcut to `uvw` rather than a frozen `.exe`.
 See [CONTRIBUTING.md](CONTRIBUTING.md). The GitHub Actions workflow
 (`.github/workflows/ci.yml`) documents the full pipeline (lint, types,
 Python tests on Linux, the Windows native build with Catch2 and
-native-marked tests, sharded clang-tidy, a secrets scan), but it is
-currently switched off in the repository settings to save Actions minutes;
-the same checks run locally through the pre-commit hooks and these
-commands:
+native-marked tests, sharded clang-tidy, a secrets scan) and runs on every
+push and pull request. The same checks run locally through the pre-commit
+hooks and these commands:
 
 ```powershell
 uv run ruff check . ; uv run ruff format --check . ; uv run mypy ; uv run pytest -m "not hardware"

@@ -219,8 +219,10 @@ def _decode(entry: SystemProcessInformation) -> ProcessSample:
 def _image_name(image_name: _UnicodeString) -> str:
     if not image_name.buffer or not image_name.length:
         return ""
-    wchar_bytes = ctypes.sizeof(ctypes.c_wchar)
-    return ctypes.wstring_at(image_name.buffer, image_name.length // wchar_bytes)
+    # Windows strings are UTF-16LE whatever the host's wchar_t is, so decode the
+    # bytes explicitly; that also keeps the parser testable off Windows.
+    raw = ctypes.string_at(image_name.buffer, image_name.length)
+    return raw.decode("utf-16-le", errors="replace")
 
 
 class FallbackProcessSource:

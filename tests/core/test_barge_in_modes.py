@@ -408,9 +408,13 @@ async def test_on_speakers_echo_is_ignored_and_the_wake_word_interrupts(
     assert all(target is None for target in session.native.barge_in_targets)
 
     session.stt.texts.append("What's the weather?")
+    calls = len(session.native.listening_calls)
     session.native.script(native_event("WAKE_WORD_DETECTED", 0.95))
     await eventually(lambda: application.orchestrator.state is AssistantState.LISTENING)
-    session.playback.hold = False
+    session.playback.release()  # the earcon may already be queued behind the hold
+    # LISTENING is published before the earcon and before the capture clears
+    # stale events; speech scripted in between would be discarded with them.
+    await eventually(lambda: True in session.native.listening_calls[calls:])
     session.native.say_utterance()
     await eventually(lambda: "Jarvis> Sunny and mild.\n" in session.printed)
     await eventually(lambda: application.orchestrator.state is AssistantState.IDLE)
