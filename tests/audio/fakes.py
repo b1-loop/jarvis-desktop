@@ -43,6 +43,10 @@ class FakeNativeEngine:
     stopped: int = 0
     dropped: int = 0
     level: float = 0.0
+    received: int = 0
+    delivery: int = 160
+    restarts: int = 0
+    restart_errors: deque[Exception] = field(default_factory=deque)
     _listening: bool = False
 
     def script(self, *events: FakeNativeEvent) -> None:
@@ -82,6 +86,21 @@ class FakeNativeEngine:
 
     def dropped_samples(self) -> int:
         return self.dropped
+
+    def samples_received(self) -> int:
+        """A live microphone by default: every read sees one more 10 ms period.
+
+        Set ``delivery`` to 0 to simulate a capture that stalled.
+        """
+        self.received += self.delivery
+        return self.received
+
+    def restart_capture(self) -> bool:
+        """Raise the next scripted error, if any, else count a successful reopen."""
+        if self.restart_errors:
+            raise self.restart_errors.popleft()
+        self.restarts += 1
+        return self.running()
 
 
 @dataclass

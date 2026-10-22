@@ -146,7 +146,11 @@ void defineEvents(const py::module_& module) {
         .value("WAKE_WORD_DETECTED", AudioEventType::WakeWordDetected)
         .value("SPEECH_STARTED", AudioEventType::SpeechStarted)
         .value("SPEECH_ENDED", AudioEventType::SpeechEnded)
-        .value("SAMPLES_DROPPED", AudioEventType::SamplesDropped);
+        .value("SAMPLES_DROPPED", AudioEventType::SamplesDropped)
+        .value("DEVICE_STOPPED", AudioEventType::DeviceStopped)
+        .value("DEVICE_REROUTED", AudioEventType::DeviceRerouted)
+        .value("DEVICE_INTERRUPTED", AudioEventType::DeviceInterrupted)
+        .value("DEVICE_RESUMED", AudioEventType::DeviceResumed);
 
     py::class_<AudioEvent>(module, "AudioEvent", "One event reported by the engine.")
         .def_readonly("type", &AudioEvent::type)
@@ -215,7 +219,14 @@ void defineEngine(const py::module_& module) {
         .def("wake_word_threshold", &AudioEngine::wakeWordThreshold)
         .def("input_level", &AudioEngine::inputLevel)
         .def("dropped_samples", &AudioEngine::droppedSamples)
-        .def("samples_processed", &AudioEngine::samplesProcessed);
+        .def("samples_processed", &AudioEngine::samplesProcessed)
+        .def("samples_received", &AudioEngine::samplesReceived,
+             "Samples the device has delivered, dropped ones included; stops growing "
+             "only when the capture stalled.")
+        .def("restart_capture", &AudioEngine::restartCapture,
+             py::call_guard<py::gil_scoped_release>(),
+             "Reopen the default capture device and reset detector state. False when not "
+             "running; raises AudioDeviceError when no device could be opened.");
 }
 
 }  // namespace

@@ -20,7 +20,7 @@ headphones, and only the wake word (or hotkey, or typing) does on speakers.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Final, Protocol, runtime_checkable
 
@@ -31,6 +31,7 @@ from jarvis.app.autostart import StartupShortcut
 from jarvis.audio.engine import (
     AudioEngine,
     AudioModelError,
+    CaptureRecovery,
     NativeEngine,
     NativePlayback,
     Speaker,
@@ -68,7 +69,7 @@ from jarvis.core.voice_io import (
 from jarvis.core.voice_latency import FirstTokenProbe, TurnTimeline
 from jarvis.core.voice_triggers import AnyTrigger, HotkeyTrigger, TurnTrigger, WakeWordTrigger
 from jarvis.os_integration.audio_endpoint import default_output_endpoint
-from jarvis.os_integration.base import OutputEndpoint
+from jarvis.os_integration.base import OutputEndpoint, Platform
 from jarvis.os_integration.errors import PlatformError
 from jarvis.stt.base import STT
 from jarvis.tts.base import TTS
@@ -101,6 +102,7 @@ TEXT_FALLBACK: Final = (
     "Voice mode is unavailable: {reason}\nStarting text mode instead; type your requests.\n"
 )
 STT_LOADING: Final = "[Loading the speech recognition model...]\n"
+MICROPHONE_NOTIFICATION_TITLE: Final = "Jarvis: microphone"
 
 
 class VoiceUnavailableError(JarvisError):
@@ -162,6 +164,23 @@ def build_tts(settings: Settings) -> TTS:
         return providers.build_tts(settings)
     except ConfigError as error:
         raise VoiceUnavailableError(f"speech output unavailable: {error}") from error
+
+
+def microphone_notifier(platform: Platform) -> Callable[[str], Awaitable[None]]:
+    """Shows the capture watchdog's "Microphone stopped" as a system notification.
+
+    The tray and HUD may be hidden (Jarvis runs windowless), and a user whose
+    wake word stopped working looks at neither; a notification is what they see.
+    """
+
+    async def notify(text: str) -> None:
+        try:
+            await platform.notify(MICROPHONE_NOTIFICATION_TITLE, text)
+        except PlatformError:
+            # The log still carries the outage; a lost balloon is not fatal.
+            log.exception("voice.microphone.notify_failed", text=text)
+
+    return notify
 
 
 def boot_readout(settings: Settings) -> dict[str, str]:
@@ -431,6 +450,11 @@ class VoiceFrontEndBuilder:
             native,
             poll_interval=self._factories.poll_interval,
             max_utterance_seconds=settings.max_utterance_seconds,
+            recovery=CaptureRecovery(
+                notify=microphone_notifier(request.platform),
+                device_name=self._factories.microphone_name,
+                restart_errors=(native_error,),
+            ),
         )
         try:
             await request.stack.enter_async_context(engine)
@@ -776,4 +800,5 @@ async def run_voice_mode(
 #   greeting can already say how to interrupt in this session.
 # - Muting stops the audio engine (the device is really closed, which
 #   Windows shows in its microphone indicator) and makes the input ignore
-#   hotkey presses until unmuted.
+#   hotkey presses until unmuted. The capture watchdog (ADR-0027) stops and
+#   starts with the engine, so a muted microphone is never "recovered".

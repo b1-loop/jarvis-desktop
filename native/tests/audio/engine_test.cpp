@@ -3,6 +3,7 @@
 #include "jarvis/audio/audio_format.hpp"
 #include "jarvis/audio/events.hpp"
 #include "jarvis/audio/playback.hpp"
+#include "jarvis/common/errors.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -163,6 +164,122 @@ TEST_CASE("ring buffer overflow is reported as dropped samples", "[audio][engine
 
     REQUIRE(f.waitForEvent(AudioEventType::SamplesDropped));
     REQUIRE(f.engine.droppedSamples() >= 20000 - 4096);
+}
+
+TEST_CASE("device notifications are reported as events", "[audio][engine][recovery]") {
+    using jarvis::audio::DeviceNotification;
+    Fixture f;
+    f.engine.start();
+
+    f.source->notify(DeviceNotification::Stopped);
+    f.source->notify(DeviceNotification::Rerouted);
+    f.source->notify(DeviceNotification::InterruptionBegan);
+    f.source->notify(DeviceNotification::InterruptionEnded);
+
+    REQUIRE(f.waitForEvent(AudioEventType::DeviceStopped));
+    REQUIRE(f.waitForEvent(AudioEventType::DeviceRerouted));
+    REQUIRE(f.waitForEvent(AudioEventType::DeviceInterrupted));
+    REQUIRE(f.waitForEvent(AudioEventType::DeviceResumed));
+}
+
+TEST_CASE("samplesReceived counts every delivered sample, dropped ones too",
+          "[audio][engine][recovery]") {
+    Fixture f;
+    f.engine.start();
+    REQUIRE(f.engine.samplesReceived() == 0);
+
+    f.source->feed(samples(20000));  // overflows the 4096-sample ring
+
+    REQUIRE(f.engine.samplesReceived() == 20000);
+}
+
+TEST_CASE("a source that stops delivering leaves samplesReceived flat",
+          "[audio][engine][recovery]") {
+    Fixture f;
+    f.engine.start();
+    f.source->feed(samples(kVadFrameSamples));
+    const auto before = f.engine.samplesReceived();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    REQUIRE(f.engine.samplesReceived() == before);
+    REQUIRE(f.engine.running());
+}
+
+TEST_CASE("restartCapture reopens the source and frames flow again", "[audio][engine][recovery]") {
+    Fixture f;
+    f.engine.start();
+    f.source->stopped = false;
+
+    REQUIRE(f.engine.restartCapture());
+
+    REQUIRE(f.source->stopped);
+    REQUIRE(f.source->startCount == 2);
+    REQUIRE(f.engine.running());
+    f.source->feed(samples(1024));
+    REQUIRE(f.engine.samplesReceived() == 1024);
+    REQUIRE(waitUntil([&] { return f.engine.samplesProcessed() >= 1024; }));
+}
+
+TEST_CASE("restartCapture resets detectors but keeps listening", "[audio][engine][recovery]") {
+    Fixture f;
+    f.engine.start();
+    f.engine.setListening(true);
+    f.source->feed(samples(2048, 0.25F));
+    REQUIRE(waitUntil([&] { return f.engine.samplesProcessed() >= 2048; }));
+    const auto resetsBefore = f.vad->resets;
+
+    REQUIRE(f.engine.restartCapture());
+
+    REQUIRE(f.vad->resets == resetsBefore + 1);
+    REQUIRE(f.engine.listening());
+    REQUIRE(f.engine.takeCaptured().empty());  // audio before the gap is not this utterance
+}
+
+TEST_CASE("a speech segment cut by a restart does not end on stale state",
+          "[audio][engine][recovery]") {
+    Fixture f;
+    f.vad->scriptRepeated(0.9F, kMinSpeechFrames);
+    f.engine.start();
+    f.source->feed(samples(kMinSpeechFrames * kVadFrameSamples));
+    REQUIRE(f.waitForEvent(AudioEventType::SpeechStarted));
+
+    REQUIRE(f.engine.restartCapture());
+    // Two seconds of silence after the restart: a segmenter still "in speech"
+    // would now report SpeechEnded for audio that was never one utterance.
+    // Fed in ring-sized batches so nothing is dropped.
+    constexpr std::size_t kBatchFrames = 4;
+    constexpr std::size_t kBatches = 16;
+    for (std::size_t batch = 1; batch <= kBatches; ++batch) {
+        f.source->feed(samples(kBatchFrames * kVadFrameSamples));
+        const auto expected = (kMinSpeechFrames + (batch * kBatchFrames)) * kVadFrameSamples;
+        REQUIRE(waitUntil([&] { return f.engine.samplesProcessed() >= expected; }));
+    }
+
+    const auto fresh = f.engine.pollEvents();
+    REQUIRE(std::ranges::none_of(
+        fresh, [](const auto& e) { return e.type == AudioEventType::SpeechEnded; }));
+}
+
+TEST_CASE("restartCapture is a no-op on a stopped engine", "[audio][engine][recovery]") {
+    Fixture f;
+    REQUIRE_FALSE(f.engine.restartCapture());
+    REQUIRE(f.source->startCount == 0);
+}
+
+TEST_CASE("a failed restart throws, keeps the engine running and can be retried",
+          "[audio][engine][recovery]") {
+    Fixture f;
+    f.engine.start();
+    f.source->failStarts = 1;
+
+    REQUIRE_THROWS_AS(f.engine.restartCapture(), jarvis::AudioDeviceError);
+    REQUIRE(f.engine.running());
+
+    REQUIRE(f.engine.restartCapture());
+    REQUIRE(f.source->startCount == 2);
+    f.engine.stop();
+    REQUIRE_FALSE(f.engine.running());
 }
 
 TEST_CASE("the destructor stops a running engine", "[audio][engine]") {
