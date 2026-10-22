@@ -66,6 +66,7 @@ def factories(
         stt=lambda _settings: stt or ScriptedSTT(),
         tts=lambda _settings: ScriptedTTS(),
         overlay=lambda _settings: Overlay(StubOverlay()),
+        autostart=lambda _settings: None,
         poll_interval=0.001,
     )
 
@@ -211,6 +212,33 @@ async def test_microphone_switch_closes_the_device_and_ignores_triggers(
         assert not native.running()
         assert not await front.microphone.toggle()
         assert native.running()
+
+
+async def test_the_hud_gets_a_settings_page_and_follows_mute(make_settings: MakeSettings) -> None:
+    native = StubOverlay()
+    voice = replace(factories(), overlay=lambda _settings: Overlay(native))
+    builder = VoiceFrontEndBuilder(factories=voice)
+    async with AsyncExitStack() as stack:
+        front = await builder(request(make_settings(), stack))
+        items = native.settings["items"]
+        assert isinstance(items, list)
+        rows = {item["key"]: item for item in items}
+        # ScriptedTTS cannot switch voices live, so the voice is restart-only.
+        assert rows["tts_voice"]["restart_required"] is True
+        assert rows["overlay_theme"]["restart_required"] is False
+        assert front.bind_controls is not None
+
+        assert front.microphone is not None
+        await front.microphone.toggle()
+        assert native.muted
+
+
+async def test_the_wake_word_setting_turns_the_wake_word_off(make_settings: MakeSettings) -> None:
+    builder = VoiceFrontEndBuilder(factories=factories())
+    async with AsyncExitStack() as stack:
+        front = await builder(request(make_settings(wake_word_enabled=False), stack))
+        assert "Press" in front.greeting
+        assert "Say" not in front.greeting
 
 
 async def test_overlay_toggle_flips_visibility(make_settings: MakeSettings) -> None:

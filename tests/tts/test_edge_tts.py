@@ -29,6 +29,12 @@ def test_properties_and_hierarchy() -> None:
     assert issubclass(SynthesisError, JarvisError)
 
 
+def test_the_voice_can_be_switched_live() -> None:
+    tts = make_tts(FakeChunkStream([]))
+    tts.set_voice("sv-SE-MattiasNeural")
+    assert tts.voice == "sv-SE-MattiasNeural"
+
+
 async def test_audio_is_decoded_in_batches_as_chunks_arrive() -> None:
     stream_bytes = frames(7)
     chunks = [stream_bytes[i : i + 100] for i in range(0, len(stream_bytes), 100)]
