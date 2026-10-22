@@ -82,7 +82,7 @@ jobs:
       - name: Python can import the native modules
         run: uv run python -c "import jarvis._native as n; print(n.available_modules())"
       - name: Native-marked Python tests
-        run: uv run pytest -m native --no-cov
+        run: uv run pytest -m "native and not hardware" --no-cov
 
   secrets-scan:
     name: Secrets scan

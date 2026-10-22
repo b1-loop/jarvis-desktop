@@ -23,13 +23,19 @@ namespace {
 class ClipboardScope {
 public:
     ClipboardScope() {
-        constexpr int kAttempts = 10;
-        constexpr auto kRetryDelay = std::chrono::milliseconds(10);
+        // Another process (a clipboard manager, a remote-desktop client, a
+        // second app copying) may hold the clipboard for a few hundred ms.
+        // Exponential backoff waits about one second in total before giving
+        // up, still well below what a spoken request notices.
+        constexpr int kAttempts = 8;
+        constexpr auto kFirstDelay = std::chrono::milliseconds(8);
+        auto delay = kFirstDelay;
         for (int attempt = 0; attempt < kAttempts; ++attempt) {
             if (OpenClipboard(nullptr) != FALSE) {
                 return;
             }
-            std::this_thread::sleep_for(kRetryDelay);
+            std::this_thread::sleep_for(delay);
+            delay *= 2;
         }
         win32::throwLastError("OpenClipboard");
     }
