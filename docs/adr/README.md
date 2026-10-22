@@ -24,4 +24,4 @@ here. New ADRs follow `template.md`; superseded ones are kept and marked.
 | [0016](0016-screen-understanding.md) | Screen understanding: downscale locally, byte budget, ask only on request | Accepted |
 | [0017](0017-background-processes-for-dev-tools.md) | Background processes for dev tools: spawn under the sandbox, track in memory | Accepted |
 | [0018](0018-integration-services-bundle.md) | One IntegrationServices bundle on ToolContext | Accepted |
-
+| [0020](0020-tool-selection-for-small-models.md) | Per-turn tool selection and a grounding guard for small local models | Accepted |

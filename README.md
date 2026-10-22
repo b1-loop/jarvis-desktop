@@ -80,6 +80,9 @@ Two runtime modes:
 | `local` (`uv sync --extra local`, `download_models.py --local`) | llama.cpp (in process) | whisper.cpp | Piper | none |
 
 Measured latency, quality, privacy and cost of each mode: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
+Small local models get a short, relevant tool list per request instead of all
+of them, and never get to claim success for a tool that failed:
+[ADR-0020](docs/adr/0020-tool-selection-for-small-models.md).
 
 Full design, threading model and trade-offs: [ARCHITECTURE.md](ARCHITECTURE.md)
 and the [ADRs](docs/adr/README.md).
