@@ -20,6 +20,7 @@ import concurrent.futures
 import gc
 import queue
 import threading
+import time
 import tkinter
 import tkinter.font
 from collections.abc import Callable
@@ -87,6 +88,30 @@ _LATENCY_COLUMNS: Final = (
 )
 
 
+_TK_START_ATTEMPTS: Final = 3
+_TK_RETRY_SECONDS: Final = 0.05
+
+
+def create_tk_root() -> tkinter.Tk:
+    """Create the Tk root, retrying a transient failure to read Tcl's own scripts.
+
+    On Windows, Tcl occasionally fails to read ``init.tcl`` with "couldn't
+    read file ...: No error" while another process (an antivirus scan, a
+    parallel build) holds the file; the next attempt succeeds. Any other
+    TclError, such as no display, is raised at once.
+    """
+    for attempt in range(1, _TK_START_ATTEMPTS + 1):
+        try:
+            return tkinter.Tk()
+        except tkinter.TclError as error:
+            transient = "couldn't read file" in str(error)
+            if not transient or attempt == _TK_START_ATTEMPTS:
+                raise
+            log.warning("dashboard.tk.retry", attempt=attempt)
+            time.sleep(_TK_RETRY_SECONDS)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 class DashboardError(JarvisError):
     """The dashboard window could not be created (no display, no Tk)."""
 
@@ -152,7 +177,7 @@ class _DashboardView:
     """The widgets. Created, used and destroyed on the Tk thread only."""
 
     def __init__(self, config: DashboardConfig, on_refresh: Callable[[], None]) -> None:
-        self.root = tkinter.Tk()
+        self.root = create_tk_root()
         self.root.title(config.title)
         self._scale = self.root.winfo_fpixels("1i") / _BASE_DPI
         self.root.geometry(f"{self._px(config.width)}x{self._px(config.height)}")

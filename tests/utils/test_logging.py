@@ -110,3 +110,10 @@ def test_level_names_are_case_insensitive() -> None:
 def test_unknown_level_fails_fast() -> None:
     with pytest.raises(KeyError):
         configure_logging("VERBOSE")
+
+
+@pytest.mark.parametrize("key", ["input_tokens", "output_tokens", "keyboard_layout", "token_count"])
+def test_counters_that_only_contain_a_marker_stay_readable(key: str) -> None:
+    event = redact_secrets(None, "info", {"event": "x", key: 42})
+
+    assert event[key] == 42

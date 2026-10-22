@@ -292,3 +292,29 @@ def test_notebook_has_live_and_memory_tabs(display: None) -> None:
         view.destroy()
 
     assert tabs == ["Live", "Memory"]
+
+
+def test_tk_start_retries_a_transient_tcl_read_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[int] = []
+
+    def flaky_tk() -> object:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise tkinter.TclError('couldn\'t read file "init.tcl": No error')
+        return "root"
+
+    monkeypatch.setattr(dashboard_module.tkinter, "Tk", flaky_tk)
+    monkeypatch.setattr(dashboard_module.time, "sleep", lambda _s: None)
+
+    assert dashboard_module.create_tk_root() == "root"
+    assert len(attempts) == 2
+
+
+def test_tk_start_does_not_retry_a_missing_display(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_display() -> object:
+        raise tkinter.TclError("no display name and no $DISPLAY environment variable")
+
+    monkeypatch.setattr(dashboard_module.tkinter, "Tk", no_display)
+
+    with pytest.raises(tkinter.TclError, match="no display"):
+        dashboard_module.create_tk_root()

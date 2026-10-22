@@ -23,13 +23,14 @@ _REDACTED: Final = "***"
 def redact_secrets(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:
     """Replace the value of any key that looks like a credential.
 
-    Matching is by substring on the lower-cased key so ``api_key``,
+    Matching is by suffix on the lower-cased key so ``api_key``,
     ``ANTHROPIC_API_KEY`` and ``refresh_token`` are all caught without a
-    maintained allow-list.
+    maintained allow-list, while counters such as ``input_tokens`` (which
+    only contain a marker) stay readable.
     """
     for key in event_dict:
         lowered = key.lower()
-        if any(marker in lowered for marker in _SECRET_KEY_MARKERS):
+        if lowered.endswith(_SECRET_KEY_MARKERS):
             event_dict[key] = _REDACTED
     return event_dict
 

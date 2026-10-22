@@ -52,6 +52,24 @@ def _truncate(text: str, limit: int) -> str:
     return text[: max(limit - len(_ELLIPSIS), 0)] + _ELLIPSIS
 
 
+def _render_recent(message: Message) -> str:
+    """One line of the recent conversation as the model should read it.
+
+    An assistant answer that came from tools (the time, RAM in use, unread
+    mail) is stale by the next turn. Showing its text tempted small models
+    to repeat it instead of calling the tool again, so only the fact that a
+    tool answered, and when, is kept.
+    """
+    stamp = message.created_at.astimezone().strftime("%H:%M")
+    if message.role is Role.ASSISTANT and message.tool_calls:
+        tools = ", ".join(sorted({str(call.get("name", "tool")) for call in message.tool_calls}))
+        return (
+            f"[{stamp}] {message.role.value}: (answered using {tools}; that result is "
+            "out of date now, call the tool again for current values)"
+        )
+    return f"[{stamp}] {message.role.value}: {message.content}"
+
+
 @dataclass(frozen=True, slots=True)
 class RecalledContext:
     """What the agent should know before answering one user message.
@@ -80,7 +98,7 @@ class RecalledContext:
             hits = "\n".join(f"- {hit.text}" for hit in self.semantic)
             sections.append(f"Related memories:\n{hits}")
         if self.recent:
-            turns = "\n".join(f"{m.role.value}: {m.content}" for m in self.recent)
+            turns = "\n".join(_render_recent(message) for message in self.recent)
             sections.append(f"Recent conversation:\n{turns}")
         return "\n\n".join(sections)
 
