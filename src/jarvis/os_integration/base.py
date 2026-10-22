@@ -47,6 +47,20 @@ class HotkeyEvent:
     hotkey: str
 
 
+@dataclass(frozen=True, slots=True)
+class OutputEndpoint:
+    """The default audio output device as the OS describes it.
+
+    Attributes:
+        name: Friendly name, e.g. ``"Speakers (Realtek(R) Audio)"``.
+        form_factor: Core Audio form factor in snake_case: ``"speakers"``,
+            ``"headphones"``, ``"headset"``, ``"unknown"``, ...
+    """
+
+    name: str
+    form_factor: str
+
+
 class Platform(ABC):
     """Operating-system services behind one interface.
 
