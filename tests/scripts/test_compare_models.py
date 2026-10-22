@@ -113,13 +113,32 @@ async def test_the_reminder_check_reads_the_store(tmp_path: Path) -> None:
         await memory.add_reminder("tvätten", MOMENT + timedelta(minutes=5, seconds=20))
         probe = compare.Probe(answer="Okej.", memory=memory, asked_at=MOMENT)
 
-        assert await compare.check_reminder(probe)
+        assert await compare.reminder_check(compare.LAUNDRY)(probe)
+        assert not await compare.reminder_check(compare.MUM)(probe)  # wrong reminder
         assert not await compare.check_todo_added(probe)
+
+
+async def test_the_relisting_case_changes_the_list_behind_the_models_back(
+    tmp_path: Path,
+) -> None:
+    (case,) = [case for case in compare.CASES if case.label == "list todos again"]
+    async with SqliteStore(tmp_path / "memory.sqlite3") as store:
+        memory = MemoryManager(store, InMemoryVectorStore())
+        await memory.add_todo("mjölk")
+        assert case.setup is not None
+        await case.setup(memory)
+
+        stale = compare.Probe(answer="Mjölk.", memory=memory, asked_at=MOMENT)
+        fresh = compare.Probe(answer="Mjölk och bröd.", memory=memory, asked_at=MOMENT)
+
+        assert [todo.text for todo in await memory.list_todos()] == ["mjölk", "bröd"]
+        assert not await case.check(stale)
+        assert await case.check(fresh)
 
 
 def test_the_report_has_a_row_per_request_and_totals(make_settings: Any) -> None:
     del make_settings
-    case = compare.CASES[5]
+    (case,) = [case for case in compare.CASES if case.label == "calculation"]
     report = TurnReport(user_text=case.request, reply="Det blir 391.")
     outcome = compare.Outcome(case, report, True, 0.8, 1.5)
     run = compare.RunResult(label="qwen3:8b (think off)", outcomes=[outcome])

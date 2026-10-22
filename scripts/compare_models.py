@@ -88,6 +88,9 @@ PERCENT_TOLERANCE: Final = 5.0
 GIGABYTE_TOLERANCE: Final = 0.8
 BYTES_PER_GB: Final = 1024**3
 MILK: Final = ("mjölk", "milk")
+BREAD: Final = ("bröd", "bread")
+LAUNDRY: Final = ("tvätt", "laundry", "washing")
+MUM: Final = ("mamma", "mum", "mom", "mother")
 WARM_UP_REQUEST: Final = "Hej!"
 VOICE: Final = "sv-SE-MattiasNeural"
 """The user's voice; the persona answers in the voice's language (Swedish)."""
@@ -184,7 +187,26 @@ async def check_todo_listed(probe: Probe) -> bool:
 
 def mentions_milk(text: str) -> bool:
     """Whether ``text`` names the todo item; a model may store it translated."""
-    return any(word in text.lower() for word in MILK)
+    return mentions_any(text, MILK)
+
+
+def mentions_any(text: str, words: Sequence[str]) -> bool:
+    """Whether ``text`` contains any of ``words`` (case-insensitive)."""
+    return any(word in text.lower() for word in words)
+
+
+async def add_bread_behind_the_models_back(memory: MemoryManager) -> None:
+    """Change the list between two "what's on my list" turns, as another device would.
+
+    The second answer is right only if it comes from a fresh ``list_todos``
+    call: the earlier turn in memory cannot know about the bread.
+    """
+    await memory.add_todo("bröd")
+
+
+async def check_todo_relisted(probe: Probe) -> bool:
+    """The answer reads the current list: the milk and the bread added since."""
+    return mentions_milk(probe.answer) and mentions_any(probe.answer, BREAD)
 
 
 async def check_product(probe: Probe) -> bool:
@@ -192,11 +214,22 @@ async def check_product(probe: Probe) -> bool:
     return "391" in probe.answer.replace(" ", "")
 
 
-async def check_reminder(probe: Probe) -> bool:
-    """A reminder is due about five minutes after the request."""
-    expected = probe.asked_at + REMINDER_DELAY
-    reminders = await probe.memory.list_reminders()
-    return any(abs(reminder.due_at - expected) <= REMINDER_TOLERANCE for reminder in reminders)
+def reminder_check(words: Sequence[str]) -> Check:
+    """A reminder about ``words`` is due about five minutes after the request."""
+
+    async def check(probe: Probe) -> bool:
+        expected = probe.asked_at + REMINDER_DELAY
+        return any(
+            abs(reminder.due_at - expected) <= REMINDER_TOLERANCE
+            and mentions_any(reminder.text, words)
+            for reminder in await probe.memory.list_reminders()
+        )
+
+    return check
+
+
+Setup = Callable[[MemoryManager], Awaitable[None]]
+"""Changes the temporary memory store just before a request is sent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +240,7 @@ class Case:
     request: str
     tools: frozenset[str]
     check: Check
+    setup: Setup | None = None
 
 
 CASES: Final = (
@@ -230,12 +264,25 @@ CASES: Final = (
         frozenset({"list_todos"}),
         check_todo_listed,
     ),
+    Case(
+        "list todos again",
+        "vad står på min att-göra-lista?",
+        frozenset({"list_todos"}),
+        check_todo_relisted,
+        setup=add_bread_behind_the_models_back,
+    ),
     Case("calculation", "vad är 17 gånger 23?", frozenset(), check_product),
     Case(
         "reminder in 5 min",
         "påminn mig om fem minuter att ta ut tvätten",
         frozenset({"add_reminder"}),
-        check_reminder,
+        reminder_check(LAUNDRY),
+    ),
+    Case(
+        "remind call mum",
+        "påminn mig om fem minuter att ringa mamma",
+        frozenset({"add_reminder"}),
+        reminder_check(MUM),
     ),
 )
 
@@ -384,6 +431,8 @@ async def silent(sentence: str) -> None:
 
 async def measure(agent: Agent, llm: TimedLLM, memory: MemoryManager, case: Case) -> Outcome:
     """Run one request and check its answer against ground truth."""
+    if case.setup is not None:
+        await case.setup(memory)
     asked_at = datetime.now().astimezone()
     llm.start_turn()
     report = await agent.respond(case.request, silent)
@@ -543,5 +592,9 @@ if __name__ == "__main__":
 #   one shows up as a wrong tool, which is what it would be.
 # - Time to first token is measured on the first non-blank text delta of
 #   the turn, after any tool round, because that is when speech can start.
+# - "list todos again" adds a todo straight to the store before it is asked,
+#   so an answer repeated from the earlier turn in memory is wrong; only a
+#   fresh list_todos call can name the new item. The two reminder checks
+#   match the reminder's text, so the second cannot pass on the first's row.
 # - Checks are deliberately lenient about phrasing (any number close to the
 #   truth, either HH:MM or HH.MM) and strict about facts.
