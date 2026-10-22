@@ -63,6 +63,7 @@ HudRenderer::HudRenderer(ID3D11Device& device, Theme theme, const anim::OverlayA
 void HudRenderer::draw(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts) {
     const auto& boot = scene.frame.boot;
     drawScrim(draw, scene);
+    drawExpandedScrim(draw, scene);
     blend_.beginLight(draw);
     drawBackdropGlow(draw, scene);
     if (boot.has_value()) {
@@ -82,6 +83,7 @@ void HudRenderer::draw(ImDrawList& draw, const HudScene& scene, const HudFonts& 
     drawThinking(draw, scene);
     drawSpeaking(draw, scene);
     drawRipple(draw, scene);
+    drawExpandedLight(draw, scene);
     if (boot.has_value()) {
         drawBootTitle(draw, scene, *boot, fonts);
     }
@@ -91,6 +93,7 @@ void HudRenderer::draw(ImDrawList& draw, const HudScene& scene, const HudFonts& 
         drawReadout(draw, scene, *boot, fonts);
     }
     drawPanelText(draw, scene, fonts);
+    drawExpandedCaption(draw, scene, fonts);
 }
 
 // --- shared state ----------------------------------------------------------------

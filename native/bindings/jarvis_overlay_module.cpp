@@ -10,9 +10,12 @@
 #include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/effects.hpp"
 #include "jarvis/overlay/errors.hpp"
+#include "jarvis/overlay/hud_data.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/placement.hpp"
 #include "jarvis/overlay/system_info.hpp"
+#include "jarvis/overlay/ui_events.hpp"
 #include "jarvis/overlay/window.hpp"
 
 #include <pybind11/chrono.h>
@@ -21,9 +24,11 @@
 
 #include "module_info.hpp"
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace py = pybind11;
@@ -98,7 +103,33 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("bloom", &OverlayConfig::bloom,
                        "Run the GPU bloom pipeline (falls back to plain additive light).")
         .def_readwrite("title", &OverlayConfig::title)
-        .def_readwrite("limits", &OverlayConfig::limits);
+        .def_readwrite("limits", &OverlayConfig::limits)
+        .def_readwrite("interactive", &OverlayConfig::interactive,
+                       "Clickable HUD shapes, hover controls, typing, dragging (ADR-0024).")
+        .def_readwrite("position", &OverlayConfig::position,
+                       "Remembered corner-HUD position (SavedPlacement) or None.")
+        .def_readwrite("expanded_bounds", &OverlayConfig::expandedBounds,
+                       "Remembered expanded-panel position and size (SavedPlacement) or None.");
+}
+
+void definePlacement(const py::module_& module) {
+    py::class_<SavedPlacement>(module, "SavedPlacement",
+                               "A position in logical pixels from a monitor's work-area corner.")
+        .def(py::init<>())
+        .def(py::init([](std::string monitor, float x, float y, float width, float height) {
+                 return SavedPlacement{.monitor = std::move(monitor),
+                                       .x = x,
+                                       .y = y,
+                                       .width = width,
+                                       .height = height};
+             }),
+             py::arg("monitor"), py::arg("x"), py::arg("y"), py::arg("width") = 0.0F,
+             py::arg("height") = 0.0F)
+        .def_readwrite("monitor", &SavedPlacement::monitor)
+        .def_readwrite("x", &SavedPlacement::x)
+        .def_readwrite("y", &SavedPlacement::y)
+        .def_readwrite("width", &SavedPlacement::width)
+        .def_readwrite("height", &SavedPlacement::height);
 }
 
 void defineSnapshot(const py::module_& module) {
@@ -161,7 +192,208 @@ bool playBoot(OverlayWindow& window, const ReadoutPairs& info) {
     return window.playBoot(std::move(readout));
 }
 
+// --- interactive HUD (ADR-0024): data in, events out --------------------------
+
+/// dict[key] cast to T; KeyError when the key is missing, so a malformed
+/// page from Python fails loudly instead of rendering blanks.
+template <class T>
+T field(const py::dict& dict, const char* key) {
+    return dict.attr("__getitem__")(key).cast<T>();
+}
+
+SettingKind settingKindFrom(std::string_view name) {
+    if (name == "choice") {
+        return SettingKind::Choice;
+    }
+    if (name == "toggle") {
+        return SettingKind::Toggle;
+    }
+    if (name == "slider") {
+        return SettingKind::Slider;
+    }
+    if (name == "action") {
+        return SettingKind::Action;
+    }
+    throw py::value_error("unknown setting kind '" + std::string{name} +
+                          "'; expected choice, toggle, slider or action");
+}
+
+SettingItem settingFrom(const py::dict& item) {
+    SettingItem setting{.key = field<std::string>(item, "key"),
+                        .label = field<std::string>(item, "label"),
+                        .section = field<std::string>(item, "section"),
+                        .kind = settingKindFrom(field<std::string>(item, "kind")),
+                        .choices = {},
+                        .value = field<std::string>(item, "value"),
+                        .minimum = field<float>(item, "minimum"),
+                        .maximum = field<float>(item, "maximum"),
+                        .step = field<float>(item, "step"),
+                        .restartRequired = field<bool>(item, "restart_required"),
+                        .note = field<std::string>(item, "note")};
+    for (const auto& [value, label] :
+         field<std::vector<std::pair<std::string, std::string>>>(item, "choices")) {
+        setting.choices.push_back(SettingChoice{.value = value, .label = label});
+    }
+    return setting;
+}
+
+void setSettings(OverlayWindow& window, const py::dict& page) {
+    SettingsPage settings{.items = {},
+                          .restartPending = field<bool>(page, "restart_pending"),
+                          .notice = field<std::string>(page, "notice")};
+    for (const py::handle item : field<py::list>(page, "items")) {
+        settings.items.push_back(settingFrom(item.cast<py::dict>()));
+    }
+    window.setSettings(std::move(settings));
+}
+
+HistoryRole historyRoleFrom(std::string_view name) {
+    if (name == "user") {
+        return HistoryRole::User;
+    }
+    if (name == "jarvis") {
+        return HistoryRole::Jarvis;
+    }
+    if (name == "tool") {
+        return HistoryRole::Tool;
+    }
+    if (name == "notice") {
+        return HistoryRole::Notice;
+    }
+    throw py::value_error("unknown history role '" + std::string{name} +
+                          "'; expected user, jarvis, tool or notice");
+}
+
+template <class Enum>
+Enum parsedOrThrow(std::optional<Enum> parsed, std::string_view name, std::string_view what) {
+    if (!parsed.has_value()) {
+        throw py::value_error("unknown " + std::string{what} + " '" + std::string{name} + "'");
+    }
+    return *parsed;
+}
+
+void setAppearance(OverlayWindow& window, std::string_view theme, std::string_view intensity,
+                   std::string_view size) {
+    window.setAppearance(Appearance{
+        .theme = parsedOrThrow(parseThemeName(theme), theme, "theme"),
+        .intensity = parsedOrThrow(anim::parseIntensity(intensity), intensity, "intensity"),
+        .size = parsedOrThrow(parsePanelSize(size), size, "panel size")});
+}
+
+/// One UiEvent as a dict: {"kind": "submit_text", "text": ...}.
+py::dict eventToDict(const UiEvent& event) {
+    using py::literals::operator""_a;
+    const std::string kind{kindOf(event)};
+    if (const auto* submit = std::get_if<SubmitText>(&event)) {
+        return py::dict("kind"_a = kind, "text"_a = submit->text);
+    }
+    if (const auto* expand = std::get_if<SetExpanded>(&event)) {
+        return py::dict("kind"_a = kind, "expanded"_a = expand->expanded);
+    }
+    if (const auto* setting = std::get_if<SettingChanged>(&event)) {
+        return py::dict("kind"_a = kind, "key"_a = setting->key, "value"_a = setting->value);
+    }
+    if (const auto* moved = std::get_if<PlacementChanged>(&event)) {
+        return py::dict("kind"_a = kind, "expanded"_a = moved->expanded, "custom"_a = moved->custom,
+                        "monitor"_a = moved->monitor, "x"_a = moved->x, "y"_a = moved->y,
+                        "width"_a = moved->width, "height"_a = moved->height);
+    }
+    return py::dict("kind"_a = kind);
+}
+
+/// Inverse of eventToDict for the test hook.
+UiEvent eventFromDict(const py::dict& event) {
+    const auto kind = field<std::string>(event, "kind");
+    if (kind == "submit_text") {
+        return SubmitText{.text = field<std::string>(event, "text")};
+    }
+    if (kind == "set_expanded") {
+        return SetExpanded{.expanded = field<bool>(event, "expanded")};
+    }
+    if (kind == "setting_changed") {
+        return SettingChanged{.key = field<std::string>(event, "key"),
+                              .value = field<std::string>(event, "value")};
+    }
+    const std::vector<std::pair<std::string_view, UiEvent>> simple{
+        {"close", CloseRequested{}},     {"quit", QuitRequested{}},
+        {"toggle_mute", ToggleMute{}},   {"open_log", OpenLog{}},
+        {"restart", RestartRequested{}}, {"settings_opened", SettingsOpened{}}};
+    for (const auto& [name, value] : simple) {
+        if (name == kind) {
+            return value;
+        }
+    }
+    throw py::value_error("cannot inject UI event of kind '" + kind + "'");
+}
+
+py::list pollUiEvents(OverlayWindow& window) {
+    py::list events;
+    for (const UiEvent& event : window.pollUiEvents()) {
+        events.append(eventToDict(event));
+    }
+    return events;
+}
+
+py::dict hudSnapshot(const OverlayWindow& window) {
+    const HudData data = window.hudData();
+    py::list history;
+    for (const HistoryEntry& entry : *data.history) {
+        history.append(py::make_tuple(static_cast<int>(entry.role), entry.text, entry.time));
+    }
+    py::list keys;
+    for (const SettingItem& item : data.settings->items) {
+        keys.append(item.key);
+    }
+    using py::literals::operator""_a;
+    return py::dict("muted"_a = data.muted, "history"_a = history, "setting_keys"_a = keys,
+                    "restart_pending"_a = data.settings->restartPending,
+                    "theme"_a = std::string{toString(data.appearance.theme)},
+                    "intensity"_a = std::string{anim::toString(data.appearance.intensity)},
+                    "size"_a = std::string{toString(data.appearance.size)});
+}
+
+void setDemo(OverlayWindow& window, bool hover, std::optional<std::string> input) {
+    window.setDemo(DemoOverrides{.hover = hover, .input = std::move(input)});
+}
+
 using WindowClass = py::class_<OverlayWindow>;
+
+void defineWindowHud(WindowClass& window) {
+    window
+        .def("poll_ui_events", &pollUiEvents,
+             "Everything the user did since the last call, oldest first, as dicts\n"
+             "with a 'kind' key (submit_text, close, quit, toggle_mute, set_expanded,\n"
+             "setting_changed, open_log, restart, settings_opened, placement_changed).")
+        .def("dropped_ui_events", &OverlayWindow::droppedUiEvents,
+             "Events lost to the queue's drop-oldest overflow policy.")
+        .def(
+            "inject_ui_event",
+            [](OverlayWindow& self, const py::dict& event) {
+                self.injectUiEvent(eventFromDict(event));
+            },
+            py::arg("event"), "Test hook: enqueue an event as if the user had caused it.")
+        .def("set_muted", &OverlayWindow::setMuted, py::arg("muted"))
+        .def(
+            "add_history",
+            [](OverlayWindow& self, std::string_view role, std::string text, std::string time) {
+                self.addHistory(HistoryEntry{.role = historyRoleFrom(role),
+                                             .text = std::move(text),
+                                             .time = std::move(time)});
+            },
+            py::arg("role"), py::arg("text"), py::arg("time"),
+            "Append a conversation line; role is user, jarvis, tool or notice.")
+        .def("clear_history", &OverlayWindow::clearHistory)
+        .def("set_settings", &setSettings, py::arg("page"),
+             "Replace the settings page: {'items': [...], 'restart_pending', 'notice'}.")
+        .def("set_appearance", &setAppearance, py::arg("theme"), py::arg("intensity"),
+             py::arg("size"), "Switch theme, intensity and size live (settings spellings).")
+        .def("set_expanded", &OverlayWindow::setExpanded, py::arg("expanded"))
+        .def("expanded", &OverlayWindow::expanded)
+        .def("hud_snapshot", &hudSnapshot, "The HUD data pushed so far; for tests.")
+        .def("set_demo", &setDemo, py::arg("hover") = false, py::arg("input") = py::none(),
+             "Demo hook: show the hover controls and/or text in the field without\n"
+             "moving the mouse or taking the keyboard focus.");
+}
 
 void defineWindowAnimation(WindowClass& window) {
     window
@@ -188,6 +420,7 @@ void defineWindow(const py::module_& module) {
     WindowClass window(module, "OverlayWindow",
                        "Always-on-top status panel rendered on a native UI thread.");
     defineWindowAnimation(window);
+    defineWindowHud(window);
     window
         .def(py::init<OverlayConfig>(), py::arg("config") = OverlayConfig{},
              py::call_guard<py::gil_scoped_release>(),
@@ -233,6 +466,7 @@ PYBIND11_MODULE(jarvis_overlay, module) {
 
     defineExceptions(module);
     defineEnums(module);
+    definePlacement(module);
     defineConfig(module);
     defineSnapshot(module);
     defineWindow(module);

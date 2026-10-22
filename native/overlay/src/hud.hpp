@@ -12,6 +12,7 @@
 
 #include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/animator.hpp"
+#include "jarvis/overlay/hud_layout.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
 #include "jarvis/overlay/scene.hpp"
@@ -66,6 +67,16 @@ struct HudScene {
     std::span<const ReadoutLine> systemReadout;
     /// Local time for the idle readout.
     HudClock clock;
+    /// Expand/collapse morph, 0 (corner HUD) to 1 (expanded panel), eased.
+    float expand{0.0F};
+    /// The expanded panel's frame rectangle at this point of the morph.
+    RectF panelFrame;
+    /// Fade of the hover controls; the brand mark fades out under them.
+    float hover{0.0F};
+    /// The text field covers the telemetry strip of the corner HUD.
+    bool inputOpen{false};
+    /// The quit confirmation covers the transcript rows of the corner HUD.
+    bool confirming{false};
 };
 
 /// Stateless apart from fixed resources (blend callbacks, the globe
@@ -82,6 +93,10 @@ public:
     void draw(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts);
 
     [[nodiscard]] const Theme& theme() const noexcept { return theme_; }
+    /// Switch the palette (live theme change from the settings page).
+    void setTheme(const Theme& theme) noexcept { theme_ = theme; }
+    /// The light colour of @p scene: the state colours blended by weight.
+    [[nodiscard]] Rgba accent(const HudScene& scene) const noexcept;
     /// True when light is bloomed by the GPU pipeline.
     [[nodiscard]] bool bloom() const noexcept { return blend_.bloom(); }
 
@@ -95,7 +110,7 @@ private:
                         float alpha) const;
     void drawInfoLine(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts, ImVec2 at,
                       std::string_view label, std::string_view value, float alpha) const;
-    void drawTelemetry(ImDrawList& draw, const HudScene& scene);
+    void drawTelemetry(ImDrawList& draw, const HudScene& scene) const;
     void drawCore(ImDrawList& draw, const HudScene& scene) const;
     void drawListening(ImDrawList& draw, const HudScene& scene);
     void drawThinking(ImDrawList& draw, const HudScene& scene) const;
@@ -104,6 +119,11 @@ private:
     void drawPanelText(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts) const;
     void drawCaption(ImDrawList& draw, const HudScene& scene, ImFont& font, float alpha) const;
     void drawDivider(ImDrawList& draw, const HudScene& scene, float y, float alpha) const;
+
+    // hud_expanded.cpp: the expanded panel's chrome and the morph.
+    void drawExpandedScrim(ImDrawList& draw, const HudScene& scene) const;
+    void drawExpandedLight(ImDrawList& draw, const HudScene& scene) const;
+    void drawExpandedCaption(ImDrawList& draw, const HudScene& scene, const HudFonts& fonts) const;
 
     // hud_scene.cpp: the holographic scene shared by boot and panel.
     void drawBackdropGlow(ImDrawList& draw, const HudScene& scene) const;
@@ -132,7 +152,6 @@ private:
     void drawReadout(ImDrawList& draw, const HudScene& scene, const anim::BootFrame& boot,
                      const HudFonts& fonts) const;
 
-    [[nodiscard]] Rgba accent(const HudScene& scene) const noexcept;
     [[nodiscard]] static float intensity(const HudScene& scene) noexcept;
     [[nodiscard]] static float panelAlpha(const HudScene& scene) noexcept;
     /// Glow passes for strokes: fewer when the bloom pass adds the halo.
