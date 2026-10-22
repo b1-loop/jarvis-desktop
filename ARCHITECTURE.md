@@ -36,7 +36,7 @@ jarvis-desktop/
     core/                   composition root (bootstrap, voice_bootstrap, providers, ui_wiring,
                             proactive_wiring), event bus, state machine, orchestrator,
                             voice I/O, triggers, barge-in, latency probes, overlay bridge
-    audio/                  asyncio facade over jarvis_audio, model manifest
+    audio/                  asyncio facade over jarvis_audio, capture watchdog, model manifest
     os_integration/         Platform interface, WindowsPlatform over jarvis_os, StubPlatform
     stt/ tts/ llm/          interfaces + providers
     inference/              loader and model manifest for jarvis_inference
@@ -201,7 +201,8 @@ moment it is published, such as the latency benchmark.
 | Executor threads | Python (`asyncio.to_thread`) | STT, Piper, native OS calls, screenshots and imaging, document parsing, ChromaDB, token waits for llama.cpp | none beyond their call |
 | SQLite connection | aiosqlite | one thread per connection runs every query | its request queue |
 | Terminal input | `TerminalInput` (text mode) | blocking `input()`; lines go back with `call_soon_threadsafe` | none |
-| Capture callback | miniaudio (C++) | push device frames into the SPSC ring buffer, nothing else | ring buffer (producer) |
+| Capture callback | miniaudio (C++) | push device frames into the SPSC ring buffer and bump the received-sample counter, nothing else | ring buffer (producer), atomic counter |
+| Device notifications | miniaudio (C++, WASAPI notification client) | forward stopped / rerouted / interruption to the engine as events | engine mutex (brief) |
 | Audio worker | `AudioEngine` (C++) | pop frames, run `AudioPipeline` (Silero VAD, openWakeWord, segmentation, pre-roll), append events, trigger barge-in | ring buffer (consumer), engine mutex |
 | Playback callback | miniaudio (C++) | drain the `Playback` chunk queue under `try_lock`; silence when contended or empty | playback mutex (never blocks) |
 | Hotkey loop | `HotkeyManager` (C++) | `RegisterHotKey` is thread-affine; registers and pumps `WM_HOTKEY` into a queue Python polls | event queue mutex |
@@ -233,6 +234,13 @@ Rules that keep this safe:
   model: the loop pushes immutable snapshots (dashboard) or swaps a
   pre-rendered image (tray), and user actions come back only through
   `call_soon_threadsafe` (ADR-0015).
+- A capture that stops delivering is reopened from the event loop, never
+  from a device thread: the `CaptureWatchdog` task reads the lock-free
+  `samplesReceived()` counter every 250 ms and calls `restartCapture()`
+  through `asyncio.to_thread` after 2.5 s without samples or after a
+  `DeviceStopped` event. A lifecycle mutex serialises the restart with
+  `start()`/`stop()`, and the engine mutex is never held while the device
+  opens or closes (ADR-0027).
 - Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
   when a barge-in target is set, so it takes effect on the next device
   period without waiting for the event loop. Python learns about it
@@ -469,6 +477,7 @@ ladder, as implemented:
 | --- | --- | --- |
 | `jarvis_audio` not built, VAD model missing, no microphone or output device | voice mode says why and starts text mode | `voice_bootstrap.run_voice_mode` |
 | Wake-word models missing or broken | warning once, hotkey only, greeting says so | `VoiceFrontEndBuilder._create_engine` |
+| Microphone stops delivering (sleep/resume, system stall, device invalidated or unplugged) | reopened on the current default device with backoff (1 s up to 30 s); one notification if three attempts fail, another when it is back | `audio/watchdog.py` |
 | Hotkey taken by another app | wake word only; fatal only if neither exists | `VoiceFrontEndBuilder._trigger` |
 | TTS fails at runtime | one notice, answers printed | `VoiceOutput._report_failure` |
 | Nothing usable heard | "didn't catch that", back to IDLE | `VoiceInput._next_request` |

@@ -65,7 +65,7 @@ public:
     ReplaySource(ReplaySource&&) = delete;
     ReplaySource& operator=(ReplaySource&&) = delete;
 
-    void start(FrameCallback onFrames) override;
+    void start(FrameCallback onFrames, DeviceCallback onDevice) override;
     void stop() override;
 
 private:

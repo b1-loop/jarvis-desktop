@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol, cast
 
@@ -22,6 +22,7 @@ from numpy.typing import NDArray
 
 from jarvis import _native
 from jarvis.audio.models import AudioModelPaths
+from jarvis.audio.watchdog import CaptureWatchdog, DeviceName, Notifier, WatchdogConfig
 from jarvis.utils.errors import ConfigError, JarvisError
 from jarvis.utils.logging import get_logger
 
@@ -52,6 +53,14 @@ class AudioEventKind(StrEnum):
     SPEECH_STARTED = "speech_started"
     SPEECH_ENDED = "speech_ended"
     SAMPLES_DROPPED = "samples_dropped"
+    DEVICE_STOPPED = "device_stopped"
+    DEVICE_REROUTED = "device_rerouted"
+    DEVICE_INTERRUPTED = "device_interrupted"
+    DEVICE_RESUMED = "device_resumed"
+
+
+DEVICE_LOST_KINDS = frozenset({AudioEventKind.DEVICE_STOPPED, AudioEventKind.DEVICE_INTERRUPTED})
+"""Notifications after which no frames arrive until the device is restarted."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +182,29 @@ class NativeEngine(Protocol):
     def dropped_samples(self) -> int:
         """Total samples lost to ring-buffer overflow."""
 
+    def samples_received(self) -> int:
+        """Samples the device delivered so far; flat only when the capture stalled."""
+
+    def restart_capture(self) -> bool:
+        """Reopen the default capture device (blocking); False when not running."""
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureRecovery:
+    """Turns on the capture watchdog (``audio.watchdog``) for an :class:`AudioEngine`.
+
+    Attributes:
+        config: Stall and backoff timing.
+        notify: Tells the user about an outage that outlasts a few attempts.
+        device_name: The current default microphone, for log context.
+        restart_errors: What a failed native restart raises (``AudioDeviceError``).
+    """
+
+    config: WatchdogConfig = field(default_factory=WatchdogConfig)
+    notify: Notifier | None = None
+    device_name: DeviceName | None = None
+    restart_errors: tuple[type[Exception], ...] = (RuntimeError,)
+
 
 class AudioEngine:
     """Asyncio view of the native capture engine.
@@ -181,6 +213,10 @@ class AudioEngine:
     There is a single consumer by design: the orchestrator. Events that a
     waiter is not interested in are logged and discarded rather than queued
     forever.
+
+    With ``recovery`` set, a :class:`~jarvis.audio.watchdog.CaptureWatchdog`
+    runs alongside the poller and reopens a microphone that stopped
+    delivering audio (ADR-0027).
     """
 
     def __init__(
@@ -190,6 +226,7 @@ class AudioEngine:
         poll_interval: float = 0.01,
         max_utterance_seconds: float = 15.0,
         silence_end_ms: int = DEFAULT_SILENCE_END_MS,
+        recovery: CaptureRecovery | None = None,
     ) -> None:
         self._native = native
         self._poll_interval = poll_interval
@@ -197,6 +234,8 @@ class AudioEngine:
         self._silence_end_samples = silence_end_ms * SAMPLE_RATE // 1000
         self._events: asyncio.Queue[AudioEvent] = asyncio.Queue()
         self._poller: asyncio.Task[None] | None = None
+        self._watchdog = _watchdog_for(self, recovery)
+        self._watchdog_task: asyncio.Task[None] | None = None
         # Tracked from every event as it is polled, independent of the queue,
         # because the queue is cleared before each capture.
         self._in_speech = False
@@ -232,12 +271,18 @@ class AudioEngine:
             return
         await asyncio.to_thread(self._native.start)
         self._poller = asyncio.create_task(self._poll_forever(), name="audio-engine-poller")
+        if self._watchdog is not None:
+            self._watchdog.reset()
+            self._watchdog_task = asyncio.create_task(
+                self._watchdog.run(), name="audio-capture-watchdog"
+            )
         log.info("audio.engine.started")
 
     async def stop(self) -> None:
         """Stop polling and close the device. Idempotent."""
         if self._poller is None:
             return
+        await self._stop_watchdog()
         self._poller.cancel()
         try:
             await self._poller
@@ -250,6 +295,39 @@ class AudioEngine:
         self._poller = None
         await asyncio.to_thread(self._native.stop)
         log.info("audio.engine.stopped", dropped_samples=self._native.dropped_samples())
+
+    def samples_received(self) -> int:
+        """Samples the microphone delivered so far (the watchdog's stall signal)."""
+        return self._native.samples_received()
+
+    async def restart_capture(self) -> bool:
+        """Reopen the default microphone off the loop and forget speech in flight.
+
+        The native side resets the VAD, segmenter and wake word; the speech
+        tracking here is reset to match, so the next capture does not wait
+        for the end of an utterance the gap already cut off.
+
+        Returns:
+            False when the engine was not running (nothing was reopened).
+        """
+        restarted = await asyncio.to_thread(self._native.restart_capture)
+        self._in_speech = False
+        self._wake_in_speech = False
+        self._wake_seen_before_end = False
+        return restarted
+
+    async def _stop_watchdog(self) -> None:
+        task, self._watchdog_task = self._watchdog_task, None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as error:
+            # Reported with a traceback when it crashed (CaptureWatchdog.run).
+            log.warning("audio.watchdog.was_dead", error=repr(error))
 
     async def events(self) -> AsyncIterator[AudioEvent]:
         """Every event, in order, for as long as the caller iterates."""
@@ -409,12 +487,24 @@ class AudioEngine:
             self._last_wake_position = event.sample_position
             self._wake_in_speech = self._in_speech
 
+    def _tell_watchdog(self, event: AudioEvent) -> None:
+        """Log device notifications and hand the actionable ones to the watchdog."""
+        if event.kind in DEVICE_LOST_KINDS:
+            log.warning("audio.device.lost", kind=event.kind.value)
+            if self._watchdog is not None:
+                self._watchdog.device_lost(event.kind.value)
+        elif event.kind in (AudioEventKind.DEVICE_REROUTED, AudioEventKind.DEVICE_RESUMED):
+            log.info("audio.device.changed", kind=event.kind.value)
+            if self._watchdog is not None and event.kind is AudioEventKind.DEVICE_REROUTED:
+                self._watchdog.device_rerouted()
+
     async def _poll_forever(self) -> None:
         try:
             while True:
                 for native_event in self._native.poll_events():
                     event = _convert(native_event)
                     self._track(event)
+                    self._tell_watchdog(event)
                     await self._events.put(event)
                 await asyncio.sleep(self._poll_interval)
         except Exception:
@@ -422,6 +512,18 @@ class AudioEngine:
             # cause visible before propagating it into the task.
             log.exception("audio.poller.crashed")
             raise
+
+
+def _watchdog_for(engine: AudioEngine, recovery: CaptureRecovery | None) -> CaptureWatchdog | None:
+    if recovery is None:
+        return None
+    return CaptureWatchdog(
+        engine,
+        config=recovery.config,
+        notify=recovery.notify,
+        device_name=recovery.device_name,
+        restart_errors=recovery.restart_errors,
+    )
 
 
 def _convert(native_event: NativeEvent) -> AudioEvent:
@@ -554,3 +656,10 @@ def create_native_playback(sample_rate: int) -> NativePlayback:
 #   monologue should be transcribed, not dropped. record_utterance adds a
 #   separate start timeout so a wake word followed by silence gives up after
 #   a few seconds instead of the full utterance limit.
+# - Device notifications are queued like every other event (waiters filter by
+#   kind) and also handed to the watchdog. The watchdog task is cancelled
+#   before the native stop, and the native engine serialises restart and stop,
+#   so a restart still running in its worker thread cannot race a mute.
+# - A capture cut off by a restart is not ended artificially: its waiter
+#   times out at max_utterance_seconds with whatever was retained, the same
+#   path a user who never stops talking takes.

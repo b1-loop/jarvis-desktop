@@ -1,5 +1,6 @@
 #include "jarvis/audio/engine.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,22 @@ namespace {
 /// without waking up for every device period.
 constexpr std::size_t kWorkerChunkSamples = 2 * kVadFrameSamples;
 
+AudioEventType toEventType(DeviceNotification notification) noexcept {
+    switch (notification) {
+        case DeviceNotification::Stopped:
+            return AudioEventType::DeviceStopped;
+        case DeviceNotification::Rerouted:
+            return AudioEventType::DeviceRerouted;
+        case DeviceNotification::InterruptionBegan:
+            return AudioEventType::DeviceInterrupted;
+        case DeviceNotification::InterruptionEnded:
+            return AudioEventType::DeviceResumed;
+    }
+    // Unreachable for a valid enumerator; "stopped" is the safe reading of
+    // garbage because it makes the watchdog check that frames still arrive.
+    return AudioEventType::DeviceStopped;
+}
+
 }  // namespace
 
 AudioEngine::AudioEngine(std::unique_ptr<AudioSource> source,
@@ -35,15 +52,17 @@ AudioEngine::~AudioEngine() {
 }
 
 void AudioEngine::start() {
+    const std::scoped_lock lifecycle(lifecycleMutex_);
     if (running_.load()) {
         return;
     }
     worker_ = std::jthread([this](const std::stop_token& token) { workerLoop(token); });
-    source_->start([this](std::span<const float> frames) { ring_.push(frames); });
+    startSource();
     running_.store(true);
 }
 
 void AudioEngine::stop() {
+    const std::scoped_lock lifecycle(lifecycleMutex_);
     if (!running_.exchange(false)) {
         return;
     }
@@ -52,6 +71,39 @@ void AudioEngine::stop() {
     if (worker_.joinable()) {
         worker_.join();
     }
+}
+
+bool AudioEngine::restartCapture() {
+    const std::scoped_lock lifecycle(lifecycleMutex_);
+    if (!running_.load()) {
+        return false;
+    }
+    source_->stop();
+    {
+        const std::scoped_lock lock(mutex_);
+        const bool wasListening = pipeline_.listening();
+        pipeline_.reset();
+        pipeline_.setListening(wasListening);
+    }
+    startSource();
+    return true;
+}
+
+void AudioEngine::startSource() {
+    source_->start([this](std::span<const float> frames) { onFrames(frames); },
+                   [this](DeviceNotification notification) { onDeviceNotification(notification); });
+}
+
+void AudioEngine::onFrames(std::span<const float> frames) noexcept {
+    ring_.push(frames);
+    samplesReceived_.fetch_add(frames.size(), std::memory_order_relaxed);
+}
+
+void AudioEngine::onDeviceNotification(DeviceNotification notification) {
+    const std::scoped_lock lock(mutex_);
+    onEvent(AudioEvent{.type = toEventType(notification),
+                       .value = 0.0F,
+                       .samplePosition = pipeline_.samplesProcessed()});
 }
 
 void AudioEngine::setListening(bool listening) {

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <stop_token>
 #include <thread>
 #include <vector>
@@ -58,6 +59,20 @@ public:
     /// Stop the device and the worker. Safe to call repeatedly.
     void stop();
 
+    /// Close the capture device and open the current default one again.
+    ///
+    /// The recovery path for a capture that stopped delivering frames (see
+    /// docs/adr/0027). Detector and segmenter state is reset, because audio
+    /// on either side of a gap is not one utterance and a wake-word score
+    /// straddling it would be stale; the listening flag survives so a capture
+    /// in progress keeps recording. Runs on the caller's thread, never on a
+    /// device thread, and is serialised with start() and stop().
+    ///
+    /// @return False (and does nothing) when the engine is not running.
+    /// @throws AudioDeviceError If no device could be opened; the engine
+    ///         stays running so that a later call can try again.
+    bool restartCapture();
+
     [[nodiscard]] bool running() const noexcept { return running_.load(); }
 
     /// See AudioPipeline::setListening.
@@ -82,12 +97,25 @@ public:
     [[nodiscard]] std::size_t droppedSamples() const noexcept { return ring_.droppedSamples(); }
     [[nodiscard]] std::uint64_t samplesProcessed() const;
 
+    /// Samples the device has delivered since construction, dropped ones
+    /// included. Lock-free; a value that stops growing while the engine runs
+    /// means the capture stalled (even silence arrives every device period).
+    [[nodiscard]] std::uint64_t samplesReceived() const noexcept {
+        return samplesReceived_.load(std::memory_order_relaxed);
+    }
+
 private:
     /// Called by the pipeline with mutex_ already held.
     void onEvent(const AudioEvent& event);
     void workerLoop(const std::stop_token& stopToken);
     void reportDroppedSamples();
+    void startSource();
+    /// Device thread: real-time safe, so only the ring buffer and a counter.
+    void onFrames(std::span<const float> frames) noexcept;
+    /// Device or OS notification thread: queues the matching event.
+    void onDeviceNotification(DeviceNotification notification);
 
+    std::mutex lifecycleMutex_;  // serialises start, stop and restartCapture
     std::unique_ptr<AudioSource> source_;
     EngineConfig config_;
     SpscRingBuffer ring_;
@@ -98,6 +126,14 @@ private:
     std::size_t reportedDrops_{0};
     std::jthread worker_;
     std::atomic<bool> running_{false};
+    std::atomic<std::uint64_t> samplesReceived_{0};
 };
 
 }  // namespace jarvis::audio
+
+// Design notes:
+// - The engine detects and reports, Python decides: restartCapture() is the
+//   mechanism, the watchdog in jarvis.audio.watchdog is the policy (when to
+//   restart, backoff, telling the user). See docs/adr/0027.
+// - mutex_ is never held while the source starts or stops, because a device
+//   thread may be inside onDeviceNotification waiting for it.

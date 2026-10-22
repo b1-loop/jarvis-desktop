@@ -8,6 +8,7 @@
 #include "jarvis/audio/audio_source.hpp"
 #include "jarvis/audio/vad.hpp"
 #include "jarvis/audio/wake_word.hpp"
+#include "jarvis/common/errors.hpp"
 
 #include <cstddef>
 #include <deque>
@@ -77,16 +78,24 @@ private:
     std::deque<float> scripted_;
 };
 
-/// A source the test drives by hand.
+/// A source the test drives by hand: frames, device notifications and
+/// failures to open are all triggered explicitly.
 class FakeAudioSource final : public AudioSource {
 public:
-    void start(FrameCallback onFrames) override {
+    void start(FrameCallback onFrames, DeviceCallback onDevice) override {
+        if (failStarts > 0) {
+            --failStarts;
+            throw AudioDeviceError("fake: no capture device");
+        }
         callback_ = std::move(onFrames);
+        deviceCallback_ = std::move(onDevice);
         started = true;
+        ++startCount;
     }
 
     void stop() override {
         callback_ = nullptr;
+        deviceCallback_ = nullptr;
         stopped = true;
     }
 
@@ -97,11 +106,22 @@ public:
         }
     }
 
+    /// Report @p notification as if the device had changed on its own.
+    void notify(DeviceNotification notification) {
+        if (deviceCallback_) {
+            deviceCallback_(notification);
+        }
+    }
+
     bool started{false};
     bool stopped{false};
+    std::size_t startCount{0};
+    /// The next this many start() calls throw, like a device that is gone.
+    std::size_t failStarts{0};
 
 private:
     FrameCallback callback_;
+    DeviceCallback deviceCallback_;
 };
 
 /// A sink whose render callback the test invokes directly.

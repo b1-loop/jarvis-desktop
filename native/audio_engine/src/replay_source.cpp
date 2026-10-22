@@ -46,7 +46,8 @@ ReplaySource::~ReplaySource() {
     stop();
 }
 
-void ReplaySource::start(FrameCallback onFrames) {
+void ReplaySource::start(FrameCallback onFrames, DeviceCallback /*onDevice*/) {
+    // A replayed feed has no device that could stop, move or be interrupted.
     stop();
     thread_ = std::jthread([this, callback = std::move(onFrames)](const std::stop_token& token) {
         run(token, callback);
