@@ -30,6 +30,7 @@ jarvis/
     __main__.py           CLI entry point and composition root
     config.py             pydantic-settings, the only reader of environment variables
     _native/              shim that loads the compiled modules (git-ignored .pyd files)
+    app/                  windowless desktop app: single instance, shortcuts, icon (ADR-0021)
     core/                 event bus, state machine, orchestrator, voice I/O, barge-in, composition root
     audio/                asyncio facade over jarvis_audio
     os_integration/       Platform interface and Windows backend over jarvis_os

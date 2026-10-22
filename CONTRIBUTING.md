@@ -130,6 +130,20 @@ a pybind11 binding under `native/bindings/`, and a thin Python wrapper with a
 pure-Python fallback or a clear `NativeUnavailableError`. Public C++ APIs carry
 Doxygen comments. `clang-tidy` runs on every PR.
 
+## Working on the desktop app
+
+`jarvis --background` (what the shortcuts run) has no console: output goes
+to `data/logs/jarvis.log`, and a second launch only pokes the first one.
+While developing, keep using `uv run jarvis` or `--text-only` in a terminal,
+and quit any autostarted instance from its tray menu first: the single-
+instance lock only guards windowless launches, so a terminal session next
+to it would open the microphone a second time. Point a test run at a
+scratch directory with `JARVIS_DATA_DIR` to get its own lock and log. Code
+in `src/jarvis/app/` must import on Linux (CI): keep Windows-only calls
+behind `sys.platform` checks and their tests behind `skipif`. After
+changing the state palette, regenerate the icon with
+`uv run python scripts/make_icon.py` (a test fails if it is stale).
+
 ## Architecture decisions
 
 Anything that a reviewer might ask "why?" about gets an ADR in `docs/adr/`.
