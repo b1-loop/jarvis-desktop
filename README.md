@@ -33,7 +33,7 @@ is Python 3.12.
 | 9 | Memory | done |
 | 10 | Proactive and routines | done |
 | 11 | Vision | planned |
-| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | C++ wrappers done, Python LOCAL mode pending |
+| 12 | LOCAL mode (whisper.cpp, llama.cpp, Piper) | done |
 | 13 | Overlay and dashboard | overlay done, tray and dashboard pending |
 | 14 | Docs, ADRs, benchmark | planned |
 
@@ -77,7 +77,9 @@ Two runtime modes:
 | --- | --- | --- | --- | --- |
 | `cloud` (default) | Claude via Anthropic SDK | faster-whisper | edge-tts | required |
 | `cloud` + `JARVIS_LLM_PROVIDER=ollama` | Ollama (local HTTP API) | faster-whisper | edge-tts | TTS only |
-| `local` | llama.cpp | whisper.cpp | Piper | none |
+| `local` (`uv sync --extra local`, `download_models.py --local`) | llama.cpp (in process) | whisper.cpp | Piper | none |
+
+Measured latency, quality, privacy and cost of each mode: [ADR-0013](docs/adr/0013-cloud-vs-local-modes.md).
 
 Full design, threading model and trade-offs: [ARCHITECTURE.md](ARCHITECTURE.md)
 and the [ADRs](docs/adr/README.md).
