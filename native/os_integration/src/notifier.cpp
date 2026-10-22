@@ -25,8 +25,9 @@ constexpr UINT kIconId = 1;
 constexpr UINT kCallbackMessage = WM_APP + 2;
 constexpr UINT kIconFlags =
     static_cast<UINT>(NIF_ICON) | static_cast<UINT>(NIF_TIP) | static_cast<UINT>(NIF_MESSAGE);
-constexpr DWORD kBalloonFlags =
-    static_cast<DWORD>(NIIF_INFO) | static_cast<DWORD>(NIIF_RESPECT_QUIET_TIME);
+constexpr DWORD kBalloonFlags = static_cast<DWORD>(NIIF_INFO) |
+                                static_cast<DWORD>(NIIF_RESPECT_QUIET_TIME) |
+                                static_cast<DWORD>(NIIF_NOSOUND);
 
 /// Copy @p text into a fixed Win32 buffer, truncating and NUL-terminating.
 void copyTruncated(std::span<wchar_t> destination, std::wstring_view text) {
@@ -138,5 +139,8 @@ void BalloonNotifier::notify(std::string_view title, std::string_view message) {
 //   a window when its creating thread exits, and Python's executor threads
 //   are not guaranteed to live as long as the notifier. The loop's exit hook
 //   removes the icon and the window, so the destructor never has to throw.
+// - NIIF_NOSOUND: Jarvis is a voice assistant; it speaks when it has
+//   something to say, so its notifications never chime on top of that
+//   (a start-up notice on every login would otherwise ding each time).
 // - NIIF_RESPECT_QUIET_TIME keeps Jarvis polite after a fresh login; Focus
 //   Assist may still hide the toast, which is the user's choice, not an error.
