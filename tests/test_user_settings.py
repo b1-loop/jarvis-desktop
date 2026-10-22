@@ -136,3 +136,25 @@ def test_store_rejects_a_file_that_is_not_an_object(tmp_path: Path) -> None:
 
     with pytest.raises(UserSettingsError):
         UserSettingsStore(path).load()
+
+
+def test_the_hud_colour_comes_from_dotenv_and_is_normalised(tmp_path: Path) -> None:
+    env = write_env(
+        tmp_path / ".env", "JARVIS_OVERLAY_THEME=custom\nJARVIS_OVERLAY_ACCENT=FF3B30\n"
+    )
+
+    settings = load(tmp_path, env)
+
+    assert settings.overlay_theme == "custom"
+    assert settings.overlay_accent == "#ff3b30"
+
+
+def test_a_saved_accent_is_used_and_a_bad_one_is_skipped(tmp_path: Path) -> None:
+    write_user_settings(tmp_path, {"overlay_theme": "custom", "overlay_accent": "#40FF8C"})
+    assert load(tmp_path).overlay_accent == "#40ff8c"
+
+    write_user_settings(tmp_path, {"overlay_theme": "pink", "overlay_accent": "green"})
+    settings = load(tmp_path)
+
+    assert settings.overlay_theme == "pink"
+    assert settings.overlay_accent == "#4dd9ff"

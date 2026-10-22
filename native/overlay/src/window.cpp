@@ -7,6 +7,7 @@
 #include "jarvis/overlay/hud_layout.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/palette.hpp"
 #include "jarvis/overlay/ui_events.hpp"
 
 #include <imgui.h>
@@ -102,6 +103,13 @@ std::chrono::microseconds framePeriod(int fps) noexcept {
     return std::chrono::microseconds(kMicrosPerSecond / std::max(fps, 1));
 }
 
+Appearance initialAppearance(const OverlayConfig& config) noexcept {
+    return Appearance{.theme = config.theme,
+                      .accent = config.accent,
+                      .intensity = config.intensity,
+                      .size = config.size};
+}
+
 double millisecondsBetween(Clock::time_point from, Clock::time_point to) noexcept {
     return std::chrono::duration<double, std::milli>(to - from).count();
 }
@@ -181,12 +189,9 @@ OverlayWindow::Impl::Impl(OverlayConfig initial)
     : config(std::move(initial)),
       metrics(withOverride(panelMetrics(config.size), config.width, config.height)),
       model(config.limits),
-      hudData(
-          config.hudLimits,
-          Appearance{.theme = config.theme, .intensity = config.intensity, .size = config.size}),
+      hudData(config.hudLimits, initialAppearance(config)),
       animator(Clock::now(), anim::AnimatorConfig{.intensity = config.intensity}),
-      appearance(
-          Appearance{.theme = config.theme, .intensity = config.intensity, .size = config.size}),
+      appearance(initialAppearance(config)),
       cornerSaved(config.position),
       expandedSaved(config.expandedBounds),
       orbSaved(config.orbPosition),
@@ -228,8 +233,8 @@ void OverlayWindow::Impl::threadMain() {
         initImGui();
         createPostProcessing();
         describeSystem();
-        hud = std::make_unique<hud::HudRenderer>(*device.Get(), themeFor(config.theme), animator,
-                                                 post.get());
+        hud = std::make_unique<hud::HudRenderer>(
+            *device.Get(), themeFor(config.theme, config.accent), animator, post.get());
         frameTimer = createFrameTimer();
         refreshMonitors();
         resolvePlacements();
@@ -372,7 +377,7 @@ void OverlayWindow::Impl::initImGui() {
     }
     // NOLINTEND(bugprone-signed-bitwise,hicpp-signed-bitwise)
     fonts = loadFonts();
-    hud::applyHudStyle(themeFor(config.theme), dpiScale);
+    hud::applyHudStyle(themeFor(config.theme, config.accent), dpiScale);
 
     win32BackendReady = ImGui_ImplWin32_Init(hwnd.load());
     if (!win32BackendReady) {
@@ -471,8 +476,8 @@ void OverlayWindow::Impl::applyHudData(const HudData& data) {
     if (data.appearance == appearance) {
         return;
     }
-    if (data.appearance.theme != appearance.theme) {
-        hud->setTheme(themeFor(data.appearance.theme));
+    if (data.appearance.theme != appearance.theme || data.appearance.accent != appearance.accent) {
+        hud->setTheme(themeFor(data.appearance.theme, data.appearance.accent));
         hud::applyHudStyle(hud->theme(), dpiScale);
     }
     animator.setIntensity(data.appearance.intensity);
@@ -568,6 +573,7 @@ void OverlayWindow::Impl::runInteraction(const hud::HudScene& scene, const Frame
                                 .scale = dpiScale,
                                 .textScale = metrics.textScale,
                                 .accent = hud->accent(scene),
+                                .warning = hud->theme().warning,
                                 .opacity = scene.opacity};
     const hud::InteractResult result = interaction.frame(in, fonts, hud->theme());
     if (result.takeFocus) {
@@ -618,7 +624,7 @@ PostSettings OverlayWindow::Impl::postSettings(const anim::AnimationFrame& frame
                       .right = static_cast<LONG>(c.right() + margin),
                       .bottom = static_cast<LONG>(c.bottom() + margin)};
     }
-    return PostSettings{.bloomStrength = frame.bloom,
+    return PostSettings{.bloomStrength = frame.bloom * hud->theme().bloom,
                         .glitch = frame.glitch,
                         .time = frame.time,
                         .whipX = layout.handoffX * whip,

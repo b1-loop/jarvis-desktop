@@ -8,6 +8,7 @@
 #include "jarvis/overlay/hud_data.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/palette.hpp"
 #include "jarvis/overlay/placement.hpp"
 #include "jarvis/overlay/ui_events.hpp"
 
@@ -46,6 +47,8 @@ struct OverlayConfig {
     bool transparent = true;
     /// Palette of the HUD.
     ThemeName theme = ThemeName::Cyan;
+    /// Accent the Custom theme is derived from (palette.hpp).
+    Rgba accent = kDefaultAccent;
     /// How rich the HUD is: particle count, bloom strength and motion.
     anim::Intensity intensity = anim::Intensity::Normal;
     /// Run the GPU bloom pipeline; false (or a pipeline that fails to start)
@@ -176,7 +179,7 @@ public:
     void clearHistory();
     /// Replace the settings page (choices and current values, as data).
     void setSettings(SettingsPage page);
-    /// Switch theme, intensity and size live.
+    /// Switch theme (and custom accent), intensity and size live.
     void setAppearance(Appearance appearance);
     /// Expand to the panel (true) or collapse to the corner HUD (false).
     void setExpanded(bool expanded);

@@ -218,6 +218,7 @@ def overlay_config(settings: Settings) -> OverlayConfig:
     """The overlay's configuration from the settings, remembered positions included."""
     return OverlayConfig(
         theme=OverlayTheme(settings.overlay_theme),
+        accent=settings.overlay_accent,
         boot_animation=settings.overlay_boot_animation,
         intensity=OverlayIntensity(settings.overlay_intensity),
         size=OverlaySize(settings.overlay_size),
@@ -342,6 +343,7 @@ def live_appliers(overlay: Overlay, settings: Settings, parts: _HudParts) -> dic
     appliers: dict[str, Applier] = {
         "overlay_size": appearance.set_size,
         "overlay_theme": appearance.set_theme,
+        "overlay_accent": appearance.set_accent,
         "overlay_intensity": appearance.set_intensity,
         "speak_replies": parts.replies.set_speak,
         "hud_auto_minimize_seconds": lambda seconds: overlay.set_auto_minimize(float(seconds)),
@@ -648,7 +650,7 @@ class VoiceFrontEndBuilder:
         microphone = VoiceMicrophone(
             parts.audio.engine, inputs.voice, on_change=overlay.overlay.set_muted
         )
-        hud = self._hud(request, overlay, parts, microphone)
+        hud, settings_page = self._hud(request, overlay, parts, microphone)
 
         def attach(orchestrator: Orchestrator) -> None:
             inputs.barge_in.attach(turns=orchestrator, capture=inputs.voice)
@@ -667,6 +669,7 @@ class VoiceFrontEndBuilder:
             bind_controls=hud.bind_controls,
             toggle_hud_minimized=hud.toggle_minimized,
             bring_hud_forward=hud.bring_forward,
+            hud_appearance=settings_page,
         )
 
     def _hud(
@@ -675,8 +678,8 @@ class VoiceFrontEndBuilder:
         overlay: _OverlayParts,
         parts: _HudParts,
         microphone: VoiceMicrophone,
-    ) -> HudActions:
-        """The settings page and the HUD's actions, connected to the bridge."""
+    ) -> tuple[HudActions, SettingsController]:
+        """The HUD's actions, connected to the bridge, and its settings page."""
         settings = request.settings
         store = UserSettingsStore(user_settings_path(settings.data_dir))
         http = httpx.AsyncClient()
@@ -701,7 +704,7 @@ class VoiceFrontEndBuilder:
             boot_readout=lambda: boot_readout(settings),
         )
         overlay.bridge.attach_handlers(actions)
-        return actions
+        return actions, controller
 
     def _input(
         self,

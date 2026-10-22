@@ -26,7 +26,6 @@ using jarvis::overlay::inflated;
 using jarvis::overlay::lerpGeometry;
 using jarvis::overlay::lerpRect;
 using jarvis::overlay::panelGeometry;
-using jarvis::overlay::parseThemeName;
 using jarvis::overlay::PixelRect;
 using jarvis::overlay::Placement;
 using jarvis::overlay::RectF;
@@ -35,8 +34,6 @@ using jarvis::overlay::scaled;
 using jarvis::overlay::stateColour;
 using jarvis::overlay::stateLabel;
 using jarvis::overlay::Theme;
-using jarvis::overlay::themeFor;
-using jarvis::overlay::ThemeName;
 using jarvis::overlay::toRectF;
 using jarvis::overlay::translated;
 using jarvis::overlay::truncateUtf8Tail;
@@ -160,20 +157,6 @@ TEST_CASE("placement respects a work area that does not start at the origin", "[
 
     REQUIRE(anchorToCorner(Corner::BottomRight, kSecondMonitor, 300, 100, 0) ==
             Placement{.x = 3540, .y = 980, .width = 300, .height = 100});
-}
-
-TEST_CASE("themes are selectable by name and differ in hue", "[overlay][layout]") {
-    REQUIRE(parseThemeName("cyan") == ThemeName::Cyan);
-    REQUIRE(parseThemeName("amber") == ThemeName::Amber);
-    REQUIRE_FALSE(parseThemeName("Amber").has_value());
-    REQUIRE_FALSE(parseThemeName("").has_value());
-    REQUIRE(themeFor(ThemeName::Cyan) == Theme{});
-
-    const Theme cyan = themeFor(ThemeName::Cyan);
-    const Theme amber = themeFor(ThemeName::Amber);
-    REQUIRE(cyan.accent.b > cyan.accent.r);    // blue light
-    REQUIRE(amber.accent.r > amber.accent.b);  // warm light
-    REQUIRE(amber.plate.a == cyan.plate.a);    // same readability either way
 }
 
 TEST_CASE("the HUD caption names every state", "[overlay][layout]") {

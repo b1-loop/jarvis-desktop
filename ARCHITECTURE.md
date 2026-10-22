@@ -41,7 +41,7 @@ jarvis-desktop/
     stt/ tts/ llm/          interfaces + providers
     inference/              loader and model manifest for jarvis_inference
     agent/                  loop, tool base, registry, confirmation, chaining, tool selection, persona
-    tools/                  62 tool plugins, one module each (helpers start with "_")
+    tools/                  63 tool plugins, one module each (helpers start with "_")
     memory/                 SQLite store, vector stores, memory manager, user profile
     proactive/              scheduler, triggers, YAML routines
     integrations/           email, calendar, chat, music, smart home, web, documents; Stub* providers

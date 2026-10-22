@@ -9,7 +9,7 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 Say "Hey Jarvis", ask for something, and Jarvis transcribes you, lets an LLM
-agent pick from 62 tool plugins, and answers out loud, sentence by sentence,
+agent pick from 63 tool plugins, and answers out loud, sentence by sentence,
 while you can still talk over it. It runs on a free local model (Ollama
 `qwen2.5:7b`) by default, can switch to Claude, and has a fully offline mode.
 
@@ -38,7 +38,7 @@ scheduling. No native thread ever takes the GIL.
 - **Barge-in.** Talk over Jarvis and the C++ engine silences playback on
   the VAD's speech onset, without a round trip through Python; the agent
   turn is cancelled and what you are saying becomes the next request.
-- **An agent with 62 tools.** Plugins discovered from `src/jarvis/tools/`:
+- **An agent with 63 tools.** Plugins discovered from `src/jarvis/tools/`:
   computer control (apps, windows, volume, brightness, screenshots, lock,
   typing at the cursor, clipboard), sandboxed shell commands, files and
   documents, dev mode (git, tests, stack traces, VS Code, dev servers),
@@ -94,7 +94,7 @@ flowchart LR
         STT --> ORCH{{Orchestrator +<br/>state machine}}
         ORCH --> AG[agent.loop + chaining<br/>tool_selection, confirmation]
         AG <--> LLM[llm: Ollama, Claude<br/>or llama.cpp]
-        AG <--> TOOLS[tools/*<br/>62 plugins]
+        AG <--> TOOLS[tools/*<br/>63 plugins]
         TOOLS --> PLAT[os_integration.Platform]
         PLAT --> OSN
         TOOLS --> INTEG[integrations<br/>email, calendar, chat,<br/>music, smart home, web]
@@ -464,12 +464,26 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
     field. Escape collapses it.
   - **Settings** (gear): voice (Swedish and English edge-tts voices),
     speech language, LLM provider and Ollama model (listed live from
-    Ollama), wake word on/off and threshold, HUD size, theme and intensity,
+    Ollama), wake word on/off and threshold, HUD size, colour and intensity,
     "speak replies" (off for a silent typed conversation), start with
     Windows, and the log file. Changes are saved to
     `data/user_settings.json` and applied at once where possible; the rest
     is marked "applies after restart" with a Restart button (windowless
     app).
+  - **Colours.** Eight themes: cyan and amber, plus red ("Mark"), green,
+    violet, ice white, pink, and a custom colour. Pick "Custom colour" in
+    the settings to choose any hue from a hue bar and saturation square.
+    Every palette (the state colours, text, glass plate, warning light and
+    bloom strength) is derived from that one accent in OKLCH. Its contrast
+    and the separation between the states are unit-tested for every hue
+    ([ADR-0028](docs/adr/0028-hud-colour-themes.md)). Very dark or very
+    pale picks are clamped into a range that glows: black becomes steel
+    blue and white an icy tint. You can also say it: "byt färg till röd",
+    "make the HUD purple", "change the colour to #ff8800". Or set it in
+    `.env` with `JARVIS_OVERLAY_THEME=custom` and
+    `JARVIS_OVERLAY_ACCENT=#ff3b30`. The HUD and the orb recolour at once.
+
+    ![Every HUD theme: state rings, text on the glass plate and the warning light](docs/media/overlay-themes.png)
 
   - **Minimize.** When the HUD is in the way, the minimize control (next
     to the cross), the tray's "Minimize HUD" or `Ctrl+Alt+H`

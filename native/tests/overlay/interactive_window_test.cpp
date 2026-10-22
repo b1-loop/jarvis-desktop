@@ -108,6 +108,9 @@ TEST_CASE("the HUD keeps rendering through live appearance changes", "[overlay][
                                      .intensity = jarvis::overlay::anim::Intensity::Max,
                                      .size = PanelSize::Compact});
     std::this_thread::sleep_for(kSettle);
+    window->setAppearance(Appearance{.theme = ThemeName::Custom,
+                                     .accent = {.r = 1.0F, .g = 1.0F, .b = 1.0F, .a = 1.0F}});
+    std::this_thread::sleep_for(kSettle);
     window->resetFrameStats();
     window->setAppearance(Appearance{});
     std::this_thread::sleep_for(kSettle);
