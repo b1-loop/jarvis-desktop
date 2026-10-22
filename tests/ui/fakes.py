@@ -16,6 +16,8 @@ class FakeNativeOverlay:
     calls: list[tuple[str, object]] = field(default_factory=list)
     _visible: bool = True
     _running: bool = True
+    _transparent: bool = True
+    _boot_started: bool = False
 
     def set_state(self, name: str) -> None:
         self.calls.append(("set_state", name))
@@ -33,8 +35,24 @@ class FakeNativeOverlay:
         self._visible = visible
         self.calls.append(("set_visible", visible))
 
-    def flash_wake_word(self) -> None:
-        self.calls.append(("flash_wake_word", None))
+    def wake_pulse(self) -> None:
+        self.calls.append(("wake_pulse", None))
+
+    def play_boot(self) -> bool:
+        started = not self._boot_started
+        self._boot_started = True
+        self.calls.append(("play_boot", started))
+        return started
+
+    def skip_boot(self) -> bool:
+        self.calls.append(("skip_boot", None))
+        return self._boot_started
+
+    def transparent(self) -> bool:
+        return self._transparent
+
+    def fallback_reason(self) -> str:
+        return "" if self._transparent else "fake: no composition"
 
     def visible(self) -> bool:
         return self._visible

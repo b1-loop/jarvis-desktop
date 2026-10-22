@@ -24,6 +24,7 @@ from jarvis.utils.errors import ConfigError
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 LLMProvider = Literal["anthropic", "ollama", "local"]
+OverlayThemeName = Literal["cyan", "amber"]
 """Which ``LLMClient`` answers: Claude, a local Ollama server, or in-process llama.cpp."""
 
 DEFAULT_LOCAL_MODELS_DIR: Final = Path("models")
@@ -307,6 +308,10 @@ class Settings(BaseSettings):
             return self.max_tools_per_turn
         uses_claude = self.mode is RuntimeMode.CLOUD and self.llm_provider == "anthropic"
         return ALL_TOOLS_PER_TURN if uses_claude else SMALL_MODEL_TOOLS_PER_TURN
+
+    # Overlay animations
+    overlay_boot_animation: bool = True
+    overlay_theme: OverlayThemeName = "cyan"
 
 
 # Design notes:
