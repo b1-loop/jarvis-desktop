@@ -13,12 +13,18 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Final, Literal
 
-from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic_settings import (
+    BaseSettings,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from jarvis.inference.models import PIPER_VOICE_EN_GB, QWEN2_5_0_5B_INSTRUCT, WHISPER_TINY
 from jarvis.integrations.documents import default_document_roots
 from jarvis.integrations.web import DEFAULT_USER_AGENT
+from jarvis.user_settings import UserSettingsSource
 from jarvis.utils.errors import ConfigError
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -73,6 +79,28 @@ class RuntimeMode(StrEnum):
 
     CLOUD = "cloud"
     LOCAL = "local"
+
+
+class HudPosition(BaseModel):
+    """A remembered HUD position (ADR-0024).
+
+    Logical (96-DPI) pixels from the top-left of the named monitor's work
+    area, so it survives DPI changes and monitors being reordered.
+
+    Attributes:
+        monitor: Device name (``MONITORINFOEX.szDevice``); an unknown one
+            falls back to the primary monitor.
+        x: Offset from the work area's left edge.
+        y: Offset from the work area's top edge.
+        width: Logical width (expanded panel only; 0 for the corner HUD).
+        height: Logical height (expanded panel only; 0 for the corner HUD).
+    """
+
+    monitor: str
+    x: float
+    y: float
+    width: float = Field(default=0.0, ge=0.0)
+    height: float = Field(default=0.0, ge=0.0)
 
 
 def default_documents_output_dir() -> Path:
@@ -331,6 +359,38 @@ class Settings(BaseSettings):
     demo_integrations: bool = False
     """Serve the ``Stub*`` sample mail, events and chats when no account is
     connected. Off by default: unconnected services say so instead."""
+
+    # Interactive HUD
+    overlay_interactive: bool = True
+    """Clickable HUD: hover controls, typing, dragging, expanded view (ADR-0024)."""
+    speak_replies: bool = True
+    """Speak answers aloud; off keeps a typed conversation silent (text only)."""
+    wake_word_enabled: bool = True
+    """Listen for the wake word; ``--no-wakeword`` also turns it off for one launch."""
+    overlay_position: HudPosition | None = None
+    """Where the user dragged the corner HUD; None anchors it to its corner."""
+    overlay_expanded_bounds: HudPosition | None = None
+    """Position and size of the expanded panel; None opens it at 900 x 640."""
+    user_settings_enabled: bool = True
+    """Layer ``data_dir/user_settings.json`` (the HUD's choices) over ``.env``."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Insert the HUD's ``user_settings.json`` between the environment and ``.env``.
+
+        Precedence, highest first: init kwargs > environment variables >
+        user_settings.json > .env > defaults (see ``jarvis.user_settings``
+        and ADR-0024 for why).
+        """
+        user = UserSettingsSource(settings_cls, (init_settings, env_settings, dotenv_settings))
+        return init_settings, env_settings, user, dotenv_settings, file_secret_settings
 
 
 # Design notes:
