@@ -44,7 +44,7 @@ stub) behaves identically.
 | Gmail | `gmail.readonly`, `gmail.compose` |
 | Google Calendar | `calendar.readonly`, `calendar.events` |
 | Outlook | `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite` |
-| Teams | `Chat.Read`, `ChatMessage.Send` |
+| Teams (opt-in, work or school accounts) | `Chat.Read`, `ChatMessage.Send` |
 | Spotify | `user-read-playback-state`, `user-modify-playback-state` |
 | Slack / Discord / Home Assistant | bot or long-lived token; what the admin granted |
 
@@ -114,7 +114,24 @@ credentials into Jarvis for no gain.
   `api_call`.
 - Each service's first real use triggers a consent flow (browser for Google
   and Spotify, device code for Microsoft); the token store makes it a
-  one-time event.
+  one-time event. *Amended (connect accounts):* that is only true in a
+  terminal. The windowless desktop app and voice mode have no console, so
+  a browser opened by a hidden process or a device code written to the log
+  would be a sign-in nobody can complete. `GoogleAuth` and `MicrosoftAuth`
+  therefore have a non-interactive mode, the default everywhere except
+  `--text-only`: when consent is needed they raise `ConsentRequiredError`
+  whose message is the spoken remedy ("Google isn't connected yet; run
+  `uv run python scripts/connect_accounts.py google`"), and the first such
+  error per account becomes one system notification. Consent happens once,
+  in the foreground, through `scripts/connect_accounts.py` (also
+  `jarvis connect`), which uses the same token sources, scopes and store
+  and then verifies each product with one cheap call. A refresh that fails
+  for network reasons is a `ProviderError` and keeps the stored token.
+- *Amended (connect accounts):* Teams is opt-in (`JARVIS_TEAMS_ENABLED`,
+  `connect_accounts.py microsoft --teams`). The `Chat.*` scopes are only
+  grantable by work or school accounts, and requesting them for a personal
+  account can fail the whole Microsoft sign-in, Outlook included, so the
+  default Microsoft consent asks for the Outlook scopes only.
 - The `integrations` extra is optional: the factory imports real provider
   modules only when their settings are set, so a stub-only checkout needs
   none of the SDKs.

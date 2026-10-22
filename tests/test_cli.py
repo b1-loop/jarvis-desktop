@@ -1,3 +1,5 @@
+import asyncio
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -11,7 +13,7 @@ from jarvis.__main__ import (
     app,
     load_settings,
 )
-from jarvis.config import RuntimeMode
+from jarvis.config import RuntimeMode, Settings
 from jarvis.core import bootstrap
 from jarvis.utils.errors import NativeUnavailableError
 
@@ -151,3 +153,32 @@ def test_launch_options_are_immutable() -> None:
     except AttributeError:
         return
     raise AssertionError("LaunchOptions must be frozen")
+
+
+def test_only_the_text_session_may_start_a_sign_in_flow(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    seen: list[bootstrap.Overrides | None] = []
+
+    async def text_mode(_settings: Settings, overrides: bootstrap.Overrides | None = None) -> None:
+        seen.append(overrides)
+
+    monkeypatch.setattr(cli, "run_text_mode", text_mode)
+    text = LaunchOptions(mode=RuntimeMode.CLOUD, text_only=True, wake_word_enabled=True)
+
+    asyncio.run(cli.session(make_settings(), text))
+
+    assert seen[0] is not None and seen[0].interactive_sign_in is True
+
+
+def test_connect_is_a_sub_command_that_does_not_start_the_assistant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "run_windowless", lambda *_a, **_k: pytest.fail("started Jarvis"))
+    monkeypatch.setattr(cli, "is_windowless", lambda **_kwargs: True)
+
+    result = runner.invoke(app, ["connect", "--help"])
+
+    assert result.exit_code == 0, result.output
+    for command in ("google", "microsoft", "discord", "status", "disconnect"):
+        assert command in result.output

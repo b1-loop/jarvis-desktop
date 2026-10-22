@@ -140,6 +140,15 @@ class ThreadedTokenSource:
         async with self._lock:
             return await asyncio.to_thread(self._acquire_blocking)
 
+    def acquire_blocking(self) -> str:
+        """Acquire in the calling thread, for terminal tools that own the main thread.
+
+        ``connect_accounts.py`` signs in this way so Ctrl+C interrupts the
+        browser wait or the device-code poll directly instead of leaving a
+        worker thread polling after the event loop has gone.
+        """
+        return self._acquire_blocking()
+
     def _acquire_blocking(self) -> str:
         raise NotImplementedError
 

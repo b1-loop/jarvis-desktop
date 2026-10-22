@@ -5,10 +5,16 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from google.auth.exceptions import RefreshError
+from google.auth.exceptions import RefreshError, TransportError
 
 from jarvis.config import Settings
-from jarvis.integrations.base import AuthError, NotConfiguredError
+from jarvis.integrations.base import (
+    AuthError,
+    ConsentRequiredError,
+    NotConfiguredError,
+    ProviderError,
+)
+from jarvis.integrations.consent import ConnectionLog
 from jarvis.integrations.google_auth import (
     STORE_KEY,
     GoogleAuth,
@@ -46,7 +52,7 @@ class Seams:
     stored: FakeCredentials | None = None
     flow_result: FakeCredentials = field(default_factory=lambda: FakeCredentials("fake-consented"))
     flow_runs: list[tuple[Path, tuple[str, ...]]] = field(default_factory=list)
-    refresh_error: AuthError | None = None
+    refresh_error: AuthError | ProviderError | None = None
 
     def load(self, info: dict[str, Any], _scopes: Sequence[str]) -> GoogleCredentials:
         assert self.stored is not None
@@ -63,7 +69,7 @@ class Seams:
         return self.flow_result
 
 
-def make_auth(seams: Seams, store: MemoryTokenStore) -> GoogleAuth:
+def make_auth(seams: Seams, store: MemoryTokenStore, *, interactive: bool = True) -> GoogleAuth:
     if seams.stored is not None:
         store.save(STORE_KEY, json.loads(seams.stored.to_json()))
     return GoogleAuth(
@@ -73,7 +79,64 @@ def make_auth(seams: Seams, store: MemoryTokenStore) -> GoogleAuth:
         load=seams.load,
         refresh=seams.refresh,
         run_flow=seams.run_flow,
+        interactive=interactive,
     )
+
+
+async def test_non_interactive_without_a_token_never_opens_the_browser() -> None:
+    seams, store = Seams(), MemoryTokenStore()
+
+    with pytest.raises(ConsentRequiredError) as caught:
+        await make_auth(seams, store, interactive=False).access_token()
+
+    assert seams.flow_runs == []
+    assert caught.value.remedy == (
+        "Google isn't connected yet; run "
+        "`uv run python scripts/connect_accounts.py google` in a terminal."
+    )
+    assert caught.value.reason == "no stored token"
+    last = ConnectionLog(store).last("google")
+    assert last is not None and "connect_accounts.py google" in last[0]
+
+
+async def test_non_interactive_after_a_rejected_refresh_says_the_sign_in_expired() -> None:
+    seams = Seams(stored=FakeCredentials(valid=False), refresh_error=AuthError("google", "revoked"))
+
+    with pytest.raises(ConsentRequiredError, match="The Google sign-in has expired"):
+        await make_auth(seams, MemoryTokenStore(), interactive=False).access_token()
+
+    assert seams.flow_runs == []
+
+
+async def test_non_interactive_refreshes_silently_and_clears_the_last_error() -> None:
+    seams, store = Seams(stored=FakeCredentials(valid=False)), MemoryTokenStore()
+    ConnectionLog(store).record("google", "old problem")
+
+    token = await make_auth(seams, store, interactive=False).access_token()
+
+    assert token == "fake-refreshed"
+    assert ConnectionLog(store).last("google") is None
+
+
+async def test_a_network_failure_during_refresh_keeps_the_stored_token() -> None:
+    offline = ProviderError("google", "token refresh could not reach Google")
+    seams = Seams(stored=FakeCredentials(valid=False), refresh_error=offline)
+    store = MemoryTokenStore()
+
+    with pytest.raises(ProviderError):
+        await make_auth(seams, store, interactive=False).access_token()
+
+    assert store.load(STORE_KEY) is not None
+    assert seams.flow_runs == []
+
+
+def test_transport_errors_are_provider_errors_not_auth_errors() -> None:
+    class Offline:
+        def refresh(self, _request: Any) -> None:
+            raise TransportError("no route to host")
+
+    with pytest.raises(ProviderError, match="could not reach Google"):
+        refresh_credentials(Offline())  # type: ignore[arg-type]
 
 
 async def test_valid_stored_credentials_are_used_without_a_flow() -> None:
