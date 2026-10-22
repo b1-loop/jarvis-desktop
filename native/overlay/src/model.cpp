@@ -75,7 +75,7 @@ float LevelRing::latest() const noexcept {
 
 OverlayModel::OverlayModel(ModelLimits limits) : limits_(limits), levels_(limits.levelHistory) {}
 
-void OverlayModel::setState(AssistantState state) {
+void OverlayModel::setState(AssistantState state, Clock::time_point now) {
     const std::scoped_lock lock(mutex_);
     if (state == state_) {
         return;
@@ -83,6 +83,10 @@ void OverlayModel::setState(AssistantState state) {
     state_ = state;
     if (state == AssistantState::Idle) {
         levels_.clear();
+    } else if (bootStartedAt_.has_value() && !bootSkippedAt_.has_value()) {
+        // Harmless once the boot has finished: the timeline ignores a skip
+        // that lands after the handoff began.
+        bootSkippedAt_ = now;
     }
     touch();
 }
@@ -122,6 +126,26 @@ void OverlayModel::flashWakeWord(Clock::time_point now) {
     touch();
 }
 
+bool OverlayModel::playBoot(Clock::time_point now) {
+    const std::scoped_lock lock(mutex_);
+    if (bootStartedAt_.has_value()) {
+        return false;
+    }
+    bootStartedAt_ = now;
+    touch();
+    return true;
+}
+
+bool OverlayModel::skipBoot(Clock::time_point now) {
+    const std::scoped_lock lock(mutex_);
+    if (!bootStartedAt_.has_value() || bootSkippedAt_.has_value()) {
+        return false;
+    }
+    bootSkippedAt_ = now;
+    touch();
+    return true;
+}
+
 OverlaySnapshot OverlayModel::snapshot(Clock::time_point now) const {
     const std::scoped_lock lock(mutex_);
     return OverlaySnapshot{
@@ -131,6 +155,8 @@ OverlaySnapshot OverlayModel::snapshot(Clock::time_point now) const {
         .response = response_,
         .visible = visible_,
         .wakeFlash = wakeFlashAt(now),
+        .bootStartedAt = bootStartedAt_,
+        .bootSkippedAt = bootSkippedAt_,
         .revision = revision_.load(std::memory_order_relaxed),
     };
 }
@@ -166,5 +192,8 @@ float OverlayModel::wakeFlashAt(Clock::time_point now) const {
 //   matter what Python sends.
 // - The wake flash is a timestamp, not a counter the renderer decrements:
 //   the model does not know the frame rate and should not have to.
+// - The boot sequence is two timestamps, not a "playing" flag: whether it
+//   is still running is a question for the animation timeline, which knows
+//   its duration; the model only records what Python asked for and when.
 // - revision_ is atomic so the UI thread can decide whether to render at all
 //   without taking the lock on every tick.
