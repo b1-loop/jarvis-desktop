@@ -140,6 +140,11 @@ class MemoryFacade(Protocol):
 ConfirmationAsker = Callable[[str], Awaitable[bool]]
 """Asks the user a yes/no question (spoken or typed) and returns their answer."""
 
+IntegrationProviders = IntegrationServices
+"""Alias kept for the composition root (``core/bootstrap.py``), which builds the
+bundle under this name; ``IntegrationServices`` has the same five provider
+fields plus web search, transcripts, the web client and the draft book."""
+
 
 @dataclass(frozen=True, slots=True)
 class ToolContext:
