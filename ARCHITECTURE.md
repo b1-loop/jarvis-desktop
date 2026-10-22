@@ -112,7 +112,7 @@ VoiceInput ◀──┘  earcon (80 ms tone) → IDLE→LISTENING → AudioEngin
    ▼
 Orchestrator ─▶ Agent ─▶ FirstTokenProbe(LLMClient) ─▶ sentences ─▶ VoiceOutput.say (queue only)
                                                                     │
-         synthesiser task: TTS.synthesize(sentence n+1) ──chunks──▶ │ bounded hand-off (2)
+         synthesiser task: one TTS.synthesize task per sentence ─▶ │ bounded hand-off (2)
          player task:      Speaker.play(sentence n) ──▶ native Playback ──▶ speakers
                                                                     │ first chunk → BargeInController
                                                                     │ arms engine after echo guard
@@ -124,7 +124,9 @@ mic ─▶ native VAD: SpeechStarted ─▶ Playback::stop() (C++, no Python) �
 
 `core/voice_bootstrap.py` assembles this front end: the engine with the wake
 word if its models load, playback at the TTS sample rate, the mode's STT and
-TTS from `core/providers.py` (the STT model is warmed up before the greeting),
+TTS from `core/providers.py` (the STT model is loaded and runs one silent
+decode, and a local Piper voice is loaded, before the greeting; the LLM loads
+in the background from `core/bootstrap.py`, ADR-0030),
 the hotkey, and the overlay bridge. `OutputSink.flush()` is awaited inside the
 turn task, so SPEAKING lasts as long as the audio does and a barge-in during
 the last sentence still cancels the turn. Echo is handled by the segmenter's
@@ -139,7 +141,7 @@ without a trigger.
 | Stage | Interface | Default (`cloud` mode) | Alternatives | `local` mode |
 | --- | --- | --- | --- | --- |
 | STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off the loop; CPU int8 fallback when CUDA libraries are missing) | | `WhisperCppSTT` |
-| TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | | `PiperTTS` |
+| TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | `PiperTTS` (`JARVIS_TTS_PROVIDER=piper`: the local voice, no network round trip) | `PiperTTS` |
 | LLM | `llm.base.LLMClient` | `OllamaClient` (`qwen2.5:7b`) | `AnthropicClient` (`JARVIS_LLM_PROVIDER=anthropic`; streaming, tool use, vision) | `LocalLlamaClient` |
 | Embeddings (tool selection) | `llm.embeddings.TextEmbedder` | `OllamaEmbedder` (`bge-m3`) | none: word overlap only (`JARVIS_TOOL_EMBEDDING_MODEL=none`) | same as `cloud` when Ollama runs, else word overlap |
 
@@ -526,7 +528,10 @@ with GPU speech recognition; the measured column is the benchmark run of
 2026-10-22 on the development machine (median / p90 of 9 English turns,
 3 barge-ins; faster-whisper `small` on the CPU because cuBLAS is not
 installed, Ollama `qwen2.5:7b` on the GPU, edge-tts, null playback sink).
-The README has the full table including Swedish and local mode.
+The README has the full table including Swedish and local mode, and the
+Swedish GPU run after the latency work (ADR-0030), in which the benchmark
+also splits the stages into their parts (STT decode, Ollama model load and
+prompt evaluation, TTS first chunk) from the providers' log events.
 
 | Stage | Where | Target | Measured, cloud mode |
 | --- | --- | --- | --- |
@@ -543,8 +548,13 @@ The gap between target and measurement is almost entirely CPU speech
 recognition and the 7B model's time to first token (Ollama, prompt with
 memory and up to 12 tool schemas); the pipeline's
 own overhead (trigger, sentence pipelining, barge-in cleanup) is within
-budget. edge-tts pays a websocket handshake per sentence, which is why the
-first-sentence stage varies between 0.6 and 3 s.
+budget. edge-tts pays a service round trip per sentence (first byte 0.6 s
+median, 1.8 s p90), which is why the first-sentence stage varies between
+0.6 and 3 s; sentences are therefore synthesised concurrently, and the
+local Piper voice (about 0.1 s to its first chunk) is the configurable way
+around it. On the GPU, with the model kept loaded (`JARVIS_OLLAMA_KEEP_ALIVE`)
+and Ollama reached over IPv4, end of speech -> first audio measured
+2.7 / 3.6 s with Piper and 3.8 / 4.5 s with edge-tts (ADR-0030).
 
 ## 15. Trade-offs
 

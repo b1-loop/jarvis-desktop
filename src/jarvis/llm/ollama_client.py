@@ -371,7 +371,7 @@ class _ChunkTranslator:
                 provider="ollama",
                 model=chunk.get("model"),
                 load_ms=timings["load_ms"],
-                hint="another Ollama model may have evicted it; see README, Troubleshooting",
+                hint="another Ollama model may have evicted it (README: When answers are slow)",
             )
         message = AssistantMessage(text="".join(self._text_parts), tool_calls=tuple(self._calls))
         return Done(stop_reason=stop_reason, usage=usage, message=message)

@@ -518,8 +518,9 @@ class Settings(BaseSettings):
         """Point ``localhost`` at 127.0.0.1, where Ollama listens by default.
 
         Windows resolves ``localhost`` to ``::1`` first and Ollama does not
-        listen on IPv6, so every new connection waited about two seconds for
-        the IPv6 attempt to fail before falling back (ADR-0030).
+        listen on IPv6, so every new connection waited for the IPv6 attempt:
+        0.25 s for asyncio clients (Happy Eyeballs), 2.4 s for blocking ones
+        (ADR-0030).
         """
         parts = urlsplit(value)
         if parts.hostname != LOCALHOST:
