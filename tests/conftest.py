@@ -31,13 +31,30 @@ CREDENTIAL_VARIABLES = (
     "BRAVE_SEARCH_API_KEY",
 )
 
+DESKTOP_SIDE_EFFECTS = (
+    "JARVIS_OVERLAY_ENABLED",
+    "JARVIS_TRAY_ENABLED",
+    "JARVIS_DASHBOARD_ENABLED",
+    "JARVIS_PROACTIVE_ENABLED",
+)
+"""Off in every test: no windows or tray icons on a developer's desktop, and no
+real battery or calendar polling speaking into a test's recorded output.
+Tests that exercise these builders turn them back on explicitly."""
+
 
 @pytest.fixture(autouse=True)
 def _isolated_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Remove every Jarvis-related variable so tests start from defaults."""
+    """Remove every Jarvis-related variable so tests start from defaults.
+
+    Also stops ``Settings()`` from reading a developer's real ``.env``, which
+    code under test (the CLI, bootstrap) constructs without ``_env_file``.
+    """
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
     for name in list(os.environ):
         if name.startswith("JARVIS_") or name in CREDENTIAL_VARIABLES:
             monkeypatch.delenv(name, raising=False)
+    for name in DESKTOP_SIDE_EFFECTS:
+        monkeypatch.setenv(name, "false")
     yield
 
 

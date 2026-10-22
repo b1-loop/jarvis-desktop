@@ -81,7 +81,7 @@ count as no). See ADR-0014.
 
 ### Providers *(step 5)*
 
-| Stage | Interface | CLOUD | Ollama option | LOCAL *(step 12)* |
+| Stage | Interface | CLOUD | Ollama option | LOCAL |
 | --- | --- | --- | --- | --- |
 | STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off-loop) | same | `WhisperCppSTT` |
 | TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | same | `PiperTTS` |
@@ -94,6 +94,18 @@ Streaming is sentence-by-sentence: `llm.streaming.SentenceSplitter` cuts
 text deltas into sentences, each sentence goes to `TTS.synthesize`, which
 yields PCM chunks while the rest downloads. Retries share one policy in
 `utils.retry`. See ADR-0005.
+
+**LOCAL mode.** `core.providers.build_stt` / `build_tts` / `build_llm` pick
+the stack from `Settings.mode` and raise `ConfigError` with the fix (extra,
+native build, model download) instead of falling back. `WhisperCppSTT` and
+`LocalLlamaClient` sit on `jarvis_inference` through Protocols; every
+native call runs in `asyncio.to_thread`, one hop per generated token, and
+cancelling the consumer cancels the native generation. The llama.cpp
+wrapper has no tool channel, so `llm.json_tool_protocol` renders the tool
+schemas into the system prompt, classifies the streamed reply as prose or
+one `{"tool", "arguments"}` object, validates it against the schema and
+falls back to text. `PiperTTS` streams one chunk per sentence from the
+`piper-tts` package. Trade-offs and measurements: ADR-0013.
 
 ## 4. State machine
 
@@ -128,6 +140,8 @@ the latency-critical voice path.
 | Event loop | Python asyncio | poll events every 10 ms, orchestrate STT/LLM/TTS, enqueue TTS chunks | engine mutex, playback mutex (brief) |
 | Executor threads | Python | STT and other CPU-bound Python work | none |
 | Overlay UI thread | `OverlayWindow` (C++) | Win32 message loop, one model snapshot per frame, Dear ImGui + D3D11 rendering, DPI changes | overlay model mutex (read) |
+| Tray thread | `TrayIcon` (Python, pystray) | Win32 message loop for the notification-area icon; menu clicks go back to the loop with `call_soon_threadsafe` | pre-rendered icon images (read-only) |
+| Dashboard thread | `Dashboard` (Python, tkinter) | owns the Tk interpreter and every widget; drains a `queue.Queue` of immutable snapshots every 100 ms; the refresh button hops back with `call_soon_threadsafe` | snapshot queue |
 | Generation | `GenerationStream` (C++) | llama.cpp decode loop; pushes text pieces into a queue that Python pulls from with the GIL released | stream mutex, cancellation token |
 
 Rules that keep this safe:
@@ -142,6 +156,10 @@ Rules that keep this safe:
 - The overlay never calls back into Python either: the event loop pushes
   state, levels and text through setters that take the model mutex for
   nanoseconds, and the UI thread draws a snapshot (ADR-0011).
+- The tray and dashboard threads never touch the event bus or the view
+  model: the loop pushes immutable snapshots (dashboard) or swaps a
+  pre-rendered image (tray), and user actions come back only through
+  `call_soon_threadsafe` (ADR-0015).
 - Barge-in is `Playback::stop()` called by the worker on `SpeechStarted`
   when a barge-in target is set, so it takes effect on the next device period
   without waiting for the event loop. Python learns about it afterwards via
@@ -195,10 +213,18 @@ as `DiscoveryFailure`s instead of crashing, and produces the Anthropic-style
 `{name, description, input_schema}` definitions from the pydantic models.
 
 Tools receive services only through `ToolContext` (settings, event bus,
-clock, confirmation callback, OS and memory facades as Protocols) and return
+clock, confirmation callback, the `Platform` interface, a notes/todos/
+reminders Protocol that `MemoryManager` satisfies, and an optional
+background-job tracker) and return
 a `ToolResult` with `spoken` (for TTS), `detail` (for the LLM and dashboard)
 and `data` (JSON). Invalid arguments and tool failures become `ok=False`
 results, never exceptions in the agent loop.
+
+The computer-control, file, dev-mode, notes and system tools are listed with
+their confirmation flags in [docs/tools.md](docs/tools.md). Dev-mode tools
+run fixed command lines through the sandbox; `start_dev_server` uses
+`spawn_sandboxed` and `tools/_jobs.BackgroundJobs`, which also feeds the
+proactive `LongRunningCommandTrigger` (ADR-0017).
 
 `agent/confirmation.py` is the only place that decides whether to ask the
 user: the tool's declaration, a list of always-confirm categories and the
@@ -237,14 +263,30 @@ durations, failures, limits hit) for the dashboard. See ADR-0014.
 facts + recent turns + semantic hits trimmed to a character budget. All data
 stays under `Settings.data_dir`. See ADR-0008.
 
+## 7b. Vision *(step 11)*
+
+`vision/ScreenReader` turns "what does this error mean?" into one request:
+capture through `Platform` (primary monitor, whole desktop, or only the
+focused window), a `Redactor` hook (no-op today), downscale to
+`vision_max_long_edge` and re-encode PNG, then JPEG, then smaller until the
+base64 fits `vision_max_image_bytes` (`vision/imaging.py`, in a worker
+thread), and one user message with the image and the question to a
+vision-capable `LLMClient`. `vision/factory.py` picks that client from the
+configured provider (Claude with `vision_model`, Ollama only with
+`ollama_vision_model`, none for llama.cpp). Tools reach it through
+`ToolContext.vision`; `describe_screen`, `explain_screen_error` and
+`ask_about_screen` share `tools/_screen.py` and say aloud when a screenshot
+went to a cloud provider. Captures happen only inside a tool call. See
+ADR-0016.
+
 ## 7a. Local inference *(step 12)*
 
 `native/inference` wraps whisper.cpp and llama.cpp (ADR-0010). Transcription
 is one blocking call with the GIL released. Generation runs on a native
 thread that fills a queue; Python pulls pieces from a `GenerationStream`
 and can cancel it, so the LLM path follows the same no-GIL-on-native-threads
-rule as the audio engine. The Python `STT` / `LLMClient` providers over this
-module are the second half of step 12.
+rule as the audio engine. The Python providers over this module
+(`WhisperCppSTT`, `LocalLlamaClient`) are described under Providers above.
 
 ## 8. Native build *(step 2)*
 

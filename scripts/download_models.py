@@ -3,14 +3,14 @@
 Usage::
 
     uv run python scripts/download_models.py            # audio models into JARVIS_MODELS_DIR
-    uv run python scripts/download_models.py --local    # plus whisper.cpp / llama.cpp models
+    uv run python scripts/download_models.py --local    # plus whisper.cpp, llama.cpp, Piper models
     uv run python scripts/download_models.py --force    # re-download everything
     uv run python scripts/download_models.py --models-dir C:/models
 
 Files that already exist with the right hash are skipped, so this is safe to
 run on every setup. The audio model list lives in ``jarvis.audio.models`` and
 the LOCAL-mode list in ``jarvis.inference.models``, next to the code that
-consumes them. ``--local`` is opt-in because those two files total 570 MB.
+consumes them. ``--local`` is opt-in because those files total 630 MB.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--local",
         action="store_true",
-        help="also fetch the whisper.cpp and llama.cpp models for LOCAL mode (570 MB)",
+        help="also fetch the whisper.cpp, llama.cpp and Piper models for LOCAL mode (630 MB)",
     )
     return parser.parse_args(argv)
 

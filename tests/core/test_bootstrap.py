@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Callable
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -11,7 +12,6 @@ from jarvis.core import bootstrap
 from jarvis.core.bootstrap import (
     MEMORY_DB_FILENAME,
     Overrides,
-    PlatformToolFacade,
     build_application,
     build_integrations,
     build_llm,
@@ -20,12 +20,13 @@ from jarvis.core.bootstrap import (
     build_registry,
     build_vector_store,
 )
+from jarvis.core.events import EventBus
 from jarvis.integrations.stubs import StubCalendarProvider, StubEmailProvider
 from jarvis.llm.ollama_client import OllamaClient
 from jarvis.memory import InMemoryVectorStore
 from jarvis.memory.errors import MemoryStoreError
-from jarvis.os_integration.base import WindowInfo
 from jarvis.os_integration.stub import StubPlatform
+from jarvis.proactive.scheduler import Scheduler
 from jarvis.utils.errors import ConfigError, NativeUnavailableError
 from tests.agent.llm_fakes import ScriptedLLM, text_round
 from tests.core.fakes import RecordingOutput, ScriptedInput
@@ -145,20 +146,6 @@ async def test_integrations_default_to_stubs(make_settings: MakeSettings, tmp_pa
     assert len(providers.music) == len(providers.chat) == len(providers.smart_home) == 1
 
 
-async def test_platform_facade_adapts_the_platform() -> None:
-    platform = StubPlatform()
-    platform.active = WindowInfo(
-        handle=1, title="Visual Studio Code", process_name="Code.exe", executable_path="", pid=7
-    )
-    facade = PlatformToolFacade(platform)
-
-    assert await facade.active_window_title() == "Visual Studio Code"
-    await facade.notify("Jarvis", "Build finished")
-    platform.active = None
-    assert await facade.active_window_title() == ""
-    assert platform.notifications == [("Jarvis", "Build finished")]
-
-
 async def test_application_runs_a_conversation_and_releases_resources(
     make_settings: MakeSettings, tmp_path: Path
 ) -> None:
@@ -205,3 +192,145 @@ async def test_failure_half_way_closes_what_was_opened(
 
     # The database was opened and closed again: the file can be removed.
     (tmp_path / MEMORY_DB_FILENAME).unlink()
+
+
+# --- tool services, proactive and UI wiring --------------------------------
+
+
+async def _never(_prompt: str) -> bool:
+    return False
+
+
+def offline_overrides(source: ScriptedInput | None = None) -> Overrides:
+    return Overrides(
+        source=source or ScriptedInput(["exit"]),
+        sink=RecordingOutput(),
+        llm=ScriptedLLM(),
+        platform=StubPlatform(),
+        vectors=InMemoryVectorStore(),
+        registry=ToolRegistry(),
+    )
+
+
+def test_vision_degrades_to_none_without_a_usable_provider(
+    monkeypatch: pytest.MonkeyPatch, make_settings: MakeSettings
+) -> None:
+    def no_key(_settings: Settings, _platform: object) -> object:
+        raise ConfigError("ANTHROPIC_API_KEY is required")
+
+    monkeypatch.setattr(bootstrap, "create_screen_reader", no_key)
+
+    assert bootstrap.build_vision(make_settings(), StubPlatform()) is None
+
+
+async def test_tool_services_share_one_jobs_tracker_and_vision(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    settings = ollama_settings(make_settings, tmp_path)
+    async with AsyncExitStack() as stack:
+        memory = await build_memory(settings, stack, vectors=InMemoryVectorStore())
+        services = bootstrap.build_tool_services(settings, stack, StubPlatform(), memory)
+        context = bootstrap.build_tool_context(settings, EventBus(), _never, services)
+
+    assert context.jobs is services.jobs
+    assert context.vision is services.vision
+    assert services.vision is not None
+    assert context.memory is memory
+
+
+def test_battery_source_is_skipped_without_psutil(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(name: str) -> object:
+        raise ImportError(f"No module named {name!r}")
+
+    monkeypatch.setattr(bootstrap.importlib, "import_module", missing)
+
+    assert bootstrap.build_battery_source() is None
+
+
+def test_battery_source_uses_the_battery_tool_probe() -> None:
+    assert bootstrap.build_battery_source() is not None
+
+
+async def test_proactive_scheduler_runs_with_the_app_and_stops_after(
+    monkeypatch: pytest.MonkeyPatch, make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    routines = tmp_path / "routines"
+    routines.mkdir()
+    (routines / "evening.yaml").write_text(
+        'name: evening\ntrigger: { kind: time, at: "21:00" }\nsteps:\n  - tool: current_time\n',
+        encoding="utf-8",
+    )
+    settings = ollama_settings(
+        make_settings, tmp_path, proactive_enabled=True, routines_dir=routines
+    )
+    schedulers: list[Scheduler | None] = []
+    original = bootstrap.build_proactive
+
+    async def spy(*args: Any, **kwargs: Any) -> Scheduler | None:
+        schedulers.append(await original(*args, **kwargs))
+        return schedulers[-1]
+
+    monkeypatch.setattr(bootstrap, "build_proactive", spy)
+    application = await build_application(settings, offline_overrides())
+    scheduler = schedulers[0]
+    assert scheduler is not None and scheduler.running
+    names = {job.name for job in scheduler.jobs}
+    assert {"trigger:due_reminder", "trigger:upcoming_meeting", "routine:evening"} <= names
+
+    await application.run()
+
+    assert not scheduler.running
+
+
+async def test_proactive_can_be_switched_off(make_settings: MakeSettings, tmp_path: Path) -> None:
+    settings = ollama_settings(make_settings, tmp_path)
+    async with AsyncExitStack() as stack:
+        memory = await build_memory(settings, stack, vectors=InMemoryVectorStore())
+        services = bootstrap.build_tool_services(settings, stack, StubPlatform(), memory)
+        scheduler = await bootstrap.build_proactive(
+            settings,
+            stack,
+            bus=EventBus(),
+            sink=RecordingOutput(),
+            services=services,
+            routines=bootstrap.build_routines(settings),
+            invoker=None,  # type: ignore[arg-type]
+        )
+
+    assert scheduler is None
+
+
+async def test_quit_from_the_tray_ends_the_session_cleanly(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    class Blocking(ScriptedInput):
+        async def read_line(self, prompt: str) -> str | None:
+            await asyncio.Event().wait()
+            return None
+
+    overrides = offline_overrides(Blocking())
+    application = await build_application(ollama_settings(make_settings, tmp_path), overrides)
+    running = asyncio.create_task(application.run())
+    await asyncio.sleep(0.05)
+
+    application.request_stop()
+    await asyncio.wait_for(running, 5)
+
+    assert not running.cancelled()
+
+
+async def test_ctrl_c_still_propagates(make_settings: MakeSettings, tmp_path: Path) -> None:
+    class Blocking(ScriptedInput):
+        async def read_line(self, prompt: str) -> str | None:
+            await asyncio.Event().wait()
+            return None
+
+    application = await build_application(
+        ollama_settings(make_settings, tmp_path), offline_overrides(Blocking())
+    )
+    running = asyncio.create_task(application.run())
+    await asyncio.sleep(0.05)
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await running

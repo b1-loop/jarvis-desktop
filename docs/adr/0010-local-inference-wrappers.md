@@ -77,5 +77,5 @@ CMake tree as the other components and wrapped in our own thin API:
 - The submodule versions are visible in `jarvis_inference.WHISPER_VERSION`
   and `LLAMA_VERSION`.
 - The Python `STT` and `LLMClient` implementations for LOCAL mode consume
-  this API and are tracked under step 12; ADR-0009 will document the
-  CLOUD vs LOCAL trade-offs once both are in place.
+  this API (step 12); ADR-0013 documents the CLOUD vs LOCAL trade-offs
+  with measured numbers.

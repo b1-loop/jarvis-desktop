@@ -163,3 +163,16 @@ def test_brave_key_is_a_secret(
     assert settings.brave_search_api_key is not None
     assert settings.brave_search_api_key.get_secret_value() == "BSA-secret"
     assert "BSA-secret" not in repr(settings)
+
+
+def test_empty_env_values_mean_not_set(
+    monkeypatch: pytest.MonkeyPatch, make_settings: Callable[..., Settings]
+) -> None:
+    # A copied .env.example has "KEY=" lines; they must not count as configured.
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+
+    settings = make_settings()
+
+    assert settings.spotify_client_id is None
+    assert settings.anthropic_api_key is None

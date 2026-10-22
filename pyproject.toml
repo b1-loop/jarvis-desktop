@@ -49,7 +49,11 @@ integrations = [
 documents = ["pypdf>=5.0", "python-docx>=1.1", "youtube-transcript-api>=0.6"]
 # System monitoring and tray icon.
 desktop = ["psutil>=6.0", "pystray>=0.19", "pillow>=11.0"]
-all = ["jarvis[cloud,memory,integrations,documents,desktop]"]
+# Fully offline LOCAL mode: Piper TTS (bundles espeak-ng, runs on onnxruntime).
+# STT and LLM in LOCAL mode come from the native jarvis_inference module, not
+# from a Python package. piper-tts is GPL-3.0-or-later; see ADR-0013.
+local = ["piper-tts>=1.3,<2"]
+all = ["jarvis[cloud,memory,integrations,documents,desktop,local]"]
 
 [project.scripts]
 jarvis = "jarvis.__main__:main"
@@ -133,6 +137,10 @@ convention = "google"
 # Optional-extra parsers are imported inside the functions that need them.
 "src/jarvis/integrations/documents.py" = ["PLC0415"]
 "src/jarvis/integrations/youtube.py" = ["PLC0415"]
+"src/jarvis/vision/imaging.py" = ["PLC0415"] # Pillow comes with the desktop extra
+# Test images: optional Pillow import, seeded noise that is not cryptographic.
+"tests/vision/fakes.py" = ["PLC0415", "S311"]
+"src/jarvis/tools/draft_document.py" = ["PLC0415"]
 
 [tool.ruff.lint.pylint]
 max-statements = 30   # Clean Code: functions under 30 lines
@@ -165,6 +173,7 @@ module = [
   "googleapiclient.*",
   "google_auth_oauthlib.*",
   "youtube_transcript_api.*",
+  "piper.*",
 ]
 ignore_missing_imports = true
 

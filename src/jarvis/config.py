@@ -16,6 +16,7 @@ from typing import Annotated, Final, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from jarvis.inference.models import PIPER_VOICE_EN_GB, QWEN2_5_0_5B_INSTRUCT, WHISPER_TINY
 from jarvis.integrations.documents import default_document_roots
 from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.utils.errors import ConfigError
@@ -23,7 +24,10 @@ from jarvis.utils.errors import ConfigError
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 LLMProvider = Literal["anthropic", "ollama", "local"]
-"""Which ``LLMClient`` answers: Claude, a local Ollama server, or llama.cpp (step 12)."""
+"""Which ``LLMClient`` answers: Claude, a local Ollama server, or in-process llama.cpp."""
+
+DEFAULT_LOCAL_MODELS_DIR: Final = Path("models")
+"""Where ``scripts/download_models.py --local`` puts the LOCAL-mode files by default."""
 
 DEFAULT_SHELL_ALLOWLIST: Final[tuple[str, ...]] = (
     "git",
@@ -59,6 +63,16 @@ class RuntimeMode(StrEnum):
     LOCAL = "local"
 
 
+def default_documents_output_dir() -> Path:
+    """Where ``draft_document`` writes when nothing is configured.
+
+    A dedicated sub-folder of Documents keeps generated files together and
+    apart from the user's own, so an overwrite can only hit a file in the
+    folder Jarvis writes to.
+    """
+    return Path.home() / "Documents" / "Jarvis"
+
+
 class Settings(BaseSettings):
     """All runtime configuration for Jarvis.
 
@@ -71,6 +85,10 @@ class Settings(BaseSettings):
         env_prefix="JARVIS_",
         env_file=".env",
         env_file_encoding="utf-8",
+        # ``.env.example`` lists every key with an empty value; a copied
+        # ``KEY=`` line must mean "not set", not "set to an empty string",
+        # or providers would think they are configured.
+        env_ignore_empty=True,
         extra="ignore",
         populate_by_name=True,
     )
@@ -96,9 +114,11 @@ class Settings(BaseSettings):
     stt_device: str = "auto"
     stt_compute_type: str = "auto"
     tts_voice: str = "en-GB-RyanNeural"
-    local_llm_model: Path = Path("models/llama.gguf")
-    local_stt_model: Path = Path("models/ggml-base.bin")
-    local_tts_model: Path = Path("models/piper-voice.onnx")
+    # Defaults are the pinned manifest files (jarvis.inference.models), so a
+    # fresh `download_models.py --local` run is all LOCAL mode needs.
+    local_llm_model: Path = DEFAULT_LOCAL_MODELS_DIR / QWEN2_5_0_5B_INSTRUCT.name
+    local_stt_model: Path = DEFAULT_LOCAL_MODELS_DIR / WHISPER_TINY.name
+    local_tts_model: Path = DEFAULT_LOCAL_MODELS_DIR / PIPER_VOICE_EN_GB.name
 
     # Integrations. ``None`` selects the Stub provider for that service.
     google_client_secrets_file: Path | None = Field(
@@ -201,6 +221,42 @@ class Settings(BaseSettings):
         """An empty ``JARVIS_WEB_USER_AGENT=`` line keeps the default."""
         return DEFAULT_USER_AGENT if value == "" else value
 
+    # Integration tools (step 8d)
+    documents_output_dir: Path = Field(default_factory=default_documents_output_dir)
+
+    @field_validator("documents_output_dir", mode="before")
+    @classmethod
+    def _default_empty_output_dir(cls, value: object) -> object:
+        """An empty ``JARVIS_DOCUMENTS_OUTPUT_DIR=`` line keeps ``~/Documents/Jarvis``."""
+        return default_documents_output_dir() if value == "" else value
+
+    # Local mode (step 12b)
+    stt_language: str | None = None
+    local_stt_threads: int = Field(default=0, ge=0)
+    local_llm_context_size: int = Field(default=4096, gt=0)
+    local_llm_threads: int = Field(default=0, ge=0)
+    local_llm_max_tokens: int = Field(default=512, gt=0)
+    local_llm_temperature: float = Field(default=0.4, ge=0.0)
+
+    @field_validator("stt_language", mode="before")
+    @classmethod
+    def _empty_language_is_auto(cls, value: object) -> object:
+        """An empty ``JARVIS_STT_LANGUAGE=`` line means "detect the language"."""
+        return None if value == "" else value
+
+    # Vision (step 11)
+    vision_enabled: bool = True
+    vision_max_long_edge: int = Field(default=1920, ge=256, le=8000)
+    vision_max_image_bytes: int = Field(default=5_000_000, ge=100_000)
+    vision_save_screenshots: bool = True
+    ollama_vision_model: str | None = None
+
+    @field_validator("ollama_vision_model", mode="before")
+    @classmethod
+    def _empty_vision_model_is_none(cls, value: object) -> object:
+        """An empty ``JARVIS_OLLAMA_VISION_MODEL=`` line means Ollama has no vision model."""
+        return None if value == "" else value
+
     # Agent loop (step 6b)
     assistant_name: str = Field(default="Jarvis", min_length=1)
     persona_tone: str = "calm, concise and dryly witty, like a capable butler"
@@ -213,6 +269,9 @@ class Settings(BaseSettings):
     max_utterance_seconds: float = Field(default=20.0, gt=0)
     min_transcript_chars: int = Field(default=2, ge=1)
     overlay_enabled: bool = True
+    tray_enabled: bool = True
+    dashboard_enabled: bool = True
+    proactive_enabled: bool = True
 
 
 # Design notes:
@@ -232,3 +291,13 @@ class Settings(BaseSettings):
 #   Jarvis's own first syllable reaching the microphone through speakers,
 #   short enough that a user who interrupts at once is heard. There is no
 #   echo cancellation (ADR-0019), so headphones remain the real fix.
+# - Local mode: thread counts of 0 let whisper.cpp / llama.cpp pick for the
+#   machine. The LLM temperature defaults below the wrapper's 0.7 because a
+#   0.5B model follows the JSON tool-call protocol (ADR-0013) noticeably
+#   more reliably when it samples less freely.
+
+# - Vision: 1920 px on the long edge is the 1080p class the Claude docs name
+#   as the cost/quality balance for screenshots (the high-resolution tier
+#   caps at 2576 px and downscales anything larger). The byte budget is
+#   measured on the base64 text, which is how providers count, and 5 MB is
+#   the strictest per-image limit across the Claude platforms. ADR-0016.

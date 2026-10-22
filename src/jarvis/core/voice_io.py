@@ -173,6 +173,8 @@ class VoiceInput:
         self._min_chars = min_chars
         self._echo = echo
         self._barge_in = False
+        self.muted = False
+        """While True, triggers are ignored (the tray's "Mute microphone")."""
 
     async def read_line(self, prompt: str) -> str | None:
         """Wait for the next spoken request; never returns ``None`` (end is Ctrl+C).
@@ -217,7 +219,8 @@ class VoiceInput:
 
     async def _wait_for_trigger(self) -> None:
         self._engine.discard_pending_events()
-        hit = await self._trigger.wait()
+        while (hit := await self._trigger.wait()) and self.muted:
+            log.info("voice.trigger.ignored_while_muted", source=hit.source)
         watch = Stopwatch(self._clock)
         log.info("voice.triggered", source=hit.source, score=round(hit.score, 3))
         self._bus.publish(WakeWordHeard(score=hit.score))

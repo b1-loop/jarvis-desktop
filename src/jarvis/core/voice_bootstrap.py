@@ -31,7 +31,8 @@ from jarvis.audio.engine import (
     create_native_playback,
 )
 from jarvis.audio.models import AudioModelPaths
-from jarvis.config import RuntimeMode, Settings
+from jarvis.config import Settings
+from jarvis.core import providers
 from jarvis.core.bootstrap import (
     FrontEnd,
     FrontEndRequest,
@@ -54,9 +55,7 @@ from jarvis.core.voice_latency import FirstTokenProbe, TurnTimeline
 from jarvis.core.voice_triggers import AnyTrigger, HotkeyTrigger, TurnTrigger, WakeWordTrigger
 from jarvis.os_integration.errors import PlatformError
 from jarvis.stt.base import STT
-from jarvis.stt.faster_whisper import FasterWhisperSTT
 from jarvis.tts.base import TTS
-from jarvis.tts.edge_tts import EdgeTTS
 from jarvis.ui.overlay import Overlay, create_overlay
 from jarvis.utils.errors import ConfigError, JarvisError, NativeUnavailableError
 from jarvis.utils.logging import get_logger
@@ -107,24 +106,28 @@ def native_audio_error() -> type[Exception]:
     return error_type
 
 
-def _require_cloud_speech(settings: Settings) -> None:
-    if settings.mode is RuntimeMode.LOCAL:
-        raise VoiceUnavailableError(
-            "offline speech (whisper.cpp + Piper) is wired by core/providers.py in step 12; "
-            "start with --mode cloud for voice, or keep --mode local in text mode"
-        )
-
-
 def build_stt(settings: Settings) -> STT:
-    """faster-whisper; LOCAL mode's whisper.cpp arrives with ``core/providers.py``."""
-    _require_cloud_speech(settings)
-    return FasterWhisperSTT.from_settings(settings)
+    """The mode's STT (faster-whisper or whisper.cpp), via ``core.providers``.
+
+    Raises:
+        VoiceUnavailableError: If the provider's package, build or model is missing.
+    """
+    try:
+        return providers.build_stt(settings)
+    except ConfigError as error:
+        raise VoiceUnavailableError(f"speech recognition unavailable: {error}") from error
 
 
 def build_tts(settings: Settings) -> TTS:
-    """edge-tts; LOCAL mode's Piper arrives with ``core/providers.py``."""
-    _require_cloud_speech(settings)
-    return EdgeTTS.from_settings(settings)
+    """The mode's TTS (edge-tts or Piper), via ``core.providers``.
+
+    Raises:
+        VoiceUnavailableError: If the provider's package, build or voice is missing.
+    """
+    try:
+        return providers.build_tts(settings)
+    except ConfigError as error:
+        raise VoiceUnavailableError(f"speech output unavailable: {error}") from error
 
 
 def build_overlay(settings: Settings) -> Overlay:
@@ -155,6 +158,36 @@ class _Audio:
     engine: AudioEngine
     wake_word_problem: str | None
     wake_word_active: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _OverlayParts:
+    overlay: Overlay
+    bridge: OverlayBridge
+
+    def toggle(self) -> None:
+        if self.overlay.visible:
+            self.overlay.hide()
+        else:
+            self.overlay.show()
+
+
+class VoiceMicrophone:
+    """``MicrophoneSwitch`` for the tray: closes the device and ignores triggers while muted."""
+
+    def __init__(self, engine: AudioEngine, voice_input: VoiceInput) -> None:
+        self._engine = engine
+        self._input = voice_input
+
+    async def toggle(self) -> bool:
+        """Flip mute; returns True when now muted."""
+        muted = not self._input.muted
+        self._input.muted = muted
+        if muted:
+            await self._engine.stop()
+        else:
+            await self._engine.start()
+        return muted
 
 
 class VoiceFrontEndBuilder:
@@ -192,7 +225,7 @@ class VoiceFrontEndBuilder:
             raise VoiceUnavailableError(f"no audio output device: {error}") from error
         stt = await self._load_stt(request.settings)
         trigger = await self._trigger(request, audio)
-        bridge = await self._overlay(request, audio.engine, speaker)
+        overlay = self._overlay(request, audio.engine, speaker)
         return self._assemble(
             request=request,
             audio=audio,
@@ -200,7 +233,7 @@ class VoiceFrontEndBuilder:
             stt=stt,
             tts=tts,
             trigger=trigger,
-            bridge=bridge,
+            overlay=overlay,
         )
 
     async def _start_audio(self, request: FrontEndRequest, native_error: type[Exception]) -> _Audio:
@@ -263,9 +296,9 @@ class VoiceFrontEndBuilder:
             triggers.append(hotkey)
         return AnyTrigger(triggers)
 
-    async def _overlay(
+    def _overlay(
         self, request: FrontEndRequest, engine: AudioEngine, speaker: Speaker
-    ) -> OverlayBridge:
+    ) -> _OverlayParts:
         overlay = self._factories.overlay(request.settings)
         request.stack.callback(overlay.close)
         bridge = OverlayBridge(
@@ -276,7 +309,7 @@ class VoiceFrontEndBuilder:
         )
         bridge.start()
         request.stack.push_async_callback(bridge.aclose)
-        return bridge
+        return _OverlayParts(overlay, bridge)
 
     def _assemble(
         self,
@@ -287,7 +320,7 @@ class VoiceFrontEndBuilder:
         stt: STT,
         tts: TTS,
         trigger: TurnTrigger,
-        bridge: OverlayBridge,
+        overlay: _OverlayParts,
     ) -> FrontEnd:
         settings = request.settings
         terminal = TerminalOutput(settings.assistant_name, write=self._write)
@@ -296,7 +329,7 @@ class VoiceFrontEndBuilder:
             speaker=speaker,
             bus=request.bus,
             terminal=terminal,
-            on_sentence=bridge.show_response,
+            on_sentence=overlay.bridge.show_response,
         )
         request.stack.push_async_callback(output.aclose)
         barge_in = BargeInController(
@@ -328,6 +361,8 @@ class VoiceFrontEndBuilder:
             llm=FirstTokenProbe(request.llm, timeline),
             greeting=self._greeting(settings, audio),
             attach=attach,
+            toggle_overlay=overlay.toggle,
+            microphone=VoiceMicrophone(audio.engine, voice_input),
         )
 
     def _input(
@@ -401,16 +436,12 @@ async def run_voice_mode(
 # - Cleanup order (reverse of registration): voice output workers stop,
 #   then the overlay, the hotkey, and finally the audio engine closes the
 #   microphone; the event bus (bootstrap) closes after all of them.
-# - LOCAL mode does not silently use cloud speech: until the offline
-#   providers are wired (core/providers.py, step 12) voice mode refuses and
-#   text mode runs, which is the honest behaviour for "fully offline".
-# - Hooks for work on other branches, each a few lines here once merged:
-#   * provider builders (core/providers.py, feat/local-mode): replace
-#     build_stt/build_tts with providers.build_stt/build_tts, which choose
-#     whisper.cpp and Piper in LOCAL mode, and drop _require_cloud_speech.
-#   * tray icon and dashboard (feat/tray-dashboard: create_tray,
-#     create_dashboard): build them next to the overlay in ``_overlay``
-#     behind ``tray_enabled``/``dashboard_enabled`` settings (default on,
-#     degrading to their stubs), subscribed to the same bus events, and
-#     feed the dashboard's latency view from a LatencyTracker attached to
-#     the bus (the voice.* stages in core/voice_latency.py).
+# - Speech providers come from core/providers.py, so --mode local speaks
+#   through whisper.cpp and Piper; a missing prerequisite there (a
+#   ConfigError naming the fix) becomes VoiceUnavailableError and text mode.
+# - The tray and dashboard are built by bootstrap.build_ui for both front
+#   ends; this module only contributes the overlay toggle and the
+#   microphone switch their menu needs.
+# - Muting stops the audio engine (the device is really closed, which
+#   Windows shows in its microphone indicator) and makes the input ignore
+#   hotkey presses until unmuted.
