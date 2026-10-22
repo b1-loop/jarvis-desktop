@@ -30,7 +30,7 @@ jarvis/
     __main__.py           CLI entry point and composition root
     config.py             pydantic-settings, the only reader of environment variables
     _native/              shim that loads the compiled modules (git-ignored .pyd files)
-    core/                 event bus, state machine, orchestrator, interruption
+    core/                 event bus, state machine, orchestrator, voice I/O, barge-in, composition root
     audio/                asyncio facade over jarvis_audio
     os_integration/       Platform interface and Windows backend over jarvis_os
     stt/ tts/ llm/        interfaces + providers
@@ -78,6 +78,59 @@ LISTENING because the state table has no IDLE → THINKING edge, which keeps
 the state sequence identical in both modes. Confirmation questions are read
 from the same input source (`TerminalConfirmation`, y/n, unclear answers
 count as no). See ADR-0014.
+
+### Voice path *(step 7)*
+
+```
+              ┌──── AnyTrigger: WakeWordTrigger (engine event) | HotkeyTrigger (Platform) ────┐
+VoiceInput ◀──┘  earcon (80 ms tone) → IDLE→LISTENING → AudioEngine.record_utterance
+   │                                       (pre-roll + speech until SPEECH_ENDED)
+   │  STT.transcribe (worker thread) → TranscriptReady
+   ▼
+Orchestrator ─▶ Agent ─▶ FirstTokenProbe(LLMClient) ─▶ sentences ─▶ VoiceOutput.say (queue only)
+                                                                    │
+         synthesiser task: TTS.synthesize(sentence n+1) ──chunks──▶ │ bounded hand-off (2)
+         player task:      Speaker.play(sentence n) ──▶ native Playback ──▶ speakers
+                                                                    │ first chunk → BargeInController
+                                                                    │ arms engine after echo guard
+mic ─▶ native VAD: SpeechStarted ─▶ Playback::stop() (C++, no Python) │
+                                     └─▶ VoiceOutput sees the stop ─▶ drop queued sentences,
+                                         BargeInController: capture on, cancel turn,
+                                         SPEAKING→LISTENING ─▶ VoiceInput skips the trigger
+```
+
+`core/voice_bootstrap.py` assembles this front end (engine with the wake
+word if its models load, playback at the TTS rate, `core.providers` STT and
+TTS, hotkey, overlay bridge) and hands it to the shared bootstrap.
+`OutputSink.flush()` is awaited inside the turn task, so SPEAKING lasts as
+long as the audio does and a barge-in during the last sentence still
+cancels the turn. Missing pieces degrade instead of failing: no audio build,
+models or devices fall back to text mode with the reason; missing
+wake-word models fall back to the hotkey; a failing TTS prints. Echo is
+handled by `minSpeechMs` plus an echo guard that arms barge-in only 400 ms
+after playback starts; there is no AEC (ADR-0019).
+
+**Latency budget.** Each stage is published as a `LatencySample`
+(`core/voice_latency.py`) for the dashboard and the step-14 benchmark.
+Targets are for CLOUD mode with a GPU; the measured column is the step-7
+scripted check on the development machine (edge-tts speech fed into the
+real faster-whisper `small` running int8 on the CPU because cuBLAS is not
+installed, Ollama `qwen2.5:7b` on the GPU, edge-tts and the real speakers).
+The step-14 benchmark replaces it with percentiles.
+
+| Stage | Sample name | Target | Measured (3 turns) |
+| --- | --- | --- | --- |
+| Trigger → listening (earcon) | `voice.wake_to_listening` | < 150 ms | 77-87 ms |
+| VAD hangover after the last word | (segmenter `silenceEndMs`) | 700 ms | config |
+| End of speech → transcript | `voice.speech_end_to_transcript` | < 600 ms (GPU) | 1960-2200 ms (CPU) |
+| Transcript → first LLM event | `voice.transcript_to_first_token` | < 800 ms | 1290-1760 ms (Ollama) |
+| First sentence → first audio | `voice.first_sentence_to_audio` | < 500 ms | 550-2520 ms (edge-tts) |
+| Barge-in onset → silence | native `Playback::stop` | < 1 device period | native, no Python |
+| Barge-in onset → LISTENING | Python cleanup | < 50 ms | 23 ms |
+
+The two slow stages are outside the pipeline's control: STT is CPU-bound
+without CUDA libraries, and edge-tts pays a websocket handshake per
+sentence (the 550 ms sample was a one-word sentence).
 
 ### Providers *(step 5)*
 
