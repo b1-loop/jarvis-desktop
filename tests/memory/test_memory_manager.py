@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 
 from jarvis.memory.memory_manager import (
+    RECENT_HEADER,
     MemoryManager,
     RecalledContext,
+    question_only,
     truncating_summariser,
 )
 from jarvis.memory.models import Fact, Message, Role
@@ -256,7 +258,7 @@ async def test_reminders_pass_through(manager: MemoryManager, clock: FakeClock) 
     assert len(await manager.list_reminders(include_fired=True)) == 1
 
 
-def test_tool_answers_in_recent_turns_are_marked_stale() -> None:
+def test_tool_answers_are_left_out_of_the_recent_conversation() -> None:
     at = datetime(2026, 10, 22, 9, 11, tzinfo=UTC)
     user = Message(
         id=1,
@@ -283,10 +285,51 @@ def test_tool_answers_in_recent_turns_are_marked_stale() -> None:
         created_at=at,
     )
 
-    text = RecalledContext(profile="", facts=(), recent=(user, answer, chat), semantic=()).render()
+    greeting = Message(4, 1, Role.USER, "I'm Bozhidar.", (), at)
+    recent = (user, answer, greeting, chat)
 
-    assert "what time is it?" in text
+    text = RecalledContext(profile="", facts=(), recent=recent, semantic=()).render()
+
+    assert "user: I'm Bozhidar." in text
+    assert "what time is it?" not in text  # the whole exchange goes, not only the answer
     assert "09:11." not in text
-    assert "answered using current_time" in text
-    assert "out of date" in text
-    assert "Nice to meet you." in text
+    assert "current_time" not in text  # nothing a model could repeat as its answer
+    assert "assistant: Nice to meet you." in text
+    assert RECENT_HEADER in text
+
+
+def test_a_recent_window_of_only_tool_answers_renders_nothing() -> None:
+    answer = Message(1, 1, Role.ASSISTANT, "Milk.", ({"name": "list_todos"},), EPOCH)
+
+    assert RecalledContext(profile="", facts=(), recent=(answer,), semantic=()).render() == ""
+
+
+async def test_semantic_hits_lose_the_answers_that_came_from_tools(
+    store: SqliteStore, vectors: InMemoryVectorStore
+) -> None:
+    manager = MemoryManager(store, vectors, recent_turns=1, semantic_hits=5)
+    await manager.record_turn("what is on my todo list", "Milk and eggs.", [{"name": "list_todos"}])
+    await manager.record_turn("my todo list habit is mornings", "Good to know.")
+    await manager.record_turn("unrelated filler", "ok")
+
+    context = await manager.recall("todo list")
+
+    texts = {hit.text for hit in context.semantic}
+    assert "User: what is on my todo list" in texts
+    assert "User: my todo list habit is mornings\nJarvis: Good to know." in texts
+    assert "Milk and eggs." not in context.render()
+
+
+async def test_semantic_hits_without_a_message_id_are_kept_as_they_are(
+    manager: MemoryManager, vectors: InMemoryVectorStore
+) -> None:
+    await vectors.add("turn:legacy", "User: hi\nJarvis: hello", {"kind": "turn"})
+
+    context = await manager.recall("hi")
+
+    assert [hit.text for hit in context.semantic] == ["User: hi\nJarvis: hello"]
+
+
+def test_question_only_cuts_the_answer_off_an_embedded_turn() -> None:
+    assert question_only("User: q\nJarvis: a\nmore") == "User: q"
+    assert question_only("a note without an answer") == "a note without an answer"

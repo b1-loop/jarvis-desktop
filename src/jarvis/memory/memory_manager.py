@@ -39,6 +39,8 @@ DEFAULT_SUMMARY_CHARS: Final = 300
 _TURN_KIND: Final = "turn"
 _NOTE_KIND: Final = "note"
 _ELLIPSIS: Final = "…"
+_ANSWER_SEPARATOR: Final = "\nJarvis: "
+"""Between question and answer in an embedded turn (see ``record_turn``)."""
 
 
 async def truncating_summariser(messages: Sequence[Message]) -> str:
@@ -53,22 +55,49 @@ def _truncate(text: str, limit: int) -> str:
     return text[: max(limit - len(_ELLIPSIS), 0)] + _ELLIPSIS
 
 
-def _render_recent(message: Message) -> str:
-    """One line of the recent conversation as the model should read it.
+RECENT_HEADER: Final = (
+    "Recent conversation (exchanges answered with tools are left out because their data is "
+    "out of date):"
+)
 
-    An assistant answer that came from tools (the time, RAM in use, unread
-    mail) is stale by the next turn. Showing its text tempted small models
-    to repeat it instead of calling the tool again, so only the fact that a
-    tool answered, and when, is kept.
+
+def is_tool_answer(message: Message) -> bool:
+    """Whether ``message`` is an assistant reply built from tool results."""
+    return message.role is Role.ASSISTANT and bool(message.tool_calls)
+
+
+def _render_recent(messages: Iterable[Message]) -> str:
+    """The recent conversation as the model should read it, one line per message.
+
+    An exchange answered with tools (the todo list, the battery, unread
+    mail) is stale by the next turn, so it is left out entirely. Showing the
+    answer made small models repeat it; replacing it with a note ("answered
+    using list_todos; call the tool again") made qwen2.5:7b speak the note
+    itself; keeping only the user's question left a run of unanswered
+    requests that qwen2.5:7b then "answered" in prose without calling tools.
+    The header and the system prompt say why those exchanges are missing.
     """
-    stamp = message.created_at.astimezone().strftime("%H:%M")
-    if message.role is Role.ASSISTANT and message.tool_calls:
-        tools = ", ".join(sorted({str(call.get("name", "tool")) for call in message.tool_calls}))
-        return (
-            f"[{stamp}] {message.role.value}: (answered using {tools}; that result is "
-            "out of date now, call the tool again for current values)"
-        )
-    return f"[{stamp}] {message.role.value}: {message.content}"
+    return "\n".join(
+        f"[{message.created_at.astimezone():%H:%M}] {message.role.value}: {message.content}"
+        for message in _without_tool_exchanges(list(messages))
+    )
+
+
+def _without_tool_exchanges(messages: Sequence[Message]) -> list[Message]:
+    """Drop every tool answer together with the user message it answered."""
+    kept: list[Message] = []
+    for index, message in enumerate(messages):
+        following = messages[index + 1] if index + 1 < len(messages) else None
+        answered_by_tool = following is not None and is_tool_answer(following)
+        if is_tool_answer(message) or (message.role is Role.USER and answered_by_tool):
+            continue
+        kept.append(message)
+    return kept
+
+
+def question_only(turn_text: str) -> str:
+    """The question half of an embedded turn (see ``record_turn``), without the answer."""
+    return turn_text.split(_ANSWER_SEPARATOR, 1)[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,9 +127,8 @@ class RecalledContext:
         if self.semantic:
             hits = "\n".join(f"- {hit.text}" for hit in self.semantic)
             sections.append(f"Related memories:\n{hits}")
-        if self.recent:
-            turns = "\n".join(_render_recent(message) for message in self.recent)
-            sections.append(f"Recent conversation:\n{turns}")
+        if turns := _render_recent(self.recent):
+            sections.append(f"{RECENT_HEADER}\n{turns}")
         return "\n\n".join(sections)
 
     def _shrunk(self) -> RecalledContext | None:
@@ -207,7 +235,7 @@ class MemoryManager:
         )
         await self._vectors.add(
             f"turn:{assistant.id}",
-            f"User: {user_text}\nJarvis: {assistant_text}",
+            f"User: {user_text}{_ANSWER_SEPARATOR}{assistant_text}",
             {"kind": _TURN_KIND, "conversation_id": conversation.id, "message_id": assistant.id},
         )
         log.debug("memory.turn.recorded", conversation_id=conversation.id, message_id=assistant.id)
@@ -242,7 +270,27 @@ class MemoryManager:
             return []
         hits = await self._vectors.query(text, k=self._semantic_hits + len(exclude))
         fresh = [hit for hit in hits if hit.metadata.get("message_id") not in exclude]
-        return fresh[: self._semantic_hits]
+        return await self._without_tool_answers(fresh[: self._semantic_hits])
+
+    async def _without_tool_answers(self, hits: Sequence[VectorHit]) -> list[VectorHit]:
+        """Cut the answer off every recalled turn whose answer came from tools.
+
+        Decided at recall time from the stored message, so turns embedded
+        before this rule existed are cleaned up too.
+        """
+        turn_ids = [
+            message_id
+            for hit in hits
+            if hit.metadata.get("kind") == _TURN_KIND
+            and isinstance(message_id := hit.metadata.get("message_id"), int)
+        ]
+        tool_answers = await self._store.tool_answer_ids(turn_ids) if turn_ids else set()
+        return [
+            replace(hit, text=question_only(hit.text))
+            if hit.metadata.get("message_id") in tool_answers
+            else hit
+            for hit in hits
+        ]
 
     # -- facts ------------------------------------------------------------------
 
@@ -320,6 +368,18 @@ class MemoryManager:
 #   depends on the LLM provider (Claude vs llama.cpp). 4 characters per
 #   token is a safe approximation for English; the agent passes a budget
 #   derived from its model's context window.
+# - Tool-derived answers never reach the prompt as content: recent ones are
+#   left out of the transcript and semantic hits lose their answer half.
+#   Live data (todos, battery, mail) recalled from memory is wrong by the
+#   next turn, and a 7B model treats whatever text is there as the answer.
+#   Recent exchanges answered with tools are dropped whole (question and
+#   answer): measured with scripts/compare_models.py, keeping the bare
+#   questions made qwen2.5:7b claim actions in prose (20/27 correct)
+#   where dropping them did not (24/27). Semantic hits keep the question,
+#   so "what did we talk about" still finds those turns; facts about the
+#   user live in the facts table and are unaffected. Turns are still
+#   embedded with their answer, so retrieval quality is unchanged and the
+#   rule can be revised without re-embedding.
 # - The summariser is a plain async callable rather than a Protocol class
 #   because it has exactly one operation and the LLM version will close
 #   over an LLMClient.
