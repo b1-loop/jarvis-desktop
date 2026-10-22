@@ -14,7 +14,10 @@ Two guards keep small local models honest. A :class:`ToolSelector` trims the
 tool list each round to what the request needs (ADR-0020), and when every
 tool call of the turn failed or was declined, the closing words come from
 the tools' own results instead of the model, which has been seen to report
-"Done" for a command the user had just refused.
+"Done" for a command the user had just refused. A third guard keeps the
+answer in the configured language: sentences in CJK script are never spoken
+for a non-CJK persona, and a final reply that drifted is regenerated once
+with a stricter instruction (``agent/language_guard.py``).
 
 The turn is plain ``async`` code with no shielding, so cancelling the task
 that runs it (barge-in, step 7) stops streaming and tool execution at the
@@ -34,6 +37,7 @@ from jarvis.agent.chaining import (
     TurnReport,
 )
 from jarvis.agent.confirmation import ConfirmationPolicy
+from jarvis.agent.language_guard import LanguageGuard
 from jarvis.agent.persona import Persona
 from jarvis.agent.registry import ToolRegistry
 from jarvis.agent.tool import ToolContext
@@ -203,6 +207,9 @@ class _Turn:
         self.llm_rounds = 0
         self.round_limit_hit = False
         self.error: str | None = None
+        self.language = LanguageGuard(agent.persona)
+        self.drifted = False
+        self.regenerated = False
 
     async def run(self) -> TurnReport:
         try:
@@ -261,10 +268,12 @@ class _Turn:
         finally:
             await _close(stream)
         if (tail := splitter.flush()) is not None:
-            await self._emit(tail)
+            await self._emit_checked(tail)
         self.bus.publish(LatencySample(stage="agent.llm_round", ms=watch.elapsed_ms))
         if done is None:
             raise LLMError(f"{self.agent.llm.model} stream ended without a final event")
+        if self._should_regenerate(done):
+            return await self._regenerate()
         self.messages.append(done.message)
         await self._release_held(done)
         return done
@@ -297,10 +306,34 @@ class _Turn:
             return
         log.warning("agent.grounding.reply_replaced", dropped=" ".join(held))
 
+    def _should_regenerate(self, done: Done) -> bool:
+        """A final reply drifted out of the language and has not been retried yet."""
+        drifted, self.drifted = self.drifted, False
+        return drifted and not self.regenerated and not done.message.tool_calls
+
+    async def _regenerate(self) -> Done:
+        """Ask once more, with the language rule repeated, instead of the drifted reply."""
+        self.regenerated = True
+        log.warning("agent.language.regenerating", language=self.agent.persona.language)
+        system = self.messages[0]
+        if isinstance(system, SystemMessage):
+            self.messages[0] = SystemMessage(self.language.stricter_prompt(system.text))
+        return await self._stream_reply()
+
+    async def _emit_checked(self, sentence: str) -> None:
+        """Speak ``sentence`` unless it left the language (or repeats one already said)."""
+        if self.language.rejects(sentence):
+            self.drifted = True
+            log.warning("agent.language.sentence_dropped", chars=len(sentence))
+            return
+        if self.regenerated and sentence in self.spoken:
+            return  # the regenerated reply restarting with a sentence already spoken
+        await self._emit(sentence)
+
     async def _handle(self, event: LLMEvent, splitter: SentenceSplitter) -> Done | None:
         if isinstance(event, TextDelta):
             for sentence in splitter.push(event.text):
-                await self._emit(sentence)
+                await self._emit_checked(sentence)
         elif isinstance(event, Done):
             return event
         return None
@@ -413,6 +446,12 @@ async def _close(stream: AsyncIterator[LLMEvent]) -> None:
 #   the judge. The cost is losing a correct paraphrase or a follow-up
 #   question in that case; the tools' sentences are short, true and say
 #   what did not happen. No summary request is made then, saving a round.
+# - Language guard: a CJK sentence from a non-CJK persona is dropped as it
+#   streams (it must never reach TTS), and a final reply in which that
+#   happened is regenerated once with the language rule repeated in the
+#   system prompt; the drifted reply is not added to the history. A reply
+#   that also calls tools is not regenerated (its calls still run); its
+#   CJK text is only dropped.
 # - The tool list is re-selected every round with the tools already used
 #   pinned, so a chain keeps its tools while each round stays short.
 # - Memory failures are logged with a traceback and the turn continues: a
