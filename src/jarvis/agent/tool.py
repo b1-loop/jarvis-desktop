@@ -27,6 +27,7 @@ from jarvis.core.events import EventBus, ToolCallFinished, ToolCallStarted
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 from jarvis.utils.timing import Clock, SystemClock
+from jarvis.vision.screen import ScreenReaderProtocol
 
 log = get_logger(__name__)
 
@@ -152,6 +153,7 @@ class ToolContext:
         clock: Time source; a fake in tests.
         platform: OS facade, ``None`` in text-only runs without a backend.
         memory: Long-term memory, ``None`` until the memory step lands.
+        vision: Screen understanding, ``None`` when it is not wired in.
     """
 
     settings: Settings
@@ -160,6 +162,7 @@ class ToolContext:
     clock: Clock = field(default_factory=SystemClock)
     platform: PlatformFacade | None = None
     memory: MemoryFacade | None = None
+    vision: ScreenReaderProtocol | None = None
 
 
 class Tool[InputT: BaseModel](ABC):

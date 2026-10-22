@@ -133,6 +133,9 @@ convention = "google"
 # Optional-extra parsers are imported inside the functions that need them.
 "src/jarvis/integrations/documents.py" = ["PLC0415"]
 "src/jarvis/integrations/youtube.py" = ["PLC0415"]
+"src/jarvis/vision/imaging.py" = ["PLC0415"] # Pillow comes with the desktop extra
+# Test images: optional Pillow import, seeded noise that is not cryptographic.
+"tests/vision/fakes.py" = ["PLC0415", "S311"]
 
 [tool.ruff.lint.pylint]
 max-statements = 30   # Clean Code: functions under 30 lines

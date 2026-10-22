@@ -201,6 +201,19 @@ class Settings(BaseSettings):
         """An empty ``JARVIS_WEB_USER_AGENT=`` line keeps the default."""
         return DEFAULT_USER_AGENT if value == "" else value
 
+    # Vision (step 11)
+    vision_enabled: bool = True
+    vision_max_long_edge: int = Field(default=1920, ge=256, le=8000)
+    vision_max_image_bytes: int = Field(default=5_000_000, ge=100_000)
+    vision_save_screenshots: bool = True
+    ollama_vision_model: str | None = None
+
+    @field_validator("ollama_vision_model", mode="before")
+    @classmethod
+    def _empty_vision_model_is_none(cls, value: object) -> object:
+        """An empty ``JARVIS_OLLAMA_VISION_MODEL=`` line means Ollama has no vision model."""
+        return None if value == "" else value
+
 
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can
@@ -215,3 +228,8 @@ class Settings(BaseSettings):
 #   option that runs locally but is not the fully offline LOCAL mode (it
 #   still pairs with faster-whisper and edge-tts). The default Ollama model
 #   is a small tool-capable one so tool calling works out of the box.
+# - Vision: 1920 px on the long edge is the 1080p class the Claude docs name
+#   as the cost/quality balance for screenshots (the high-resolution tier
+#   caps at 2576 px and downscales anything larger). The byte budget is
+#   measured on the base64 text, which is how providers count, and 5 MB is
+#   the strictest per-image limit across the Claude platforms. ADR-0016.
