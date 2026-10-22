@@ -43,6 +43,7 @@ from jarvis.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from jarvis.config import Settings
+    from jarvis.integrations.consent import ConsentNotifier
     from jarvis.integrations.tokens import TokenStore
 
 log = get_logger(__name__)
@@ -173,6 +174,8 @@ def build_integration_services(
     *,
     token_store: TokenStore | None = None,
     transcript_fetcher: TranscriptFetcher | None = None,
+    interactive_sign_in: bool = False,
+    consent_notifier: ConsentNotifier | None = None,
 ) -> IntegrationServices:
     """Assemble the whole bundle for the composition root in one call.
 
@@ -184,8 +187,17 @@ def build_integration_services(
         token_store: OAuth persistence; defaults to ``data_dir / "tokens"``.
         transcript_fetcher: Caption source; defaults to the real
             ``youtube-transcript-api`` fetcher (imported lazily on first use).
+        interactive_sign_in: Allow browser / device-code consent (a terminal
+            session only); see :class:`IntegrationFactory`.
+        consent_notifier: Shown the first consent error of each sign-in.
     """
-    factory = IntegrationFactory(settings, http, token_store)
+    factory = IntegrationFactory(
+        settings,
+        http,
+        token_store,
+        interactive_sign_in=interactive_sign_in,
+        consent_notifier=consent_notifier,
+    )
     return IntegrationServices(
         email=_frozen(factory.email()),
         calendar=_frozen(factory.calendar()),

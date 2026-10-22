@@ -66,7 +66,10 @@ scheduling. No native thread ever takes the GIL.
 
 Integrations (Gmail, Outlook, Google Calendar, Slack, Discord, Teams,
 Spotify, Home Assistant) are implemented against their real APIs and need
-your own credentials; without them the stub providers answer.
+your own credentials, connected once from a terminal (see
+[Connect your accounts](#connect-your-accounts)); without them Jarvis says
+the integration isn't configured, and `JARVIS_DEMO_INTEGRATIONS=true` serves
+the clearly named stub providers' sample data instead.
 
 ## Architecture
 
@@ -227,6 +230,142 @@ chains. Set `JARVIS_LLM_PROVIDER=anthropic` and `ANTHROPIC_API_KEY=...` in
 macOS and Linux: the OS layer sits behind the `Platform` interface but only
 the Windows backend exists, and the native audio build currently fetches
 the Windows ONNX Runtime. `--text-only` runs anywhere.
+
+## Connect your accounts
+
+Gmail, Google Calendar, Outlook, Teams and Discord use your own app
+registrations and your own sign-in. You set each one up once and connect it
+once, **in a terminal**; afterwards the desktop app (started from the
+shortcut, no console) uses the stored tokens silently and renews them on
+its own.
+
+The desktop app and voice mode never open a sign-in themselves: a browser
+window appearing from a hidden process, or a Microsoft code written to the
+log, is a sign-in nobody can finish. When an account is not connected (or
+its sign-in has expired), Jarvis says so instead, for example "Google isn't
+connected yet; run `uv run python scripts/connect_accounts.py google`", and
+shows one notification. Only `uv run jarvis --text-only` may still start a
+sign-in in its own terminal.
+
+Where things live (all git-ignored, never committed):
+
+| What | Where |
+| --- | --- |
+| Settings (`GOOGLE_CLIENT_SECRETS_FILE`, `MS_CLIENT_ID`, `MS_TENANT_ID`, `JARVIS_TEAMS_ENABLED`, `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`) | `.env` in the checkout |
+| Google OAuth client file | `data\google_client.json` |
+| Stored sign-ins and the last error per service | `data\tokens\` |
+
+The commands, run from the checkout (`uv run jarvis connect ...` does the
+same):
+
+```powershell
+uv run python scripts/connect_accounts.py google              # Gmail + Google Calendar
+uv run python scripts/connect_accounts.py microsoft           # Outlook mail + calendar
+uv run python scripts/connect_accounts.py microsoft --teams   # ... plus Teams chats (work/school accounts)
+uv run python scripts/connect_accounts.py discord             # check the bot setup
+uv run python scripts/connect_accounts.py status              # configured / connected / expiry / last error
+uv run python scripts/connect_accounts.py disconnect google   # forget a stored sign-in
+```
+
+`google` and `microsoft` accept `--force` to sign in again from scratch.
+Each command ends with a check (one cheap API call per product) and says
+what worked and what to fix. Nothing prints a token or a secret; account
+names are shown shortened (`bo****@gmail.com`). If Jarvis is running while
+you connect, quit it from the tray and start it again.
+
+### Google (Gmail and Google Calendar)
+
+All steps are in the [Google Cloud Console](https://console.cloud.google.com/).
+Google renames menu items now and then; the sections below are named as
+they appear at the time of writing.
+
+1. **Create a project.** Open the project picker at the top of the console
+   and create a new project (any name, for example "Jarvis").
+2. **Enable the two APIs.** In *APIs & Services > Library*, search for
+   **Gmail API** and enable it, then **Google Calendar API** and enable it.
+3. **Configure consent** (the *Google Auth Platform*, formerly "OAuth
+   consent screen"). Start the configuration, give the app a name and your
+   address as the support email, choose the **External** audience, add a
+   contact address and finish.
+4. **Add yourself as a test user.** In the *Audience* section, under test
+   users, add the Google address you will connect. While the app is in
+   testing, only test users can sign in.
+5. **Create the OAuth client.** In the *Clients* section, create a client
+   with application type **Desktop app**. Download its JSON and save it as
+   `data\google_client.json` in the checkout. (A *Web application* client
+   or a service-account key does not work; `connect_accounts.py google`
+   tells you if you picked one.)
+6. **Point Jarvis at it.** In `.env`:
+   `GOOGLE_CLIENT_SECRETS_FILE=data\google_client.json`
+7. **Connect:** `uv run python scripts/connect_accounts.py google`. Your
+   browser opens Google's consent page. Pick the account, allow every
+   permission (read mail, create and send reply drafts, read calendars,
+   create events) and continue past the "Google hasn't verified this app"
+   warning: it is your own app.
+
+Good to know: Google expires refresh tokens after seven days for apps whose
+publishing status is *Testing* and that use Gmail scopes. When that happens
+Jarvis says the Google sign-in has expired; run the connect command again,
+or set the app's publishing status to production in the console (you keep
+seeing the unverified-app warning at sign-in, which is expected for a
+personal app).
+
+### Microsoft (Outlook, optionally Teams)
+
+All steps are in the [Microsoft Entra admin center](https://entra.microsoft.com/)
+(the same pages exist in the Azure portal), signed in with an account that
+may register applications.
+
+1. **Register the app.** *App registrations > New registration*. Any name;
+   for supported account types choose the option for **accounts in any
+   organisational directory and personal Microsoft accounts**. Leave the
+   redirect URI empty and register.
+2. **Copy the client id.** From the app's *Overview*, copy the
+   **Application (client) ID** into `.env` as `MS_CLIENT_ID=...`.
+3. **Allow the device-code sign-in.** Under *Authentication*, set **Allow
+   public client flows** to **Yes** and save. Jarvis signs in with a
+   device code and has no redirect URI or client secret.
+4. **Add permissions.** *API permissions > Add a permission > Microsoft
+   Graph > Delegated permissions*: **Mail.ReadWrite**, **Mail.Send** and
+   **Calendars.ReadWrite**. For Teams also **Chat.Read** and
+   **ChatMessage.Send**. On a work or school tenant an administrator may
+   have to grant consent for the organisation on the same page.
+5. **Choose the tenant.** In `.env`, `MS_TENANT_ID=common` for a personal
+   account (outlook.com, hotmail.com, live.com) or mixed use; for a work
+   or school account only, the directory (tenant) ID from the Overview.
+6. **Teams (optional).** Personal Microsoft accounts cannot use the Teams
+   chat API, so Teams is off by default. With a work or school account set
+   `JARVIS_TEAMS_ENABLED=true` in `.env` and connect with `--teams`.
+7. **Connect:** `uv run python scripts/connect_accounts.py microsoft`
+   (add `--teams` for Teams). The command shows a short code and a URL in a
+   box, copies the code to the clipboard and opens the page; enter the
+   code, sign in and accept the permissions. The check reads your inbox
+   and calendar list (and chats with `--teams`).
+
+### Discord
+
+Discord uses a bot token from `.env`; there is no browser sign-in. The
+[Developer Portal](https://discord.com/developers/applications) has
+everything:
+
+1. **Create an application** (*New Application*, any name).
+2. **Get the bot token.** On the *Bot* page, reset the token and copy it
+   into `.env` as `DISCORD_BOT_TOKEN=...`. It is shown once; it is not the
+   Application ID, the Public Key or the OAuth2 client secret.
+3. **Turn on the Message Content intent** on the same page, under
+   *Privileged Gateway Intents*, and save. Without it Discord returns
+   messages with empty text.
+4. **Invite the bot.** *OAuth2 > URL Generator*: tick the **bot** scope,
+   then the bot permissions **View Channels**, **Read Message History** and
+   **Send Messages**. Open the generated URL, pick your server and
+   authorise (you need the Manage Server permission there).
+5. **Copy the server id.** In Discord, *User Settings > Advanced >
+   Developer Mode* on; right-click the server icon, *Copy Server ID*, and
+   put it in `.env` as `DISCORD_GUILD_ID=...`.
+6. **Check:** `uv run python scripts/connect_accounts.py discord`. It
+   reports the bot's name, the intent, server membership, the bot's
+   permissions and which text channels it can read, with the fix for
+   anything that fails.
 
 ## Using Jarvis
 

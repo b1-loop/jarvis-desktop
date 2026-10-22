@@ -53,6 +53,24 @@ class AuthError(IntegrationError):
     """Credentials are missing, expired, revoked or lack a required scope."""
 
 
+class ConsentRequiredError(AuthError):
+    """Signing in needs the user, but this session cannot ask them.
+
+    Raised by a non-interactive token source (the windowless app, voice
+    mode) instead of opening a browser or printing a device code nobody
+    would see. The message is the remedy, phrased to be read aloud.
+
+    Attributes:
+        reason: Why consent is needed (no token yet, refresh rejected), for logs.
+        remedy: What the user should do, e.g. the connect command to run.
+    """
+
+    def __init__(self, provider: str, *, reason: str, remedy: str) -> None:
+        self.reason = reason
+        self.remedy = remedy
+        super().__init__(provider, remedy)
+
+
 class RateLimitedError(IntegrationError):
     """The service asked us to slow down.
 

@@ -59,12 +59,15 @@ from jarvis.core.proactive_wiring import (
 )
 from jarvis.core.state_machine import StateMachine
 from jarvis.core.ui_wiring import AppControls, MicrophoneSwitch, build_dashboard, build_tray
+from jarvis.integrations.base import ConsentRequiredError
+from jarvis.integrations.consent import ConsentNotifier
 from jarvis.integrations.services import IntegrationServices, build_integration_services
 from jarvis.llm.base import LLMClient
 from jarvis.llm.ollama_embeddings import OllamaEmbedder
 from jarvis.memory import ChromaVectorStore, InMemoryVectorStore, MemoryManager, SqliteStore
 from jarvis.memory.vector_store import VectorStore
 from jarvis.os_integration.base import Platform
+from jarvis.os_integration.errors import PlatformError
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.os_integration.windows import create_windows_platform
 from jarvis.proactive.routines import RoutineRegistry, RoutineRunner
@@ -83,6 +86,7 @@ MEMORY_DB_FILENAME: Final = "memory.sqlite3"
 CHROMA_SUBDIR: Final = "chroma"
 INTEGRATIONS_TIMEOUT: Final = httpx.Timeout(30.0, connect=10.0)
 BATTERY_TOOL_MODULE: Final = "jarvis.tools.battery_status"
+CONSENT_NOTIFICATION_TITLE: Final = "Jarvis: account not connected"
 TOOL_VECTOR_CACHE: Final = Path("cache") / "tool_embeddings.json"
 """Embedded tool descriptions, under ``data_dir``, so a restart does not re-embed them."""
 MS_PER_SECOND: Final = 1000
@@ -152,6 +156,11 @@ class Overrides:
 
     Used by tests (fake LLM, scripted input) and by front ends that bring
     their own input and output (``front_end``, the voice pipeline).
+
+    ``interactive_sign_in`` is the one launch choice here rather than a
+    component: only a terminal session may open a browser or print a device
+    code for Google or Microsoft consent, so the default is ``False`` and
+    the console ``--text-only`` launch alone turns it on.
     """
 
     source: InputSource | None = None
@@ -161,6 +170,7 @@ class Overrides:
     vectors: VectorStore | None = None
     registry: ToolRegistry | None = None
     front_end: FrontEndBuilder | None = None
+    interactive_sign_in: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,7 +258,9 @@ async def _assemble(settings: Settings, overrides: Overrides, stack: AsyncExitSt
     llm = overrides.llm or build_llm(settings, stack)
     registry = overrides.registry or build_registry()
     platform = overrides.platform or build_platform(stack)
-    services = build_tool_services(settings, stack, platform, memory)
+    services = build_tool_services(
+        settings, stack, platform, memory, interactive_sign_in=overrides.interactive_sign_in
+    )
     state = StateMachine(bus)
     request = FrontEndRequest(settings, bus, state, platform, llm, stack)
     front = await (overrides.front_end or _text_front_end(overrides))(request)
@@ -381,14 +393,41 @@ def build_platform(stack: AsyncExitStack) -> Platform:
     return platform
 
 
-def build_integrations(settings: Settings, stack: AsyncExitStack) -> IntegrationServices:
+def build_integrations(
+    settings: Settings,
+    stack: AsyncExitStack,
+    *,
+    platform: Platform | None = None,
+    interactive_sign_in: bool = False,
+) -> IntegrationServices:
     """External services for the tools: real providers or ``Stub*`` fallbacks.
 
     Also carries web search and YouTube transcripts for the web tools.
+    Without ``interactive_sign_in`` an account that needs consent raises
+    "run connect_accounts.py" instead of opening a flow, and the first such
+    error per account is shown as a notification on ``platform``.
     """
     http = httpx.AsyncClient(timeout=INTEGRATIONS_TIMEOUT)
     stack.push_async_callback(http.aclose)
-    return build_integration_services(settings, http)
+    notifier = None
+    if not interactive_sign_in and platform is not None:
+        notifier = consent_notifier(platform)
+    return build_integration_services(
+        settings, http, interactive_sign_in=interactive_sign_in, consent_notifier=notifier
+    )
+
+
+def consent_notifier(platform: Platform) -> ConsentNotifier:
+    """Shows "Google isn't connected yet; run ..." as a system notification."""
+
+    async def notify(error: ConsentRequiredError) -> None:
+        try:
+            await platform.notify(CONSENT_NOTIFICATION_TITLE, error.remedy)
+        except PlatformError:
+            # The spoken answer still carries the remedy; a lost balloon is not fatal.
+            log.exception("integrations.consent.notify_failed", provider=error.provider)
+
+    return notify
 
 
 def build_jobs(stack: AsyncExitStack) -> BackgroundJobs:
@@ -410,13 +449,21 @@ def build_vision(settings: Settings, platform: Platform) -> ScreenReaderProtocol
 
 
 def build_tool_services(
-    settings: Settings, stack: AsyncExitStack, platform: Platform, memory: MemoryManager
+    settings: Settings,
+    stack: AsyncExitStack,
+    platform: Platform,
+    memory: MemoryManager,
+    *,
+    interactive_sign_in: bool = False,
 ) -> ToolServices:
     """Everything tools reach through their context, built once."""
+    integrations = build_integrations(
+        settings, stack, platform=platform, interactive_sign_in=interactive_sign_in
+    )
     return ToolServices(
         platform=platform,
         memory=memory,
-        integrations=build_integrations(settings, stack),
+        integrations=integrations,
         jobs=build_jobs(stack),
         vision=build_vision(settings, platform),
     )
@@ -594,6 +641,11 @@ async def build_ui(
 #   cannot see images or has no key; the rest of the assistant is unaffected.
 # - The battery probe is imported by name because psutil is an optional
 #   extra; without it the battery trigger is skipped with a warning.
+# - Account sign-in is non-interactive unless Overrides says otherwise: the
+#   voice front end and the windowless app have no terminal to show a
+#   browser prompt or device code in, so they report "run
+#   connect_accounts.py" (spoken, plus one notification per account) and
+#   only the console --text-only launch may start a consent flow.
 # - Speech providers (providers.build_stt/build_tts) are built only by the
 #   voice front end: --text-only must not need jarvis_audio, which edge-tts
 #   decoding requires.

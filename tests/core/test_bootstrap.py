@@ -12,6 +12,7 @@ from jarvis.agent.tool_selection import RelevanceToolSelector
 from jarvis.config import Settings
 from jarvis.core import bootstrap
 from jarvis.core.bootstrap import (
+    CONSENT_NOTIFICATION_TITLE,
     MEMORY_DB_FILENAME,
     Overrides,
     build_application,
@@ -21,12 +22,15 @@ from jarvis.core.bootstrap import (
     build_platform,
     build_registry,
     build_vector_store,
+    consent_notifier,
 )
 from jarvis.core.events import EventBus
+from jarvis.integrations.base import ConsentRequiredError
 from jarvis.integrations.stubs import StubCalendarProvider, StubEmailProvider
 from jarvis.llm.ollama_client import OllamaClient
 from jarvis.memory import InMemoryVectorStore
 from jarvis.memory.errors import MemoryStoreError
+from jarvis.os_integration.errors import PlatformError
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.proactive.scheduler import Scheduler
 from jarvis.utils.errors import ConfigError, NativeUnavailableError
@@ -184,6 +188,44 @@ async def test_integrations_are_empty_without_accounts(
 
     assert providers.email == providers.calendar == ()
     assert providers.music == providers.chat == providers.smart_home == ()
+
+
+async def test_voice_and_background_sign_in_is_non_interactive_and_notifies_once(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    # A Google account configured but never connected: the windowless app
+    # must answer "run connect_accounts.py", never open a browser.
+    (tmp_path / "client.json").write_text("{}", encoding="utf-8")
+    settings = make_settings(data_dir=tmp_path, google_client_secrets_file=tmp_path / "client.json")
+    platform = StubPlatform()
+    async with AsyncExitStack() as stack:
+        services = build_integrations(settings, stack, platform=platform)
+        gmail = services.email[0]
+        for _ in range(2):
+            with pytest.raises(ConsentRequiredError, match=r"connect_accounts\.py google"):
+                await gmail.list_unread()
+
+    assert platform.notifications == [
+        (
+            CONSENT_NOTIFICATION_TITLE,
+            "Google isn't connected yet; run "
+            "`uv run python scripts/connect_accounts.py google` in a terminal.",
+        )
+    ]
+
+
+async def test_a_failing_notification_does_not_hide_the_consent_error() -> None:
+    class Refusing(StubPlatform):
+        async def notify(self, title: str, message: str) -> None:
+            raise PlatformError("no notification area")
+
+    error = ConsentRequiredError("google", reason="no stored token", remedy="connect it")
+
+    await consent_notifier(Refusing())(error)  # logged, not raised
+
+
+def test_overrides_default_to_non_interactive_sign_in() -> None:
+    assert Overrides().interactive_sign_in is False
 
 
 async def test_integrations_serve_stubs_only_in_demo_mode(

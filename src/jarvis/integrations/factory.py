@@ -27,6 +27,7 @@ from jarvis.integrations.base import (
     Provider,
     SmartHomeProvider,
 )
+from jarvis.integrations.consent import ConsentNotifier, NotifyOnConsent
 from jarvis.integrations.stubs import (
     StubCalendarProvider,
     StubChatProvider,
@@ -53,14 +54,28 @@ class IntegrationFactory:
         http: Shared client injected into every REST provider.
         token_store: Persistence for OAuth state; defaults to JSON files under
             ``settings.data_dir / "tokens"``.
+        interactive_sign_in: Whether Google and Microsoft may start a consent
+            flow (browser, device code). Off by default: only a terminal
+            session can show one; elsewhere consent raises
+            :class:`~jarvis.integrations.base.ConsentRequiredError`.
+        consent_notifier: Told about the first consent error of each sign-in
+            (the desktop app shows a tray notification).
     """
 
     def __init__(
-        self, settings: Settings, http: httpx.AsyncClient, token_store: TokenStore | None = None
+        self,
+        settings: Settings,
+        http: httpx.AsyncClient,
+        token_store: TokenStore | None = None,
+        *,
+        interactive_sign_in: bool = False,
+        consent_notifier: ConsentNotifier | None = None,
     ) -> None:
         self._settings = settings
         self._http = http
         self._store = token_store or FileTokenStore(settings.data_dir / TOKENS_SUBDIR)
+        self._interactive = interactive_sign_in
+        self._consent_notifier = consent_notifier
         self._google_auth: TokenSource | None = None
         self._microsoft_auth: TokenSource | None = None
 
@@ -115,7 +130,7 @@ class IntegrationFactory:
             from jarvis.integrations.discord import DiscordProvider
 
             providers.append(DiscordProvider.from_settings(self._settings, self._http))
-        if self._settings.ms_client_id is not None:
+        if self._settings.ms_client_id is not None and self._settings.teams_enabled:
             from jarvis.integrations.teams import TeamsProvider
 
             providers.append(TeamsProvider(self._http, self._microsoft()))
@@ -136,24 +151,50 @@ class IntegrationFactory:
     def _google(self) -> TokenSource:
         """One Google sign-in covering Gmail and Calendar."""
         if self._google_auth is None:
-            from jarvis.integrations.gmail import GMAIL_SCOPES
             from jarvis.integrations.google_auth import GoogleAuth
-            from jarvis.integrations.google_calendar import CALENDAR_SCOPES
 
-            scopes = (*GMAIL_SCOPES, *CALENDAR_SCOPES)
-            self._google_auth = GoogleAuth.from_settings(self._settings, scopes, self._store)
+            auth = GoogleAuth.from_settings(
+                self._settings, google_scopes(), self._store, interactive=self._interactive
+            )
+            self._google_auth = self._reported(auth)
         return self._google_auth
 
     def _microsoft(self) -> TokenSource:
-        """One Microsoft sign-in covering Outlook and Teams."""
+        """One Microsoft sign-in covering Outlook and, when enabled, Teams."""
         if self._microsoft_auth is None:
             from jarvis.integrations.microsoft_graph import MicrosoftAuth
-            from jarvis.integrations.outlook import OUTLOOK_SCOPES
-            from jarvis.integrations.teams import TEAMS_SCOPES
 
-            scopes = (*OUTLOOK_SCOPES, *TEAMS_SCOPES)
-            self._microsoft_auth = MicrosoftAuth.from_settings(self._settings, scopes, self._store)
+            scopes = microsoft_scopes(teams=self._settings.teams_enabled)
+            auth = MicrosoftAuth.from_settings(
+                self._settings, scopes, self._store, interactive=self._interactive
+            )
+            self._microsoft_auth = self._reported(auth)
         return self._microsoft_auth
+
+    def _reported(self, auth: TokenSource) -> TokenSource:
+        """``auth`` wrapped so its first consent error reaches the notifier, if any."""
+        if self._consent_notifier is None:
+            return auth
+        return NotifyOnConsent(auth, self._consent_notifier)
+
+
+def google_scopes() -> tuple[str, ...]:
+    """Exactly what the Gmail and Calendar providers need, in one consent."""
+    from jarvis.integrations.gmail import GMAIL_SCOPES
+    from jarvis.integrations.google_calendar import CALENDAR_SCOPES
+
+    return (*GMAIL_SCOPES, *CALENDAR_SCOPES)
+
+
+def microsoft_scopes(*, teams: bool) -> tuple[str, ...]:
+    """Outlook's scopes, plus the Teams chat scopes when ``teams`` is set."""
+    from jarvis.integrations.outlook import OUTLOOK_SCOPES
+
+    if not teams:
+        return OUTLOOK_SCOPES
+    from jarvis.integrations.teams import TEAMS_SCOPES
+
+    return (*OUTLOOK_SCOPES, *TEAMS_SCOPES)
 
 
 def _chosen[P: Provider](
@@ -222,3 +263,10 @@ def build_smart_home_providers(
 #   need a single service and accept a possible second consent prompt.
 # - Stub selection is logged at INFO with stub=True so a run without keys is
 #   visibly a demo run, never a silent fake.
+# - Sign-in is non-interactive unless the caller says otherwise: forgetting
+#   the flag in a new front end then costs a "run connect_accounts.py"
+#   message, not a browser window opened by an invisible process.
+# - Teams is opt-in (JARVIS_TEAMS_ENABLED) because its chat scopes are only
+#   grantable by work or school accounts; google_scopes / microsoft_scopes
+#   are shared with connect_accounts.py so the terminal sign-in requests
+#   exactly what the providers will later ask for silently.
