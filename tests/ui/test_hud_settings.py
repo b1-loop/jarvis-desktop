@@ -16,6 +16,7 @@ from jarvis.ui.hud_settings import (
     START_WITH_WINDOWS,
     AppearanceSwitch,
     Apply,
+    SettingRejectedError,
     SettingsController,
     apply_mode,
     from_text,
@@ -79,6 +80,7 @@ def test_live_and_restart_settings_are_classified() -> None:
     restart = {d.key for d in SETTING_DEFS if d.apply is Apply.RESTART}
 
     assert {"overlay_size", "overlay_theme", "overlay_intensity", "tts_voice"} <= live
+    assert "overlay_accent" in live
     assert {"speak_replies", "wake_word_threshold"} <= live
     assert restart == {"llm_provider", "ollama_model", "stt_language", "wake_word_enabled"}
     assert apply_mode("llm_provider") is Apply.RESTART
@@ -239,20 +241,112 @@ def test_with_current_keeps_a_value_set_by_hand() -> None:
     assert with_current(EDGE_VOICES, "en-GB-RyanNeural") == list(EDGE_VOICES)
 
 
-def test_appearance_switch_sends_all_three_values(make_settings: MakeSettings) -> None:
-    calls: list[tuple[OverlayTheme, OverlayIntensity, OverlaySize]] = []
+class AppearanceView:
+    def __init__(self) -> None:
+        self.calls: list[tuple[OverlayTheme, OverlayIntensity, OverlaySize, str]] = []
 
-    class View:
-        def set_appearance(
-            self, theme: OverlayTheme, intensity: OverlayIntensity, size: OverlaySize
-        ) -> None:
-            calls.append((theme, intensity, size))
+    def set_appearance(
+        self, theme: OverlayTheme, intensity: OverlayIntensity, size: OverlaySize, accent: str
+    ) -> None:
+        self.calls.append((theme, intensity, size, accent))
 
-    switch = AppearanceSwitch(View(), make_settings())
+
+def test_appearance_switch_sends_all_four_values(make_settings: MakeSettings) -> None:
+    view = AppearanceView()
+    switch = AppearanceSwitch(view, make_settings(overlay_accent="#FF3B30"))
     switch.set_theme("amber")
     switch.set_size("compact")
 
-    assert calls[-1] == (OverlayTheme.AMBER, OverlayIntensity.NORMAL, OverlaySize.COMPACT)
+    assert view.calls[-1] == (
+        OverlayTheme.AMBER,
+        OverlayIntensity.NORMAL,
+        OverlaySize.COMPACT,
+        "#ff3b30",
+    )
+
+    switch.set_accent("#40ff8c")
+    switch.set_theme("custom")
+
+    assert view.calls[-1][0] is OverlayTheme.CUSTOM
+    assert view.calls[-1][3] == "#40ff8c"
+
+
+def test_the_theme_row_offers_every_theme_and_a_colour_picker(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    ctrl, _view, _store = controller(make_settings(), tmp_path)
+
+    rows = {item.key: item for item in ctrl.page().items}
+
+    assert [value for value, _label in rows["overlay_theme"].choices] == [
+        theme.value for theme in OverlayTheme
+    ]
+    assert rows["overlay_accent"].kind is SettingKind.COLOUR
+    assert rows["overlay_accent"].value == "#4dd9ff"
+    assert rows["overlay_accent"].to_native()["kind"] == "colour"
+
+
+async def test_picking_a_colour_switches_to_the_custom_theme_live(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    view = AppearanceView()
+    switch = AppearanceSwitch(view, make_settings())
+    appliers = {"overlay_theme": switch.set_theme, "overlay_accent": switch.set_accent}
+    ctrl, page, store = controller(make_settings(), tmp_path, appliers=appliers)
+
+    await ctrl.change("overlay_accent", "FF3B30")
+
+    assert store.load() == {"overlay_accent": "#ff3b30", "overlay_theme": "custom"}
+    assert view.calls[-1][0] is OverlayTheme.CUSTOM
+    assert view.calls[-1][3] == "#ff3b30"
+    assert page.item("overlay_theme").value == "custom"
+    assert page.item("overlay_accent").value == "#ff3b30"
+
+
+async def test_choosing_a_preset_keeps_the_custom_accent(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    ctrl, page, store = controller(make_settings(overlay_accent="#ff3b30"), tmp_path)
+
+    await ctrl.change("overlay_theme", "violet")
+
+    assert store.load() == {"overlay_theme": "violet"}
+    assert page.item("overlay_accent").value == "#ff3b30"
+
+
+@pytest.mark.parametrize("bad", ["red", "#ff3b3", "#gg0000", ""])
+async def test_an_invalid_accent_is_rejected_and_not_saved(
+    make_settings: MakeSettings, tmp_path: Path, bad: str
+) -> None:
+    ctrl, page, store = controller(make_settings(), tmp_path)
+
+    await ctrl.change("overlay_accent", bad)
+
+    assert store.load() == {}
+    assert page.item("overlay_accent").value == "#4dd9ff"
+    assert page.item("overlay_theme").value == "cyan"
+    assert "not a valid value" in page.pages[-1].notice
+
+
+async def test_set_colour_validates_saves_and_applies_like_the_page(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    view = AppearanceView()
+    switch = AppearanceSwitch(view, make_settings())
+    appliers = {"overlay_theme": switch.set_theme, "overlay_accent": switch.set_accent}
+    ctrl, page, store = controller(make_settings(), tmp_path, appliers=appliers)
+
+    await ctrl.set_colour("custom", "#FF8A1F")
+    await ctrl.set_colour("red")
+
+    assert store.load() == {"overlay_accent": "#ff8a1f", "overlay_theme": "red"}
+    assert view.calls[-1][0] is OverlayTheme.RED
+    assert page.item("overlay_theme").value == "red"
+    with pytest.raises(SettingRejectedError):
+        await ctrl.set_colour("purple")
+    with pytest.raises(SettingRejectedError):
+        await ctrl.set_colour("custom", "orange")
+    assert store.load()["overlay_theme"] == "red"
 
 
 async def test_ollama_models_are_listed_from_api_tags() -> None:

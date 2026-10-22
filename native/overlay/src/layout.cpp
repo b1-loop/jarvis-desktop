@@ -46,44 +46,7 @@ float mix(float from, float to, float t) noexcept {
     return from + ((to - from) * t);
 }
 
-constexpr Rgba rgba(float r, float g, float b, float a = 1.0F) noexcept {
-    return Rgba{.r = r, .g = g, .b = b, .a = a};
-}
-
-/// The cyan HUD in warm light: same structure, amber hues.
-Theme amberTheme() noexcept {
-    Theme theme;
-    theme.background = rgba(0.08F, 0.04F, 0.01F);
-    theme.text = rgba(1.00F, 0.95F, 0.85F);
-    theme.mutedText = rgba(0.85F, 0.65F, 0.40F);
-    theme.idle = rgba(0.80F, 0.50F, 0.18F);
-    theme.listening = rgba(1.00F, 0.78F, 0.30F);
-    theme.thinking = rgba(1.00F, 0.62F, 0.35F);
-    theme.speaking = rgba(1.00F, 0.88F, 0.45F);
-    theme.wakeFlash = rgba(1.00F, 0.97F, 0.85F);
-    theme.accent = rgba(1.00F, 0.68F, 0.22F);
-    theme.plate = rgba(0.10F, 0.05F, 0.01F, 0.55F);
-    return theme;
-}
-
 }  // namespace
-
-Theme themeFor(ThemeName name) noexcept {
-    return name == ThemeName::Amber ? amberTheme() : Theme{};
-}
-
-std::string_view toString(ThemeName name) noexcept {
-    return name == ThemeName::Amber ? "amber" : "cyan";
-}
-
-std::optional<ThemeName> parseThemeName(std::string_view name) noexcept {
-    for (const ThemeName candidate : {ThemeName::Cyan, ThemeName::Amber}) {
-        if (toString(candidate) == name) {
-            return candidate;
-        }
-    }
-    return std::nullopt;
-}
 
 Rgba stateColour(const Theme& theme, AssistantState state) noexcept {
     switch (state) {

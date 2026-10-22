@@ -13,6 +13,9 @@ module owns everything else:
   and otherwise flags "applies after restart", then pushes a fresh page.
 * **Lists.** Voices are a curated list; Ollama models are fetched each time
   the page opens (:meth:`SettingsController.refresh`).
+* **Colour.** Picking a custom accent also switches the theme to
+  ``custom`` (a row's ``implies``), and :meth:`SettingsController.set_colour`
+  is the same path for the voice tool ``set_hud_colour`` (ADR-0028).
 """
 
 from __future__ import annotations
@@ -54,6 +57,32 @@ AUTO_MINIMIZE_CHOICES: Final = (
 )
 """Delays offered for ``hud_auto_minimize_seconds``, spelled as ``to_text`` spells floats;
 another value from ``.env`` is still shown (``with_current``)."""
+THEME_CHOICES: Final = (
+    ("cyan", "Cyan"),
+    ("amber", "Amber"),
+    ("red", "Red (Mark)"),
+    ("green", "Green"),
+    ("violet", "Violet"),
+    ("ice", "Ice white"),
+    ("pink", "Pink"),
+    ("custom", "Custom colour"),
+)
+"""Every ``OverlayTheme``, in the order the page lists them."""
+CUSTOM_THEME: Final = "custom"
+
+
+class SettingRejectedError(JarvisError):
+    """A value for a setting did not validate.
+
+    Attributes:
+        key: The setting.
+        value: The rejected text.
+    """
+
+    def __init__(self, key: str, value: str) -> None:
+        super().__init__(f"{value!r} is not a valid value for {key}")
+        self.key = key
+        self.value = value
 
 
 class Apply(StrEnum):
@@ -76,6 +105,8 @@ class SettingDef:
     maximum: float = 1.0
     step: float = 0.0
     static_choices: tuple[tuple[str, str], ...] = ()
+    implies: tuple[tuple[str, str], ...] = ()
+    """``(key, text)`` edits that follow a change of this row (an accent implies ``custom``)."""
 
 
 SETTING_DEFS: Final[tuple[SettingDef, ...]] = (
@@ -129,7 +160,15 @@ SETTING_DEFS: Final[tuple[SettingDef, ...]] = (
         "OVERLAY",
         SettingKind.CHOICE,
         Apply.LIVE,
-        static_choices=(("cyan", "Cyan"), ("amber", "Amber")),
+        static_choices=THEME_CHOICES,
+    ),
+    SettingDef(
+        "overlay_accent",
+        "Custom colour",
+        "OVERLAY",
+        SettingKind.COLOUR,
+        Apply.LIVE,
+        implies=(("overlay_theme", CUSTOM_THEME),),
     ),
     SettingDef(
         "overlay_intensity",
@@ -189,13 +228,17 @@ class AppearanceView(Protocol):
     """Where appearance changes go (``ui.overlay.Overlay``)."""
 
     def set_appearance(
-        self, theme: OverlayTheme, intensity: OverlayIntensity, size: OverlaySize
+        self,
+        theme: OverlayTheme,
+        intensity: OverlayIntensity,
+        size: OverlaySize,
+        accent: str,
     ) -> None:
-        """Switch palette, richness and size."""
+        """Switch palette (and custom accent), richness and size."""
 
 
 class AppearanceSwitch:
-    """Live appliers for theme, intensity and size: the native call takes all three.
+    """Live appliers for theme, accent, intensity and size: the native call takes all four.
 
     Args:
         view: The overlay.
@@ -205,12 +248,18 @@ class AppearanceSwitch:
     def __init__(self, view: AppearanceView, settings: Settings) -> None:
         self._view = view
         self._theme = OverlayTheme(settings.overlay_theme)
+        self._accent = settings.overlay_accent
         self._intensity = OverlayIntensity(settings.overlay_intensity)
         self._size = OverlaySize(settings.overlay_size)
 
     def set_theme(self, theme: object) -> None:
         """Apply a validated ``overlay_theme``."""
         self._theme = OverlayTheme(str(theme))
+        self._push()
+
+    def set_accent(self, accent: object) -> None:
+        """Apply a validated ``overlay_accent`` (``#rrggbb``)."""
+        self._accent = str(accent)
         self._push()
 
     def set_intensity(self, intensity: object) -> None:
@@ -224,7 +273,7 @@ class AppearanceSwitch:
         self._push()
 
     def _push(self) -> None:
-        self._view.set_appearance(self._theme, self._intensity, self._size)
+        self._view.set_appearance(self._theme, self._intensity, self._size, self._accent)
 
 
 def apply_mode(key: str) -> Apply:
@@ -363,7 +412,37 @@ class SettingsController:
             self.push()
             return
         await self._commit(definition, value)
+        await self._commit_implied(definition)
         self.push()
+
+    async def set_colour(self, theme: str, accent: str | None = None) -> None:
+        """Switch the HUD's palette as if picked on the page: validated, saved, applied.
+
+        The voice tool's way in (``tools/set_hud_colour.py``). With an
+        ``accent`` the custom accent is set first, so ``theme="custom"``
+        shows it.
+
+        Raises:
+            SettingRejectedError: If ``theme`` or ``accent`` is not a valid value.
+        """
+        if accent is not None:
+            await self._commit_text("overlay_accent", accent)
+        await self._commit_text("overlay_theme", theme)
+        self.push()
+
+    async def _commit_text(self, key: str, text: str) -> None:
+        definition = _DEFS_BY_KEY[key]
+        try:
+            value = self._validated(definition, text)
+        except (ValidationError, ValueError) as error:
+            raise SettingRejectedError(key, text) from error
+        await self._commit(definition, value)
+
+    async def _commit_implied(self, definition: SettingDef) -> None:
+        for key, text in definition.implies:
+            if to_text(self._state.values.get(key)) != text:
+                implied = _DEFS_BY_KEY[key]
+                await self._commit(implied, self._validated(implied, text))
 
     def _shown(self, definition: SettingDef) -> bool:
         return definition.key != START_WITH_WINDOWS or self._autostart is not None
@@ -457,6 +536,10 @@ def _jsonable(value: object) -> object:
 # - Values are validated with the same per-field check the startup source
 #   uses (jarvis.user_settings), so what the HUD saves is exactly what the
 #   next start accepts.
+# - A row's ``implies`` keeps the page's two colour controls consistent:
+#   picking a custom colour while a preset is shown would otherwise save an
+#   accent nobody sees. The reverse is deliberately absent; choosing a
+#   preset keeps the accent, so "Custom colour" brings it back.
 # - "Start with Windows" is not persisted: the Startup-folder shortcut is
 #   the state, read back at start (app.autostart), so Explorer and the HUD
 #   can never disagree.

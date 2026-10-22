@@ -13,6 +13,7 @@
 
 #include "jarvis/overlay/effects.hpp"
 #include "jarvis/overlay/layout.hpp"
+#include "jarvis/overlay/palette.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -48,6 +49,9 @@ enum class SettingKind : std::uint8_t {
     Slider,
     /// A button (open the log, restart); has no value.
     Action,
+    /// A colour picked with a hue bar and saturation/value square; the
+    /// value is "#rrggbb".
+    Colour,
 };
 
 /// One choice of a Choice setting.
@@ -95,6 +99,9 @@ struct SettingsPage {
 /// Palette, richness and size, changeable while the HUD runs.
 struct Appearance {
     ThemeName theme{ThemeName::Cyan};
+    /// The accent ThemeName::Custom derives its palette from; kept while a
+    /// preset is shown so switching back to Custom restores it.
+    Rgba accent{kDefaultAccent};
     anim::Intensity intensity{anim::Intensity::Normal};
     PanelSize size{PanelSize::Large};
 

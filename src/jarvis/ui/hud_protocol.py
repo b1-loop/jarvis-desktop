@@ -239,6 +239,8 @@ class SettingKind(StrEnum):
     TOGGLE = "toggle"
     SLIDER = "slider"
     ACTION = "action"
+    COLOUR = "colour"
+    """A colour picker; the value is ``#rrggbb``."""
 
 
 @dataclass(frozen=True, slots=True)

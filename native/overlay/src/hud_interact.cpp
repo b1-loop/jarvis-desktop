@@ -157,7 +157,7 @@ void HudInteraction::drawControl(const InteractFrame& in, HudControl control, Re
     const float radius = rect.width * 0.5F;
     const bool muted = control == HudControl::Mute && in.data.muted;
     const bool danger = control == HudControl::Quit || muted;
-    const Rgba light = danger ? Rgba{.r = 1.0F, .g = 0.45F, .b = 0.35F, .a = 1.0F} : in.accent;
+    const Rgba light = danger ? in.warning : in.accent;
     draw.AddCircleFilled(
         centre, radius, toU32(Rgba{.r = 0.0F, .g = 0.03F, .b = 0.06F, .a = kControlPlate * alpha}));
     const float ring = (hot || held ? kHoverRing : kIdleRing) * alpha;
@@ -258,7 +258,7 @@ void HudInteraction::drawConfirm(const InteractFrame& in, RectF text, RectF yes,
     ImDrawList& draw = *ImGui::GetWindowDrawList();
     const float caption = kCaptionSize * in.scale * in.textScale;
     spacedText(draw, *fonts.display, caption, {text.x, text.y}, kConfirmQuestion, 2.0F * in.scale,
-               withAlpha(Rgba{.r = 1.0F, .g = 0.55F, .b = 0.45F}, in.opacity));
+               withAlpha(in.warning, in.opacity));
     ImGui::PushFont(fonts.display, fontSize);
     ImGui::SetCursorScreenPos({yes.x, yes.y});
     if (ImGui::Button("YES##quit", {yes.width, yes.height})) {
