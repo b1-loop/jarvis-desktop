@@ -13,6 +13,7 @@ Usage::
     uv run python scripts/build_native.py --skip-tests
     uv run python scripts/build_native.py --tidy               # build, test, then clang-tidy
     uv run python scripts/build_native.py --tidy-only --jobs 4 # configure + clang-tidy only
+    uv run python scripts/build_native.py --tidy-only --tidy-changed-since origin/main
 
 Why this is a script and not the package build backend: see
 ``docs/adr/0002-decoupled-native-build.md``.
@@ -36,6 +37,9 @@ ROOT = Path(__file__).resolve().parent.parent
 NATIVE_DIR = ROOT / "native"
 OUTPUT_DIR = ROOT / "src" / "jarvis" / "_native"
 VC_TOOLS_COMPONENT = "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+# Outside native/, the files whose change means every translation unit is
+# linted again rather than only the changed ones.
+FULL_TIDY_TRIGGERS = frozenset({".clang-tidy", "scripts/build_native.py"})
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -44,6 +48,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--preset", default="windows-release", help="CMake preset name")
     parser.add_argument("--clean", action="store_true", help="delete the build tree first")
     parser.add_argument("--skip-tests", action="store_true", help="build only, do not run ctest")
+    add_tidy_arguments(parser)
+    return parser.parse_args(argv)
+
+
+def add_tidy_arguments(parser: argparse.ArgumentParser) -> None:
+    """Options that select what clang-tidy lints and how it is spread out."""
     parser.add_argument(
         "--tidy", action="store_true", help="run clang-tidy over the native sources after building"
     )
@@ -58,7 +68,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.cpu_count() or 1,
         help="clang-tidy processes to run in parallel (default: CPU count)",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--tidy-changed-since",
+        metavar="REF",
+        help="lint only .cpp files changed since REF; everything if a header, CMake file "
+        "or .clang-tidy changed",
+    )
+    parser.add_argument(
+        "--tidy-shard",
+        type=parse_shard,
+        default=(1, 1),
+        metavar="I/N",
+        help="lint only the I-th of N interleaved slices of the files (CI matrix)",
+    )
+
+
+def parse_shard(spec: str) -> tuple[int, int]:
+    """Parse ``I/N`` (1-based) for ``--tidy-shard``."""
+    index_text, _, count_text = spec.partition("/")
+    try:
+        index, count = int(index_text), int(count_text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected I/N, got {spec!r}") from exc
+    if not 1 <= index <= count:
+        raise argparse.ArgumentTypeError(f"shard {index} is outside 1..{count}")
+    return index, count
 
 
 def build_dir(preset: str) -> Path:
@@ -223,16 +257,60 @@ def clang_tidy_command(preset: str, source: Path) -> list[str]:
     ]
 
 
-def run_clang_tidy(runner: CommandRunner, preset: str, jobs: int) -> None:
-    """Lint every native source against the compile database of ``preset``.
+def changed_files(ref: str) -> list[str]:
+    """Repository-relative paths that differ between ``ref`` and ``HEAD``."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", ref, "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=ROOT,
+    )
+    return result.stdout.splitlines()
+
+
+def needs_full_tidy(changed: list[str]) -> bool:
+    """True when a change can alter diagnostics in files it does not touch.
+
+    A header is linted through every translation unit that includes it, and
+    a CMake file, the preset or ``.clang-tidy`` changes flags or checks for
+    all of them; only an edit confined to our ``.cpp`` files is local. A
+    submodule bump (``native/third_party/llama.cpp`` ends in ``.cpp`` too)
+    changes headers every wrapper includes.
+    """
+    return any(name in FULL_TIDY_TRIGGERS or not is_local_change(name) for name in changed)
+
+
+def is_local_change(name: str) -> bool:
+    """True for a path whose change can only affect its own diagnostics."""
+    if not name.startswith("native/"):
+        return True
+    return name.endswith(".cpp") and not name.startswith("native/third_party/")
+
+
+def tidy_sources(changed: list[str] | None, shard: tuple[int, int]) -> list[Path]:
+    """The translation units this run lints.
+
+    ``changed`` is ``None`` for a full run. ``shard`` ``(i, n)`` keeps every
+    n-th file starting at the i-th, so n CI jobs split the work evenly.
+    """
+    sources = native_sources()
+    if changed is not None and not needs_full_tidy(changed):
+        touched = {(ROOT / name).resolve() for name in changed}
+        sources = [source for source in sources if source.resolve() in touched]
+    index, count = shard
+    return sources[index - 1 :: count]
+
+
+def run_clang_tidy(runner: CommandRunner, preset: str, sources: list[Path], jobs: int) -> None:
+    """Lint ``sources`` against the compile database of ``preset``.
 
     Runs inside the MSVC environment so clang-tidy sees the same include
     paths as the compiler. One process per translation unit, ``jobs`` at a
-    time: a single clang-tidy process is single-threaded and took twelve
+    time: a single clang-tidy process is single-threaded and took 42
     minutes for the whole tree in CI. Each file's output is printed as one
     block, and any failing file fails the step after all files ran.
     """
-    sources = native_sources()
     print(f"+ clang-tidy over {len(sources)} files, {jobs} at a time")
     failures: list[int] = []
     with ThreadPoolExecutor(max_workers=jobs) as pool:
@@ -273,7 +351,9 @@ def main(argv: list[str] | None = None) -> int:
         if not args.tidy_only:
             build_and_test(runner, args.preset, skip_tests=args.skip_tests)
         if args.tidy or args.tidy_only:
-            run_clang_tidy(runner, args.preset, args.jobs)
+            changed = changed_files(args.tidy_changed_since) if args.tidy_changed_since else None
+            sources = tidy_sources(changed, args.tidy_shard)
+            run_clang_tidy(runner, args.preset, sources, args.jobs)
     except subprocess.CalledProcessError as exc:
         print(f"error: step failed with exit code {exc.returncode}", file=sys.stderr)
         return exc.returncode
@@ -293,3 +373,6 @@ if __name__ == "__main__":
 # - --tidy-only exists so CI can lint in a job parallel to the build: clang-tidy
 #   needs only the compile database and the sources FetchContent puts in place
 #   at configure time, never a compiled object.
+# - --tidy-changed-since narrows a PR's lint to the .cpp files it touched, and
+#   falls back to every file when a header, CMake file or .clang-tidy changed,
+#   since those alter diagnostics elsewhere. Pushes to main always lint all.

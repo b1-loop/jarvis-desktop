@@ -125,15 +125,33 @@ jobs:
   # places at configure time, never a compiled object, so it runs in its own
   # job next to the build instead of after it. It is as required as any other
   # job: a diagnostic fails the workflow (WarningsAsErrors in .clang-tidy).
+  #
+  # A full run is ~40 s per translation unit (windows.h, pybind11 and the
+  # analyzer checks), 42 minutes for 64 files in one serial process. So:
+  #  - the files are split across a matrix of shards, each linting its slice
+  #    with one clang-tidy process per CPU;
+  #  - on a pull request only the .cpp files the PR changed are linted, unless
+  #    it touches a header, a CMake file, a submodule, the preset or
+  #    .clang-tidy, in which case every file is (scripts/build_native.py,
+  #    needs_full_tidy). Pushes to main always lint every file, so nothing a
+  #    PR run narrowed away goes unchecked once it lands.
   native-tidy:
-    name: clang-tidy
+    name: clang-tidy (${{ matrix.shard }}/4)
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     env:
       SCCACHE_GHA_ENABLED: "true"
+      # On a PR the checkout is the merge commit, whose first parent is the
+      # tip of the base branch: HEAD^1..HEAD is exactly what the PR changes.
+      TIDY_SCOPE: ${{ github.event_name == 'pull_request' && '--tidy-changed-since HEAD^1' || '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 2
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
@@ -154,10 +172,12 @@ jobs:
         with:
           arch: x64
       - uses: lukka/get-cmake@latest
-      - name: clang-tidy version
-        run: clang-tidy --version
+      - name: clang-tidy version and CPU count
+        run: |
+          clang-tidy --version
+          echo "CPUs: $env:NUMBER_OF_PROCESSORS"
       - name: Configure and clang-tidy
-        run: uv run python scripts/build_native.py --preset ci-windows --tidy-only
+        run: uv run python scripts/build_native.py --preset ci-windows --tidy-only --tidy-shard ${{ matrix.shard }}/4 ${{ env.TIDY_SCOPE }}
 
   secrets-scan:
     name: Secrets scan

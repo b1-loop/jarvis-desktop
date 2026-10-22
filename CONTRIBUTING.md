@@ -89,10 +89,17 @@ LOCAL-mode models (whisper.cpp and llama.cpp, 570 MB) are not downloaded in CI;
 the model-backed inference tests skip themselves when the files are absent,
 while the wrappers' logic is covered by the model-free tests.
 
-clang-tidy runs in its own `clang-tidy` job, parallel to the build, and lints
-one translation unit per process (`--jobs`, default: CPU count). Locally,
-`--tidy` keeps building first; `--tidy-only` configures and lints without
-building.
+clang-tidy is the long pole: about 40 s per translation unit, 42 minutes for
+the whole tree in one serial process. It now runs in four `clang-tidy (i/4)`
+jobs parallel to the build, each linting an interleaved quarter of the files
+with one process per CPU (`--tidy-shard`, `--jobs`). On a pull request only
+the `.cpp` files the PR changed are linted (`--tidy-changed-since HEAD^1`),
+unless the PR touches a header, a CMake file, a submodule, the presets,
+`.clang-tidy` or `build_native.py`; then every file is. Pushes to `main`
+always lint every file, so a PR's narrowed run is backed by a full one when it
+lands. Locally, `--tidy` keeps building first and lints everything;
+`--tidy-only` configures and lints without building, and
+`--tidy-changed-since origin/main` mirrors the PR behaviour.
 
 To reproduce the CI build locally, install sccache and run
 `uv run python scripts/build_native.py --preset ci-windows`. Day-to-day work

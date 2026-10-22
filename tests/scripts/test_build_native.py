@@ -81,26 +81,24 @@ class FakeRunner:
         return subprocess.CompletedProcess(args, code, stdout=f"output of {args[-1]}\n")
 
 
-def test_clang_tidy_runs_one_process_per_source(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_clang_tidy_runs_one_process_per_source() -> None:
     sources = [build_native.NATIVE_DIR / "a.cpp", build_native.NATIVE_DIR / "b.cpp"]
-    monkeypatch.setattr(build_native, "native_sources", lambda: sources)
     runner = FakeRunner(failing=set())
 
-    build_native.run_clang_tidy(runner, "ci-windows", jobs=2)
+    build_native.run_clang_tidy(runner, "ci-windows", sources, jobs=2)
 
     assert sorted(command[-1] for command in runner.commands) == [str(s) for s in sources]
     assert all("--quiet" in command for command in runner.commands)
 
 
 def test_clang_tidy_lints_every_file_before_reporting_a_failure(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     sources = [build_native.NATIVE_DIR / name for name in ("a.cpp", "b.cpp", "c.cpp")]
-    monkeypatch.setattr(build_native, "native_sources", lambda: sources)
     runner = FakeRunner(failing={"a.cpp"})
 
     with pytest.raises(subprocess.CalledProcessError):
-        build_native.run_clang_tidy(runner, "ci-windows", jobs=1)
+        build_native.run_clang_tidy(runner, "ci-windows", sources, jobs=1)
 
     assert len(runner.commands) == len(sources)
     output = capsys.readouterr().out
@@ -108,8 +106,64 @@ def test_clang_tidy_lints_every_file_before_reporting_a_failure(
     assert "output of" in output
 
 
-def test_tidy_only_flag_parses() -> None:
-    args = build_native.parse_args(["--tidy-only", "--jobs", "3"])
+def test_tidy_flags_parse() -> None:
+    args = build_native.parse_args(
+        ["--tidy-only", "--jobs", "3", "--tidy-changed-since", "HEAD^1", "--tidy-shard", "2/4"]
+    )
 
     assert args.tidy_only
     assert args.jobs == 3
+    assert args.tidy_changed_since == "HEAD^1"
+    assert args.tidy_shard == (2, 4)
+
+
+@pytest.mark.parametrize("spec", ["0/2", "3/2", "a/b", "2"])
+def test_invalid_shard_is_rejected(spec: str) -> None:
+    with pytest.raises(SystemExit):
+        build_native.parse_args(["--tidy-shard", spec])
+
+
+FAKE_SOURCES = ["audio_engine/src/a.cpp", "common/src/b.cpp", "tests/c_test.cpp", "os/d.cpp"]
+
+
+@pytest.fixture
+def fake_sources(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    sources = [build_native.NATIVE_DIR / name for name in FAKE_SOURCES]
+    monkeypatch.setattr(build_native, "native_sources", lambda: sources)
+    return sources
+
+
+def test_full_run_lints_everything(fake_sources: list[Path]) -> None:
+    assert build_native.tidy_sources(None, (1, 1)) == fake_sources
+
+
+def test_cpp_only_change_lints_only_the_changed_files(fake_sources: list[Path]) -> None:
+    changed = ["native/common/src/b.cpp", "src/jarvis/config.py", "README.md"]
+
+    assert build_native.tidy_sources(changed, (1, 1)) == [fake_sources[1]]
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "native/common/include/jarvis/common/b.hpp",
+        "native/tests/CMakeLists.txt",
+        "native/CMakePresets.json",
+        "native/third_party/llama.cpp",
+        ".clang-tidy",
+        "scripts/build_native.py",
+    ],
+)
+def test_change_that_affects_other_files_lints_everything(
+    fake_sources: list[Path], trigger: str
+) -> None:
+    changed = ["native/common/src/b.cpp", trigger]
+
+    assert build_native.tidy_sources(changed, (1, 1)) == fake_sources
+
+
+def test_shards_partition_the_files(fake_sources: list[Path]) -> None:
+    shards = [build_native.tidy_sources(None, (index, 3)) for index in (1, 2, 3)]
+
+    assert sorted(path for shard in shards for path in shard) == sorted(fake_sources)
+    assert max(map(len, shards)) - min(map(len, shards)) <= 1
