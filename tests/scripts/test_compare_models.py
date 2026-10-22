@@ -157,3 +157,43 @@ def test_settings_use_the_swedish_voice_and_the_temp_dir(tmp_path: Path) -> None
     assert settings.data_dir == tmp_path
     assert settings.tts_voice == "sv-SE-MattiasNeural"
     assert settings.ollama_think is False
+
+
+async def test_the_name_case_plants_a_misheard_name_and_wants_the_profile_one(
+    tmp_path: Path,
+) -> None:
+    (case,) = [case for case in compare.CASES if case.label == "name from profile"]
+    async with SqliteStore(tmp_path / "memory.sqlite3") as store:
+        memory = MemoryManager(store, InMemoryVectorStore())
+        assert case.setup is not None
+        await case.setup(memory)
+
+        context = await memory.recall(case.request)
+
+        assert context.user_name == "Bozhi"
+        assert "Ravel" in context.render()
+        for answer, expected in (
+            ("Du heter Bozhi.", True),
+            ("Du heter Ravel.", False),
+            ("Bozhi, eller Ravel?", False),
+        ):
+            probe = compare.Probe(answer=answer, memory=memory, asked_at=MOMENT)
+            assert await case.check(probe) is expected
+
+
+async def test_the_greeting_case_only_forbids_the_misheard_name() -> None:
+    (case,) = [case for case in compare.CASES if case.label == "greeting by name"]
+
+    def probe(answer: str) -> Any:
+        return compare.Probe(answer=answer, memory=None, asked_at=MOMENT)
+
+    assert await case.check(probe("Jag mår bra, tack!"))
+    assert await case.check(probe("Hej Bozhi!"))
+    assert not await case.check(probe("Hej Ravel!"))
+
+
+def test_case_filters_keep_the_usual_order() -> None:
+    args = compare.parse_args(["qwen3:8b", "--case", "calculation", "--case", "time"])
+
+    assert [case.label for case in compare.selected_cases(args)] == ["time", "calculation"]
+    assert compare.selected_cases(compare.parse_args(["qwen3:8b"])) == compare.CASES

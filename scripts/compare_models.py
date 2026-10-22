@@ -5,6 +5,7 @@ Usage::
     uv run python scripts/compare_models.py qwen2.5:7b qwen3:8b@off qwen3:8b@on
     uv run python scripts/compare_models.py qwen3:8b --embedding-model none
     uv run python scripts/compare_models.py qwen2.5:7b qwen3:8b --repeat 3
+    uv run python scripts/compare_models.py qwen2.5:7b --case "name from profile"
 
 Each argument is an Ollama model tag, optionally with ``@off``, ``@on`` or
 ``@default`` for Ollama's ``think`` field (``JARVIS_OLLAMA_THINK``; off when
@@ -91,6 +92,8 @@ MILK: Final = ("mjölk", "milk")
 BREAD: Final = ("bröd", "bread")
 LAUNDRY: Final = ("tvätt", "laundry", "washing")
 MUM: Final = ("mamma", "mum", "mom", "mother")
+PROFILE_NAME: Final = "Bozhi"
+MISHEARD_NAME: Final = "Ravel"
 WARM_UP_REQUEST: Final = "Hej!"
 VOICE: Final = "sv-SE-MattiasNeural"
 """The user's voice; the persona answers in the voice's language (Swedish)."""
@@ -209,6 +212,31 @@ async def check_todo_relisted(probe: Probe) -> bool:
     return mentions_milk(probe.answer) and mentions_any(probe.answer, BREAD)
 
 
+async def plant_a_misheard_name(memory: MemoryManager) -> None:
+    """The profile says Bozhi; history holds a misrecognised "Ravel" and replies using it.
+
+    Reproduces a real session: an early speech-recognition error was stored
+    as a turn, and the model then called the user Ravel in every reply.
+    """
+    await memory.remember("profile.name", PROFILE_NAME)
+    await memory.record_turn(
+        "Hello, Jervis. I'm speaking with Ravel.", "Hej Ravel! Vad kan jag göra?"
+    )
+    await memory.record_turn("hej igen", "Hej igen, Ravel! Vad vill du göra?")
+    await memory.record_turn("tack", "Varsågod, Ravel.")
+
+
+async def check_no_misheard_name(probe: Probe) -> bool:
+    """The answer never calls the user by the misheard name."""
+    return MISHEARD_NAME.lower() not in probe.answer.lower()
+
+
+async def check_profile_name(probe: Probe) -> bool:
+    """The answer uses the profile's name and never the misheard one."""
+    answer = probe.answer.lower()
+    return PROFILE_NAME.lower() in answer and await check_no_misheard_name(probe)
+
+
 async def check_product(probe: Probe) -> bool:
     """The answer has 17 x 23 = 391."""
     return "391" in probe.answer.replace(" ", "")
@@ -283,6 +311,20 @@ CASES: Final = (
         "påminn mig om fem minuter att ringa mamma",
         frozenset({"add_reminder"}),
         reminder_check(MUM),
+    ),
+    Case(
+        "greeting by name",
+        "hej Jarvis, hur mår du idag?",
+        frozenset(),
+        check_no_misheard_name,
+        setup=plant_a_misheard_name,
+    ),
+    Case(
+        "name from profile",
+        "vad heter jag?",
+        frozenset(),
+        check_profile_name,
+        setup=plant_a_misheard_name,
     ),
 )
 
@@ -450,7 +492,7 @@ async def run_model(spec: str, args: argparse.Namespace) -> RunResult:
             settings = comparison_settings(Path(data_dir), args, think)
             agent, llm, memory = await build_agent(settings, model, stack)
             await agent.respond(WARM_UP_REQUEST, silent)
-            for case in CASES:
+            for case in selected_cases(args):
                 outcome = await measure(agent, llm, memory, case)
                 result.outcomes.append(outcome)
                 print_outcome(outcome)
@@ -535,7 +577,20 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument(
         "--repeat", type=int, default=1, help="rounds over all models (answers vary run to run)"
     )
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=[case.label for case in CASES],
+        help="run only this request (repeatable); default: all of them",
+    )
     return parser.parse_args(argv)
+
+
+def selected_cases(args: argparse.Namespace) -> tuple[Case, ...]:
+    """The cases named with ``--case``, in their usual order, or every case."""
+    if not args.case:
+        return CASES
+    return tuple(case for case in CASES if case.label in args.case)
 
 
 async def main(argv: Sequence[str]) -> int:
