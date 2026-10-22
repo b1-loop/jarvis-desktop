@@ -89,6 +89,8 @@ artifacts = ["src/jarvis/_native/*.pyd", "src/jarvis/_native/*.so"]
 target-version = "py312"
 line-length = 100
 src = ["src", "tests", "scripts"]
+# Agent worktrees live under .claude/ inside the checkout; they are separate repos.
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = [
@@ -126,6 +128,9 @@ convention = "google"
 "tests/**" = ["D", "S105", "S106", "PLR2004", "ARG001", "ARG002"]
 "scripts/**" = ["T20", "S603", "S607"] # dev scripts print and run fixed commands
 "src/jarvis/__main__.py" = ["T20"] # CLI entry point prints by design
+# Optional-extra parsers are imported inside the functions that need them.
+"src/jarvis/integrations/documents.py" = ["PLC0415"]
+"src/jarvis/integrations/youtube.py" = ["PLC0415"]
 
 [tool.ruff.lint.pylint]
 max-statements = 30   # Clean Code: functions under 30 lines
