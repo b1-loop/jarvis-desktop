@@ -81,7 +81,7 @@ count as no). See ADR-0014.
 
 ### Providers *(step 5)*
 
-| Stage | Interface | CLOUD | Ollama option | LOCAL *(step 12)* |
+| Stage | Interface | CLOUD | Ollama option | LOCAL |
 | --- | --- | --- | --- | --- |
 | STT | `stt.base.STT` | `FasterWhisperSTT` (CTranslate2, off-loop) | same | `WhisperCppSTT` |
 | TTS | `tts.base.TTS` | `EdgeTTS` (MP3 decoded natively in batches) | same | `PiperTTS` |
@@ -94,6 +94,18 @@ Streaming is sentence-by-sentence: `llm.streaming.SentenceSplitter` cuts
 text deltas into sentences, each sentence goes to `TTS.synthesize`, which
 yields PCM chunks while the rest downloads. Retries share one policy in
 `utils.retry`. See ADR-0005.
+
+**LOCAL mode.** `core.providers.build_stt` / `build_tts` / `build_llm` pick
+the stack from `Settings.mode` and raise `ConfigError` with the fix (extra,
+native build, model download) instead of falling back. `WhisperCppSTT` and
+`LocalLlamaClient` sit on `jarvis_inference` through Protocols; every
+native call runs in `asyncio.to_thread`, one hop per generated token, and
+cancelling the consumer cancels the native generation. The llama.cpp
+wrapper has no tool channel, so `llm.json_tool_protocol` renders the tool
+schemas into the system prompt, classifies the streamed reply as prose or
+one `{"tool", "arguments"}` object, validates it against the schema and
+falls back to text. `PiperTTS` streams one chunk per sentence from the
+`piper-tts` package. Trade-offs and measurements: ADR-0013.
 
 ## 4. State machine
 
@@ -273,8 +285,8 @@ ADR-0016.
 is one blocking call with the GIL released. Generation runs on a native
 thread that fills a queue; Python pulls pieces from a `GenerationStream`
 and can cancel it, so the LLM path follows the same no-GIL-on-native-threads
-rule as the audio engine. The Python `STT` / `LLMClient` providers over this
-module are the second half of step 12.
+rule as the audio engine. The Python providers over this module
+(`WhisperCppSTT`, `LocalLlamaClient`) are described under Providers above.
 
 ## 8. Native build *(step 2)*
 

@@ -16,6 +16,7 @@ from typing import Annotated, Final, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from jarvis.inference.models import PIPER_VOICE_EN_GB, QWEN2_5_0_5B_INSTRUCT, WHISPER_TINY
 from jarvis.integrations.documents import default_document_roots
 from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.utils.errors import ConfigError
@@ -23,7 +24,10 @@ from jarvis.utils.errors import ConfigError
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 LLMProvider = Literal["anthropic", "ollama", "local"]
-"""Which ``LLMClient`` answers: Claude, a local Ollama server, or llama.cpp (step 12)."""
+"""Which ``LLMClient`` answers: Claude, a local Ollama server, or in-process llama.cpp."""
+
+DEFAULT_LOCAL_MODELS_DIR: Final = Path("models")
+"""Where ``scripts/download_models.py --local`` puts the LOCAL-mode files by default."""
 
 DEFAULT_SHELL_ALLOWLIST: Final[tuple[str, ...]] = (
     "git",
@@ -100,9 +104,11 @@ class Settings(BaseSettings):
     stt_device: str = "auto"
     stt_compute_type: str = "auto"
     tts_voice: str = "en-GB-RyanNeural"
-    local_llm_model: Path = Path("models/llama.gguf")
-    local_stt_model: Path = Path("models/ggml-base.bin")
-    local_tts_model: Path = Path("models/piper-voice.onnx")
+    # Defaults are the pinned manifest files (jarvis.inference.models), so a
+    # fresh `download_models.py --local` run is all LOCAL mode needs.
+    local_llm_model: Path = DEFAULT_LOCAL_MODELS_DIR / QWEN2_5_0_5B_INSTRUCT.name
+    local_stt_model: Path = DEFAULT_LOCAL_MODELS_DIR / WHISPER_TINY.name
+    local_tts_model: Path = DEFAULT_LOCAL_MODELS_DIR / PIPER_VOICE_EN_GB.name
 
     # Integrations. ``None`` selects the Stub provider for that service.
     google_client_secrets_file: Path | None = Field(
@@ -205,6 +211,20 @@ class Settings(BaseSettings):
         """An empty ``JARVIS_WEB_USER_AGENT=`` line keeps the default."""
         return DEFAULT_USER_AGENT if value == "" else value
 
+    # Local mode (step 12b)
+    stt_language: str | None = None
+    local_stt_threads: int = Field(default=0, ge=0)
+    local_llm_context_size: int = Field(default=4096, gt=0)
+    local_llm_threads: int = Field(default=0, ge=0)
+    local_llm_max_tokens: int = Field(default=512, gt=0)
+    local_llm_temperature: float = Field(default=0.4, ge=0.0)
+
+    @field_validator("stt_language", mode="before")
+    @classmethod
+    def _empty_language_is_auto(cls, value: object) -> object:
+        """An empty ``JARVIS_STT_LANGUAGE=`` line means "detect the language"."""
+        return None if value == "" else value
+
     # Vision (step 11)
     vision_enabled: bool = True
     vision_max_long_edge: int = Field(default=1920, ge=256, le=8000)
@@ -223,7 +243,6 @@ class Settings(BaseSettings):
     persona_tone: str = "calm, concise and dryly witty, like a capable butler"
     max_tool_rounds: int = Field(default=6, ge=1)
 
-
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can
 #   diff .env.example against this class line by line.
@@ -237,6 +256,11 @@ class Settings(BaseSettings):
 #   option that runs locally but is not the fully offline LOCAL mode (it
 #   still pairs with faster-whisper and edge-tts). The default Ollama model
 #   is a small tool-capable one so tool calling works out of the box.
+# - Local mode: thread counts of 0 let whisper.cpp / llama.cpp pick for the
+#   machine. The LLM temperature defaults below the wrapper's 0.7 because a
+#   0.5B model follows the JSON tool-call protocol (ADR-0013) noticeably
+#   more reliably when it samples less freely.
+
 # - Vision: 1920 px on the long edge is the 1080p class the Claude docs name
 #   as the cost/quality balance for screenshots (the high-resolution tier
 #   caps at 2576 px and downscales anything larger). The byte budget is
