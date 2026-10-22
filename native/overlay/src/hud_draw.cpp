@@ -7,6 +7,7 @@
 #include <imgui.h>
 #include <imgui_impl_dx11.h>
 
+#include "postfx.hpp"
 #include <d3d11.h>
 
 #include <algorithm>
@@ -26,6 +27,7 @@ namespace {
 constexpr float kPixelsPerSegment = 3.0F;
 constexpr int kMinArcSegments = 6;
 constexpr int kSweepSlices = 32;
+constexpr int kGlowSlices = 40;
 constexpr int kHexCorners = 6;
 constexpr float kDotHalo = 3.0F;
 constexpr float kDotHaloAlpha = 0.18F;
@@ -49,6 +51,26 @@ void setAdditive(const ImDrawList* /*list*/, const ImDrawCmd* command) {
     constexpr std::array<float, 4> kNoFactor{0.0F, 0.0F, 0.0F, 0.0F};
     constexpr UINT kAllSamples = 0xFFFFFFFFU;
     state->DeviceContext->OMSetBlendState(blend, kNoFactor.data(), kAllSamples);
+}
+
+ID3D11DeviceContext* backendContext() noexcept {
+    const auto* const state =
+        static_cast<const ImGui_ImplDX11_RenderState*>(ImGui::GetPlatformIO().Renderer_RenderState);
+    return state == nullptr ? nullptr : state->DeviceContext;
+}
+
+void beginLightLayer(const ImDrawList* /*list*/, const ImDrawCmd* command) {
+    ID3D11DeviceContext* const context = backendContext();
+    if (context != nullptr) {
+        static_cast<PostProcessor*>(command->UserCallbackData)->beginLight(*context);
+    }
+}
+
+void endLightLayer(const ImDrawList* /*list*/, const ImDrawCmd* command) {
+    ID3D11DeviceContext* const context = backendContext();
+    if (context != nullptr) {
+        static_cast<PostProcessor*>(command->UserCallbackData)->endLight(*context);
+    }
 }
 
 }  // namespace
@@ -121,6 +143,55 @@ void glowDot(ImDrawList& draw, ImVec2 centre, float radius, Rgba colour) {
     }
     draw.AddCircleFilled(centre, radius * kDotHalo, toU32(scaledAlpha(colour, kDotHaloAlpha)));
     draw.AddCircleFilled(centre, radius, toU32(colour));
+}
+
+ImVec2 ellipsePoint(ImVec2 centre, float rx, float ry, float angle) noexcept {
+    return ImVec2{centre.x + (rx * std::cos(angle)), centre.y + (ry * std::sin(angle))};
+}
+
+void glowEllipseArc(ImDrawList& draw, ImVec2 centre, float rx, float ry, float fromAngle,
+                    float toAngle, const Stroke& stroke) {
+    if (rx <= 0.0F || ry <= 0.0F || stroke.colour.a <= 0.0F) {
+        return;
+    }
+    const int segments = arcSegments(std::max(rx, ry), toAngle - fromAngle);
+    for (const GlowPass& pass : stroke.glow) {
+        draw.PathEllipticalArcTo(centre, ImVec2{rx, ry}, 0.0F, fromAngle, toAngle, segments);
+        draw.PathStroke(toU32(scaledAlpha(stroke.colour, pass.alpha)),
+                        stroke.thickness * pass.width);
+    }
+}
+
+void segmentedEllipse(ImDrawList& draw, ImVec2 centre, float rx, float ry, int segments, float fill,
+                      float rotation, const Stroke& stroke) {
+    if (segments <= 0) {
+        glowEllipseArc(draw, centre, rx, ry, rotation, rotation + anim::kTau, stroke);
+        return;
+    }
+    const float slot = anim::kTau / static_cast<float>(segments);
+    const float span = slot * anim::clamp01(fill);
+    for (int i = 0; i < segments; ++i) {
+        const float start = rotation + (slot * static_cast<float>(i));
+        glowEllipseArc(draw, centre, rx, ry, start, start + span, stroke);
+    }
+}
+
+void radialGlow(ImDrawList& draw, ImVec2 centre, float radius, Rgba colour) {
+    if (radius <= 0.0F || colour.a <= 0.0F) {
+        return;
+    }
+    const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+    const ImU32 inner = toU32(colour);
+    const ImU32 outer = toU32(scaledAlpha(colour, 0.0F));
+    constexpr int kVerticesPerSlice = 3;
+    draw.PrimReserve(kGlowSlices * kVerticesPerSlice, kGlowSlices * kVerticesPerSlice);
+    const float step = anim::kTau / static_cast<float>(kGlowSlices);
+    for (int i = 0; i < kGlowSlices; ++i) {
+        const float a0 = step * static_cast<float>(i);
+        draw.PrimVtx(centre, uv, inner);
+        draw.PrimVtx(polar(centre, radius, a0), uv, outer);
+        draw.PrimVtx(polar(centre, radius, a0 + step), uv, outer);
+    }
 }
 
 void segmentedRing(ImDrawList& draw, ImVec2 centre, float radius, int segments, float fill,
@@ -240,7 +311,7 @@ void text(ImDrawList& draw, ImFont& font, float size, ImVec2 position, std::stri
     draw.AddText(&font, size, position, toU32(colour), utf8.data(), utf8.data() + utf8.size());
 }
 
-BlendModes::BlendModes(ID3D11Device& device) {
+BlendModes::BlendModes(ID3D11Device& device, PostProcessor* post) : post_(post) {
     // Additive light on a premultiplied target: colour += src * srcAlpha and
     // coverage += srcAlpha, so colour never exceeds alpha (stays valid
     // premultiplied) and overlapping glows brighten instead of occluding.
@@ -262,11 +333,20 @@ BlendModes::BlendModes(ID3D11Device& device) {
     }
 }
 
-void BlendModes::additive(ImDrawList& draw) const {
-    draw.AddCallback(&setAdditive, additive_.Get());
+void BlendModes::beginLight(ImDrawList& draw) const {
+    if (post_ != nullptr) {
+        draw.AddCallback(&beginLightLayer, post_);
+    } else {
+        draw.AddCallback(&setAdditive, additive_.Get());
+    }
 }
 
-void BlendModes::normal(ImDrawList& draw) {
+void BlendModes::endLight(ImDrawList& draw) const {
+    if (post_ != nullptr) {
+        draw.AddCallback(&endLightLayer, post_);
+    }
+    // Restores ImGui's shaders, blend, rasterizer and viewport; the render
+    // target is the swap chain again (endLight rebinds it).
     draw.AddCallback(ImGui::GetPlatformIO().DrawCallback_ResetRenderState, nullptr);
 }
 
