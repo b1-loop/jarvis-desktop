@@ -39,9 +39,10 @@ def provider(router: Router, token_source: StaticTokenSource) -> GmailProvider:
     return GmailProvider(router.client(), token_source)
 
 
-def test_scopes_are_read_and_send_only() -> None:
+def test_scopes_are_read_and_compose_only() -> None:
+    # gmail.compose, not gmail.send: drafts.create and drafts.send need it.
     assert GmailProvider.scopes == GMAIL_SCOPES
-    assert all(s.endswith(("gmail.readonly", "gmail.send")) for s in GMAIL_SCOPES)
+    assert [s.rsplit("/", 1)[1] for s in GMAIL_SCOPES] == ["gmail.readonly", "gmail.compose"]
 
 
 async def test_list_unread_queries_then_fetches_metadata(

@@ -4,7 +4,9 @@ Authentication comes from :class:`~jarvis.integrations.google_auth.GoogleAuth`
 (or any :class:`TokenSource`); the API itself is called with httpx rather
 than the discovery-based ``google-api-python-client`` so requests are plain,
 typed and testable with ``httpx.MockTransport``. Scopes are the two smallest
-that cover the feature list: read and send, never modify or delete.
+that cover the feature list: read, and compose (create drafts and send
+them), never modify labels or delete. ``gmail.send`` alone is not enough:
+``drafts.create`` and ``drafts.send`` both require ``gmail.compose``.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from jarvis.integrations.tokens import TokenSource
 
 GMAIL_SCOPES = (
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.compose",
 )
 BASE_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
 

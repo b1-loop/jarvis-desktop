@@ -41,15 +41,19 @@ stub) behaves identically.
 
 | Provider | Scopes |
 | --- | --- |
-| Gmail | `gmail.readonly`, `gmail.send` |
+| Gmail | `gmail.readonly`, `gmail.compose` |
 | Google Calendar | `calendar.readonly`, `calendar.events` |
-| Outlook | `Mail.Read`, `Mail.Send`, `Calendars.ReadWrite` |
+| Outlook | `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite` |
 | Teams | `Chat.Read`, `ChatMessage.Send` |
 | Spotify | `user-read-playback-state`, `user-modify-playback-state` |
 | Slack / Discord / Home Assistant | bot or long-lived token; what the admin granted |
 
 Nothing modifies or deletes mail, nothing reads contacts or profiles, nothing
-touches the Spotify library. Gmail and Calendar share one `GoogleAuth`, and
+touches the Spotify library. *Amended in step 8:* the reply draft that the
+user approves before sending needs `gmail.compose` (Gmail's `drafts.create`
+and `drafts.send` reject `gmail.send`) and `Mail.ReadWrite` (Graph's
+`createReply` rejects `Mail.Read`). `Mail.ReadWrite` is broader than the
+feature needs; the code still only creates and sends reply drafts. Gmail and Calendar share one `GoogleAuth`, and
 Outlook and Teams share one `MicrosoftAuth`, each requesting the union of its
 providers' scopes: one consent screen per account rather than one per
 feature, with no scope that a single feature would not need anyway.
