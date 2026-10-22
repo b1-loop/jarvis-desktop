@@ -133,6 +133,7 @@ convention = "google"
 # Optional-extra parsers are imported inside the functions that need them.
 "src/jarvis/integrations/documents.py" = ["PLC0415"]
 "src/jarvis/integrations/youtube.py" = ["PLC0415"]
+"src/jarvis/tools/draft_document.py" = ["PLC0415"]
 
 [tool.ruff.lint.pylint]
 max-statements = 30   # Clean Code: functions under 30 lines
