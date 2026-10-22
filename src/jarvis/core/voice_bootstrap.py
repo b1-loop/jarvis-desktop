@@ -31,7 +31,7 @@ from jarvis.audio.engine import (
     create_native_playback,
 )
 from jarvis.audio.models import AudioModelPaths
-from jarvis.config import Settings
+from jarvis.config import RuntimeMode, Settings
 from jarvis.core import providers
 from jarvis.core.bootstrap import (
     FrontEnd,
@@ -56,7 +56,15 @@ from jarvis.core.voice_triggers import AnyTrigger, HotkeyTrigger, TurnTrigger, W
 from jarvis.os_integration.errors import PlatformError
 from jarvis.stt.base import STT
 from jarvis.tts.base import TTS
-from jarvis.ui.overlay import Overlay, OverlayConfig, OverlayTheme, create_overlay
+from jarvis.ui.overlay import (
+    Overlay,
+    OverlayConfig,
+    OverlayIntensity,
+    OverlaySize,
+    OverlayTheme,
+    create_overlay,
+    default_microphone_name,
+)
 from jarvis.utils.errors import ConfigError, JarvisError, NativeUnavailableError
 from jarvis.utils.logging import get_logger
 
@@ -135,18 +143,40 @@ def build_tts(settings: Settings) -> TTS:
         raise VoiceUnavailableError(f"speech output unavailable: {error}") from error
 
 
+def boot_readout(settings: Settings) -> dict[str, str]:
+    """The real values the overlay's boot sequence shows in its systems check.
+
+    The microphone is the default capture device, which is the one the audio
+    engine records from; "system default" when its name cannot be read.
+    """
+    if settings.mode is RuntimeMode.LOCAL:
+        model = settings.local_llm_model.name
+    elif settings.llm_provider == "anthropic":
+        model = settings.llm_model
+    else:
+        model = settings.ollama_model
+    return {
+        "MODEL": model,
+        "MODE": settings.mode.value.upper(),
+        "MIC": default_microphone_name() or "system default",
+    }
+
+
 def build_overlay(settings: Settings) -> Overlay:
     """The native overlay when enabled and available, otherwise the stub.
 
-    Starts the boot sequence right away; ``play_boot`` is idempotent, so a
-    launcher that also asks for it at startup changes nothing.
+    Starts the boot sequence right away with the systems-check readout;
+    ``play_boot`` is idempotent, so a launcher that also asks for it at
+    startup changes nothing.
     """
     config = OverlayConfig(
         theme=OverlayTheme(settings.overlay_theme),
         boot_animation=settings.overlay_boot_animation,
+        intensity=OverlayIntensity(settings.overlay_intensity),
+        size=OverlaySize(settings.overlay_size),
     )
     overlay = create_overlay(config, enabled=settings.overlay_enabled)
-    overlay.play_boot()
+    overlay.play_boot(boot_readout(settings))
     return overlay
 
 

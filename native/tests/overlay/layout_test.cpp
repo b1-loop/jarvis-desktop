@@ -5,7 +5,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -234,4 +237,74 @@ TEST_CASE("geometry interpolates for the handoff", "[overlay][layout]") {
     const HudGeometry moved = translated(panel, -800.0F, -600.0F);
     REQUIRE(moved.radius == panel.radius);
     REQUIRE(moved.text.x == panel.text.x - 800.0F);
+}
+
+TEST_CASE("head truncation keeps the start and ends in an ellipsis", "[overlay][layout]") {
+    using jarvis::overlay::truncateUtf8Head;
+    REQUIRE(truncateUtf8Head("qwen2.5:7b", 20) == "qwen2.5:7b");
+    REQUIRE(truncateUtf8Head("qwen2.5:7b", 5) == "qwen…");
+    REQUIRE(truncateUtf8Head("Mikrofon (Hörlurar)", 12) == "Mikrofon (H…");
+    REQUIRE(truncateUtf8Head("Mikrofon (Hörlurar)", 13) == "Mikrofon (Hö…");
+    REQUIRE(utf8Length(truncateUtf8Head("ääääää", 3)) == 3);
+    REQUIRE(truncateUtf8Head("anything", 0).empty());
+    REQUIRE(truncateUtf8Head("ab", 1) == "…");
+}
+
+TEST_CASE("utf8Prefix types text on by whole code points", "[overlay][layout]") {
+    using jarvis::overlay::utf8Prefix;
+    REQUIRE(utf8Prefix("Hörlurar", 0).empty());
+    REQUIRE(utf8Prefix("Hörlurar", 1) == "H");
+    REQUIRE(utf8Prefix("Hörlurar", 2) == "Hö");
+    REQUIRE(utf8Prefix("Hörlurar", 3) == "Hör");
+    REQUIRE(utf8Prefix("abc", 99) == "abc");
+    REQUIRE(utf8Prefix("", 3).empty());
+}
+
+TEST_CASE("panel sizes grow from compact to large and parse by name", "[overlay][layout]") {
+    using jarvis::overlay::PanelSize;
+    const auto compact = jarvis::overlay::panelMetrics(PanelSize::Compact);
+    const auto normal = jarvis::overlay::panelMetrics(PanelSize::Normal);
+    const auto large = jarvis::overlay::panelMetrics(PanelSize::Large);
+    REQUIRE(compact.width == 420);
+    REQUIRE(compact.height == 132);
+    REQUIRE(normal.width > compact.width);
+    REQUIRE(large.width > normal.width);
+    REQUIRE(large.height > normal.height);
+    REQUIRE(large.textScale > normal.textScale);
+    REQUIRE(normal.textScale > compact.textScale);
+}
+
+TEST_CASE("panel sizes parse by name and take explicit overrides", "[overlay][layout]") {
+    using jarvis::overlay::PanelSize;
+    REQUIRE(std::ranges::all_of(
+        std::array{PanelSize::Compact, PanelSize::Normal, PanelSize::Large}, [](PanelSize size) {
+            return jarvis::overlay::parsePanelSize(jarvis::overlay::toString(size)) == size;
+        }));
+    REQUIRE_FALSE(jarvis::overlay::parsePanelSize("huge").has_value());
+    const auto large = jarvis::overlay::panelMetrics(PanelSize::Large);
+    const auto custom = jarvis::overlay::withOverride(large, 500, 0);
+    REQUIRE(custom.width == 500);
+    REQUIRE(custom.height == large.height);
+    // The large ring is a showpiece: about 280 px across at 96 DPI.
+    const RectF panel{.x = 0.0F, .y = 0.0F, .width = 760.0F, .height = 300.0F};
+    REQUIRE(panelGeometry(panel, 21.0F).radius * 2.0F > 260.0F);
+}
+
+TEST_CASE("the idle clock and date read like an instrument", "[overlay][layout]") {
+    std::tm local{};
+    local.tm_hour = 9;
+    local.tm_min = 5;
+    local.tm_sec = 7;
+    local.tm_wday = 3;
+    local.tm_mday = 22;
+    local.tm_mon = 9;
+    REQUIRE(jarvis::overlay::formatClock(local) == "09:05:07");
+    REQUIRE(jarvis::overlay::formatDate(local) == "WED 22 OCT");
+}
+
+TEST_CASE("uptime is hours, minutes and seconds", "[overlay][layout]") {
+    REQUIRE(jarvis::overlay::formatUptime(0.0F) == "00:00:00");
+    REQUIRE(jarvis::overlay::formatUptime(3725.9F) == "01:02:05");
+    REQUIRE(jarvis::overlay::formatUptime(-5.0F) == "00:00:00");
+    REQUIRE(jarvis::overlay::formatUptime(360000.0F) == "100:00:00");
 }

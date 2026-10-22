@@ -3,8 +3,10 @@
 #include "jarvis/overlay/model.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <ctime>
 #include <optional>
 #include <span>
 #include <string>
@@ -20,12 +22,21 @@ constexpr unsigned char kContinuationMask = 0xC0;
 constexpr unsigned char kContinuationBits = 0x80;
 
 // Boot canvas proportions, as fractions of its side.
-constexpr float kBootRingCentre = 0.40F;
-constexpr float kBootRingRadius = 0.16F;
+constexpr float kBootRingCentre = 0.38F;
+constexpr float kBootRingRadius = 0.19F;
 constexpr float kBootTextTop = 0.66F;
 constexpr float kBootTextHeight = 0.22F;
 /// The panel ring leaves a little of the padding as room for its glow.
 constexpr float kPanelRingInset = 0.8F;
+
+constexpr PanelMetrics kCompactPanel{.width = 420, .height = 132, .textScale = 1.0F};
+constexpr PanelMetrics kNormalPanel{.width = 600, .height = 216, .textScale = 1.25F};
+constexpr PanelMetrics kLargePanel{.width = 760, .height = 300, .textScale = 1.5F};
+constexpr std::size_t kClockChars = 16;
+constexpr std::array<std::string_view, 7> kWeekdays{"SUN", "MON", "TUE", "WED",
+                                                    "THU", "FRI", "SAT"};
+constexpr std::array<std::string_view, 12> kMonths{"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
 
 bool isContinuationByte(char byte) noexcept {
     return (static_cast<unsigned char>(byte) & kContinuationMask) == kContinuationBits;
@@ -148,6 +159,46 @@ std::string truncateUtf8Tail(std::string_view utf8, std::size_t maxChars) {
     return result;
 }
 
+std::string truncateUtf8Head(std::string_view utf8, std::size_t maxChars) {
+    if (utf8Length(utf8) <= maxChars) {
+        return std::string{utf8};
+    }
+    if (maxChars == 0) {
+        return {};
+    }
+    // Walk forwards over maxChars - 1 whole code points; the ellipsis takes
+    // the last slot. A code point ends where the next lead byte starts.
+    std::size_t keep = maxChars - 1;
+    auto end = utf8.begin();
+    while (end != utf8.end()) {
+        if (!isContinuationByte(*end)) {
+            if (keep == 0) {
+                break;
+            }
+            --keep;
+        }
+        ++end;
+    }
+    std::string result{utf8.begin(), end};
+    result.append(kEllipsis);
+    return result;
+}
+
+std::string_view utf8Prefix(std::string_view utf8, std::size_t codePoints) {
+    std::size_t seen = 0;
+    std::size_t bytes = 0;
+    for (const char byte : utf8) {
+        if (!isContinuationByte(byte)) {
+            if (seen == codePoints) {
+                return utf8.substr(0, bytes);
+            }
+            ++seen;
+        }
+        ++bytes;
+    }
+    return utf8;
+}
+
 std::size_t charactersPerLine(float widthPx, float charWidthPx) noexcept {
     if (widthPx <= 0.0F || charWidthPx <= 0.0F) {
         return 0;
@@ -211,6 +262,73 @@ Placement enclosingPlacement(RectF rect) noexcept {
     const auto right = static_cast<int>(std::ceil(rect.right()));
     const auto bottom = static_cast<int>(std::ceil(rect.bottom()));
     return Placement{.x = left, .y = top, .width = right - left, .height = bottom - top};
+}
+
+std::string_view toString(PanelSize size) noexcept {
+    switch (size) {
+        case PanelSize::Compact:
+            return "compact";
+        case PanelSize::Normal:
+            return "normal";
+        case PanelSize::Large:
+            break;
+    }
+    return "large";
+}
+
+std::optional<PanelSize> parsePanelSize(std::string_view name) noexcept {
+    for (const PanelSize size : {PanelSize::Compact, PanelSize::Normal, PanelSize::Large}) {
+        if (toString(size) == name) {
+            return size;
+        }
+    }
+    return std::nullopt;
+}
+
+PanelMetrics panelMetrics(PanelSize size) noexcept {
+    switch (size) {
+        case PanelSize::Compact:
+            return kCompactPanel;
+        case PanelSize::Normal:
+            return kNormalPanel;
+        case PanelSize::Large:
+            break;
+    }
+    return kLargePanel;
+}
+
+PanelMetrics withOverride(PanelMetrics metrics, int width, int height) noexcept {
+    if (width > 0) {
+        metrics.width = width;
+    }
+    if (height > 0) {
+        metrics.height = height;
+    }
+    return metrics;
+}
+
+std::string formatClock(const std::tm& local) {
+    std::array<char, kClockChars> buffer{};
+    const std::size_t written = std::strftime(buffer.data(), buffer.size(), "%H:%M:%S", &local);
+    return std::string{buffer.data(), written};
+}
+
+std::string formatUptime(float seconds) {
+    constexpr long kMinute = 60;
+    constexpr long kHour = 3600;
+    const long total = std::max(0L, static_cast<long>(seconds));
+    const auto twoDigits = [](long value) {
+        return (value < 10 ? "0" : "") + std::to_string(value);
+    };
+    return twoDigits(total / kHour) + ":" + twoDigits((total % kHour) / kMinute) + ":" +
+           twoDigits(total % kMinute);
+}
+
+std::string formatDate(const std::tm& local) {
+    const auto day = static_cast<std::size_t>(std::clamp(local.tm_wday, 0, 6));
+    const auto month = static_cast<std::size_t>(std::clamp(local.tm_mon, 0, 11));
+    return std::string{kWeekdays.at(day)} + " " + std::to_string(local.tm_mday) + " " +
+           std::string{kMonths.at(month)};
 }
 
 HudGeometry panelGeometry(RectF panel, float padding) noexcept {

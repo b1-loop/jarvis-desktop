@@ -2,21 +2,25 @@
 
 Nothing is heard and nothing listens: there is no microphone, no speech and
 no model involved. A scripted timeline drives the real native overlay
-(``jarvis_overlay``) through IDLE, the wake-word pulse, LISTENING, THINKING
-and SPEAKING with made-up level envelopes, and prints the frame timings the
-UI thread measured during the boot and while idle.
+(``jarvis_overlay``) through its four-act boot (with a sample diagnostic
+readout), IDLE, the wake-word pulse, LISTENING, THINKING and SPEAKING with
+made-up level envelopes, including loud speech bursts, and prints the
+frame timings the UI thread measured (CPU per frame and GPU time from
+timestamp queries) for each phase.
 
-``--record`` captures the screen region the overlay moves through (from the
-centred boot canvas to the corner panel) at about 20 fps and writes an
-optimised GIF. While recording, a plain dark backdrop window covers the
-work area behind the overlay so the GIF never contains whatever happens to
-be open on the desktop.
+``--record`` captures the screen region the overlay moves through during
+the boot (from the centred canvas to the corner HUD) at about 20 fps and
+writes an optimised GIF; ``--record-states`` captures only the corner HUD
+while the states cycle. While recording, a plain dark backdrop window covers
+the work area behind the overlay so the GIFs never contain whatever happens
+to be open on the desktop.
 
 Usage::
 
     uv run python scripts/demo_overlay.py
-    uv run python scripts/demo_overlay.py --theme amber
+    uv run python scripts/demo_overlay.py --theme amber --intensity max
     uv run python scripts/demo_overlay.py --record docs/media/overlay-boot.gif
+    uv run python scripts/demo_overlay.py --record-states docs/media/overlay-states.gif
 """
 
 from __future__ import annotations
@@ -39,6 +43,8 @@ from jarvis.ui.overlay import (
     Overlay,
     OverlayConfig,
     OverlayError,
+    OverlayIntensity,
+    OverlaySize,
     OverlayState,
     OverlayTheme,
     create_native_overlay,
@@ -48,19 +54,37 @@ from jarvis.utils.errors import NativeUnavailableError
 _PER_MONITOR_AWARE_V2: Final = -4
 _SPI_GETWORKAREA: Final = 0x0030
 _BASE_DPI: Final = 96.0
-# Must match kBootCanvas in native/overlay/src/window.cpp.
-_BOOT_CANVAS: Final = 440
+# Must match kBootCanvas, kBleed and the PanelMetrics presets in native/overlay.
+_BOOT_CANVAS: Final = 520
+_BLEED: Final = 44
+_PANEL_SIZES: Final = {
+    OverlaySize.COMPACT: (420, 132),
+    OverlaySize.NORMAL: (600, 216),
+    OverlaySize.LARGE: (760, 300),
+}
 _CAPTURE_MARGIN: Final = 40
 _BACKDROP_COLOUR: Final = "#04070b"
 
 LEVEL_INTERVAL_S: Final = 0.05
 """20 Hz, the rate the voice pipeline's bridge pushes levels at."""
 RECORD_FPS: Final = 20
+STATES_FPS: Final = 6
+"""The states GIF is longer, so it trades frame rate for resolution."""
 GIF_WIDTH: Final = 720
-GIF_BUDGET_BYTES: Final = 3_000_000
+GIF_MIN_WIDTH: Final = 360
+GIF_BUDGET_BYTES: Final = 3_800_000
+STATES_BUDGET_BYTES: Final = 1_000_000
+"""The pre-commit hook rejects new files over 1 MB, and the states GIF is new."""
+GIF_COLOURS: Final = 64
 SETTLE_S: Final = 0.4
+SAMPLE_READOUT: Final = {
+    "MODEL": "qwen2.5:7b",
+    "MODE": "CLOUD",
+    "MIC": "Microphone (demo, nothing is recorded)",
+}
 
 LevelFn = Callable[[float], float]
+Box = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,15 +107,17 @@ def speech_envelope(t: float) -> float:
 
 
 def voice_envelope(t: float) -> float:
-    """Steadier, slightly louder output level for synthesised speech."""
-    return 0.12 + 0.18 * (0.5 + 0.5 * math.sin(t * 9.0)) * (0.7 + 0.3 * math.sin(t * 1.4))
+    """Synthesised speech with a loud burst every ~1.1 s (the particles' cue)."""
+    base = 0.12 + 0.18 * (0.5 + 0.5 * math.sin(t * 9.0)) * (0.7 + 0.3 * math.sin(t * 1.4))
+    burst = max(0.0, math.sin(t * 5.7)) ** 8
+    return min(1.0, base + 0.75 * burst)
 
 
 SCRIPT: Final = (
-    Beat(OverlayState.IDLE, 1.2),
-    Beat(OverlayState.LISTENING, 2.0, speech_envelope, transcript="", response="", wake=True),
-    Beat(OverlayState.THINKING, 1.4, transcript="what's on my calendar today"),
-    Beat(OverlayState.SPEAKING, 2.2, voice_envelope, response="Two meetings, the first at ten."),
+    Beat(OverlayState.IDLE, 2.0),
+    Beat(OverlayState.LISTENING, 2.2, speech_envelope, transcript="", response="", wake=True),
+    Beat(OverlayState.THINKING, 1.6, transcript="what's on my calendar today"),
+    Beat(OverlayState.SPEAKING, 3.0, voice_envelope, response="Two meetings, the first at ten."),
     Beat(OverlayState.IDLE, 1.5),
 )
 
@@ -100,32 +126,58 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line options."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--theme", choices=[t.value for t in OverlayTheme], default="cyan")
-    parser.add_argument("--record", type=Path, metavar="OUT.gif", help="capture a GIF")
+    parser.add_argument(
+        "--intensity", choices=[i.value for i in OverlayIntensity], default="normal"
+    )
+    parser.add_argument("--size", choices=[s.value for s in OverlaySize], default="large")
+    parser.add_argument("--record", type=Path, metavar="OUT.gif", help="capture the boot")
+    parser.add_argument(
+        "--record-states", type=Path, metavar="OUT.gif", help="capture the states cycle"
+    )
     parser.add_argument(
         "--opaque", action="store_true", help="force the whole-window-alpha fallback"
     )
     return parser.parse_args(argv)
 
 
-def work_area() -> tuple[int, int, int, int]:
+def work_area() -> Box:
     """Primary monitor work area (left, top, right, bottom) in physical pixels."""
     rect = (ctypes.c_long * 4)()
     ctypes.windll.user32.SystemParametersInfoW(_SPI_GETWORKAREA, 0, ctypes.byref(rect), 0)
     return rect[0], rect[1], rect[2], rect[3]
 
 
-def capture_box(config: OverlayConfig) -> tuple[int, int, int, int]:
-    """Bounding box of the boot canvas and the bottom-right corner panel."""
+def dpi_scale() -> float:
+    """System DPI scale (1.0 at 96 DPI)."""
+    return float(ctypes.windll.user32.GetDpiForSystem()) / _BASE_DPI
+
+
+def panel_box(config: OverlayConfig) -> Box:
+    """The bottom-right corner HUD plus its bleed, where the states play."""
     left, top, right, bottom = work_area()
-    scale = ctypes.windll.user32.GetDpiForSystem() / _BASE_DPI
-    half = round(_BOOT_CANVAS * scale / 2)
-    cx, cy = (left + right) // 2, (top + bottom) // 2
+    scale = dpi_scale()
+    width, height = _PANEL_SIZES[config.size]
     margin = round(config.margin * scale)
+    bleed = round(_BLEED * scale)
     return (
-        max(cx - half - _CAPTURE_MARGIN, left),
-        max(cy - half - _CAPTURE_MARGIN, top),
-        min(right - margin + _CAPTURE_MARGIN, right),
-        min(bottom - margin + _CAPTURE_MARGIN, bottom),
+        max(right - margin - round(width * scale) - bleed, left),
+        max(bottom - margin - round(height * scale) - bleed, top),
+        min(right - margin + bleed, right),
+        min(bottom - margin + bleed, bottom),
+    )
+
+
+def boot_box(config: OverlayConfig) -> Box:
+    """Bounding box of the centred boot canvas and the corner HUD."""
+    left, top, right, bottom = work_area()
+    half = round(_BOOT_CANVAS * dpi_scale() / 2)
+    cx, cy = (left + right) // 2, (top + bottom) // 2
+    panel = panel_box(config)
+    return (
+        max(min(cx - half - _CAPTURE_MARGIN, panel[0]), left),
+        max(min(cy - half - _CAPTURE_MARGIN, panel[1]), top),
+        min(max(cx + half + _CAPTURE_MARGIN, panel[2]), right),
+        min(max(cy + half + _CAPTURE_MARGIN, panel[3]), bottom),
     )
 
 
@@ -153,45 +205,57 @@ class Backdrop:
 
 
 class Recorder:
-    """Grabs a screen box at a fixed rate into memory."""
+    """Grabs a screen box at a fixed rate into memory while it is armed."""
 
-    def __init__(self, box: tuple[int, int, int, int]) -> None:
+    def __init__(self, box: Box, fps: int = RECORD_FPS, budget: int = GIF_BUDGET_BYTES) -> None:
         self._box = box
+        self._fps = fps
+        self._budget = budget
         self._frames: list[Image.Image] = []
         self._next = 0.0
+        self.armed = False
 
     def tick(self, now: float) -> None:
-        """Grab a frame if one is due."""
-        if now >= self._next:
+        """Grab a frame if one is due and the recorder is armed."""
+        if self.armed and now >= self._next:
             self._frames.append(ImageGrab.grab(bbox=self._box))
-            self._next = now + 1.0 / RECORD_FPS
+            self._next = now + 1.0 / self._fps
 
     def save(self, output: Path) -> int:
         """Write an optimised GIF, shrinking until it fits the budget; returns bytes."""
         output.parent.mkdir(parents=True, exist_ok=True)
-        width = GIF_WIDTH
+        width = min(GIF_WIDTH, self._frames[0].width)
         while True:
-            frames = [shrink(frame, width) for frame in self._frames]
+            palette = shrink(self._frames[0], width)
+            frames = [palette, *(shrink(frame, width, palette) for frame in self._frames[1:])]
             frames[0].save(
                 output,
                 save_all=True,
                 append_images=frames[1:],
-                duration=round(1000 / RECORD_FPS),
+                duration=round(1000 / self._fps),
                 loop=0,
                 optimize=True,
                 disposal=1,
             )
             size = output.stat().st_size
-            if size <= GIF_BUDGET_BYTES or width <= GIF_WIDTH // 2:
+            if size <= self._budget or width <= GIF_MIN_WIDTH:
                 return size
-            width = int(width * 0.8)
+            width = int(width * 0.85)
 
 
-def shrink(frame: Image.Image, width: int) -> Image.Image:
-    """Downscale to ``width`` and quantise to an adaptive 64-colour palette."""
+def shrink(frame: Image.Image, width: int, palette: Image.Image | None = None) -> Image.Image:
+    """Downscale to ``width`` and quantise, to ``palette``'s colours when given.
+
+    One palette for the whole GIF keeps unchanged pixels identical between
+    frames, which is what lets the GIF encoder store only what moved.
+    """
     height = round(frame.height * width / frame.width)
     small = frame.resize((width, height), Image.Resampling.LANCZOS)
-    return small.quantize(colors=64, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+    if palette is not None:
+        return small.quantize(palette=palette, dither=Image.Dither.NONE)
+    return small.quantize(
+        colors=GIF_COLOURS, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE
+    )
 
 
 def run_for(seconds: float, step: Callable[[float], None]) -> None:
@@ -205,9 +269,10 @@ def run_for(seconds: float, step: Callable[[float], None]) -> None:
 def report(label: str, overlay: Overlay) -> None:
     """Print the UI thread's frame timings and restart the measurement."""
     stats = overlay._native.frame_stats()  # type: ignore[attr-defined]
+    fps = 1000 / max(stats.interval_ms, 1e-6)
     print(
-        f"{label:<6} frames={stats.frames:<4} cpu/frame={stats.render_ms:.2f} ms "
-        f"interval={stats.interval_ms:.1f} ms ({1000 / max(stats.interval_ms, 1e-6):.0f} fps)"
+        f"{label:<9} frames={stats.frames:<4} cpu/frame={stats.render_ms:.2f} ms "
+        f"gpu/frame={stats.gpu_ms:.2f} ms interval={stats.interval_ms:.1f} ms ({fps:.0f} fps)"
     )
     overlay._native.reset_frame_stats()  # type: ignore[attr-defined]
 
@@ -233,16 +298,27 @@ def play_beat(overlay: Overlay, beat: Beat, tick: Callable[[], None]) -> None:
     run_for(beat.seconds, step)
 
 
-def demo(overlay: Overlay, boot_seconds: float, tick: Callable[[], None]) -> None:
-    """Boot, measure, then walk through the script."""
+def demo(
+    overlay: Overlay,
+    boot_seconds: float,
+    tick: Callable[[], None],
+    recorders: tuple[Recorder | None, Recorder | None],
+) -> None:
+    """Boot, measure, then walk through the script, measuring every state."""
+    boot_recorder, states_recorder = recorders
     overlay._native.reset_frame_stats()  # type: ignore[attr-defined]
-    overlay.play_boot()
-    run_for(boot_seconds, lambda _elapsed: tick())
+    if boot_recorder is not None:
+        boot_recorder.armed = True
+    overlay.play_boot(SAMPLE_READOUT)
+    run_for(boot_seconds + 0.6, lambda _elapsed: tick())
+    if boot_recorder is not None:
+        boot_recorder.armed = False
     report("boot", overlay)
+    if states_recorder is not None:
+        states_recorder.armed = True
     for beat in SCRIPT:
         play_beat(overlay, beat, tick)
-        if beat is SCRIPT[0]:
-            report("idle", overlay)
+        report(beat.state.value.lower(), overlay)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -252,8 +328,14 @@ def main(argv: list[str] | None = None) -> int:
         print("The overlay is Windows-only.", file=sys.stderr)
         return 1
     ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_ssize_t(_PER_MONITOR_AWARE_V2))
-    config = OverlayConfig(theme=OverlayTheme(args.theme), transparent=not args.opaque)
-    backdrop = Backdrop() if args.record else None
+    config = OverlayConfig(
+        theme=OverlayTheme(args.theme),
+        intensity=OverlayIntensity(args.intensity),
+        size=OverlaySize(args.size),
+        transparent=not args.opaque,
+    )
+    recording = args.record is not None or args.record_states is not None
+    backdrop = Backdrop() if recording else None
     try:
         overlay = create_native_overlay(config)
     except (NativeUnavailableError, OverlayError) as error:
@@ -261,23 +343,29 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     boot_seconds = float(_native.load("jarvis_overlay").BOOT_DURATION_SECONDS)
-    print(f"per-pixel transparency: {overlay.transparent}")
-    recorder = Recorder(capture_box(config)) if args.record else None
+    print(f"per-pixel transparency: {overlay.transparent}, bloom: {overlay.bloom}")
+    boot_recorder = Recorder(boot_box(config)) if args.record else None
+    states_recorder = (
+        Recorder(panel_box(config), STATES_FPS, STATES_BUDGET_BYTES) if args.record_states else None
+    )
 
     def tick() -> None:
         if backdrop is not None:
             backdrop.pump()
-        if recorder is not None:
-            recorder.tick(time.perf_counter())
+        now = time.perf_counter()
+        for recorder in (boot_recorder, states_recorder):
+            if recorder is not None:
+                recorder.tick(now)
 
     with overlay:
         run_for(SETTLE_S, lambda _elapsed: tick())
-        demo(overlay, boot_seconds, tick)
+        demo(overlay, boot_seconds, tick, (boot_recorder, states_recorder))
     if backdrop is not None:
         backdrop.close()
-    if recorder is not None and args.record is not None:
-        size = recorder.save(args.record)
-        print(f"wrote {args.record} ({size / 1e6:.2f} MB)")
+    for recorder, output in ((boot_recorder, args.record), (states_recorder, args.record_states)):
+        if recorder is not None and output is not None:
+            size = recorder.save(output)
+            print(f"wrote {output} ({size / 1e6:.2f} MB)")
     return 0
 
 
@@ -288,7 +376,11 @@ if __name__ == "__main__":
 # - The demo drives the public facade (Overlay), not the raw native window,
 #   except for frame_stats(), which only the demo and tests need.
 # - Levels are pushed at 20 Hz like OverlayBridge does, so what the GIF shows
-#   is what the voice pipeline produces, smoothing and all.
+#   is what the voice pipeline produces, smoothing and all; the speaking
+#   envelope adds loud bursts so the particle field's outward kick shows.
 # - Recording happens on the same thread as the script; ImageGrab is the
-#   slow part, which is why the GIF runs at 20 fps while the overlay itself
-#   keeps rendering at 60 fps on its own thread.
+#   slow part, which is why the GIFs run at 20 fps while the overlay itself
+#   keeps rendering at 60 fps on its own thread. Two recorders are armed in
+#   turn so one run produces both the boot and the states GIF.
+# - The capture boxes mirror native constants (boot canvas, bleed, panel
+#   presets); changing those without these only affects the GIF crop.

@@ -20,7 +20,9 @@ llama.cpp wrappers, and a Dear ImGui overlay. Everything that has to be
 flexible is Python 3.12: the agent loop, tools, memory, integrations,
 scheduling. No native thread ever takes the GIL.
 
-![Status overlay: boot sequence, then idle, listening, thinking and speaking](docs/media/overlay-boot.gif)
+![Status overlay boot: ignition, rings flying in, systems check with a live readout, whip into the corner](docs/media/overlay-boot.gif)
+
+![Corner HUD cycling idle, listening, thinking and speaking with GPU bloom, globe and particle field](docs/media/overlay-states.gif)
 
 > **Demo GIF: not recorded yet.** It needs a person at a microphone; the exact
 > steps are in [`scripts/record_demo.md`](scripts/record_demo.md). The
@@ -259,9 +261,11 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
   sends nothing off the machine. The bundled Qwen2.5 0.5B is the smallest
   model that exercises the code path; point `JARVIS_LOCAL_LLM_MODEL` at a
   bigger GGUF for better answers.
-- **Overlay, tray and dashboard.** The overlay shows state, waveform and
-  transcript in a screen corner; the tray menu shows the dashboard, toggles
-  the overlay and mutes the microphone.
+- **Overlay, tray and dashboard.** The overlay is a holographic HUD in a
+  screen corner (GPU bloom, wireframe globe, particles that follow the
+  microphone and the voice; `JARVIS_OVERLAY_SIZE` and
+  `JARVIS_OVERLAY_INTENSITY` tune it, ADR-0023); the tray menu shows the
+  dashboard, toggles the overlay and mutes the microphone.
 - **Headphones.** There is no acoustic echo cancellation yet: with loud
   speakers Jarvis can hear itself after the echo guard and stop
   mid-sentence. Use headphones or a lower volume.

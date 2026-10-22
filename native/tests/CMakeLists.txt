@@ -61,8 +61,13 @@ jarvis_copy_onnxruntime_dll(jarvis_tests)
 if(JARVIS_BUILD_OVERLAY)
     target_sources(jarvis_tests PRIVATE
         overlay/animation_test.cpp
+        overlay/boot_test.cpp
+        overlay/effects_test.cpp
         overlay/layout_test.cpp
         overlay/model_test.cpp
+        overlay/particles_test.cpp
+        overlay/scene_test.cpp
+        overlay/shaders_test.cpp
         overlay/window_test.cpp)
     target_link_libraries(jarvis_tests PRIVATE jarvis::overlay)
 endif()

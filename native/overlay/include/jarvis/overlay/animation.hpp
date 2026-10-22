@@ -4,14 +4,16 @@
 /// The boot sequence and the state animations are functions of elapsed
 /// time, never of frame count: the renderer may run at 60 fps, 15 fps or
 /// stall for a second and the picture at a given instant is the same. That
-/// property, the easing curves, the boot beats, the state cross-fade, the
-/// level smoothing and the seeded particle field are all unit-tested here
-/// without a window, a GPU or Dear ImGui. hud.cpp only turns these numbers
-/// into draw calls.
+/// property, the easing curves, the boot acts, the state cross-fade, the
+/// level smoothing and the seeded particle stream are all unit-tested here
+/// without a window, a GPU or Dear ImGui. The per-frame composition of all
+/// of it lives in animator.hpp; hud.cpp only turns the numbers into draw calls.
 
 #pragma once
 
+#include "jarvis/overlay/effects.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/scene.hpp"
 
 #include <array>
 #include <chrono>
@@ -96,7 +98,7 @@ private:
 /// flicker fragments without keeping per-fragment state between frames.
 [[nodiscard]] float hashUnit(std::uint64_t index, std::uint64_t step) noexcept;
 
-// --- particles --------------------------------------------------------------------------
+// --- boot particle stream -------------------------------------------------------------------
 
 /// Parameters of one particle, drawn once from the seeded generator.
 struct Particle {
@@ -136,7 +138,7 @@ struct ParticleConfig {
     float targetRadius = 1.0F;
 };
 
-/// Particles that stream inward and settle on the ring.
+/// Particles that stream inward and settle on the ring during the boot.
 ///
 /// Positions are closed-form functions of time (no integration), so the
 /// field is deterministic for a seed and independent of the frame rate.
@@ -161,24 +163,38 @@ private:
 
 // --- boot sequence -----------------------------------------------------------------------
 
-/// When each part of the boot sequence happens, in seconds from the start.
+/// The four acts of the boot sequence.
+enum class BootAct : std::uint8_t { Ignition, Assembly, SystemsCheck, Handoff };
+
+/// When each part of the boot happens, in seconds from the start (~4 s).
 struct BootBeats {
-    /// A point of light expands into the rings.
-    float igniteEnd = 0.75F;
-    float particlesStart = 0.55F;
-    float particlesDuration = 0.85F;
-    float scanStart = 1.0F;
-    float scanDuration = 0.55F;
-    float gridStart = 1.0F;
-    float gridDuration = 1.1F;
-    float titleStart = 1.4F;
-    /// Seconds between two typed characters.
-    float charInterval = 0.045F;
-    float subtitleStart = 1.85F;
-    float subtitleDuration = 0.25F;
-    /// The whole canvas eases from the centre into the corner panel.
-    float handoffStart = 2.1F;
-    float handoffDuration = 0.45F;
+    // Act 1, ignition: a point of light, a flash, a shock ring.
+    float pointGrow = 0.15F;
+    float flashPeak = 0.20F;
+    float shockStart = 0.16F;
+    float shockDuration = 0.65F;
+    // Act 2, assembly: rings fly in from depth and lock, the globe draws itself.
+    float assemblyStart = 0.80F;
+    float ringFlight = 0.55F;
+    float ringStagger = 0.17F;
+    float globeStart = 0.95F;
+    float globeDuration = 1.15F;
+    float particlesStart = 0.75F;
+    // Act 3, systems check: labels count up, readout and title type on.
+    float systemsStart = 2.20F;
+    float labelCount = 0.70F;
+    float scanDuration = 0.60F;
+    float readoutStart = 2.30F;
+    float readoutLineInterval = 0.14F;
+    float readoutCharInterval = 0.010F;
+    float titleStart = 2.60F;
+    /// Seconds between two typed title characters.
+    float charInterval = 0.05F;
+    float subtitleStart = 3.20F;
+    float subtitleDuration = 0.20F;
+    // Act 4, hand-off: everything compresses into the corner with a whip pan.
+    float handoffStart = 3.45F;
+    float handoffDuration = 0.55F;
     /// Cursor blink period once typing has finished.
     float cursorBlink = 0.24F;
 };
@@ -188,33 +204,59 @@ struct BootBeats {
 struct BootFrame {
     /// Position on the timeline in seconds (after any skip).
     float time{0.0F};
-    /// Ring reveal: 0 is a point of light, 1 the full ring set.
+    BootAct act{BootAct::Ignition};
+    /// Growth of the initial point of light; 1 once it is fully lit.
     float ignite{0.0F};
     /// Brightness of the initial flash at the centre; peaks early, decays.
     float flash{0.0F};
+    /// The ignition shock ring: radius in ring radii and opacity.
+    float shockRadius{0.0F};
+    float shockAlpha{0.0F};
+    /// Per ring layer (outermost first): 0 far out in front of the screen,
+    /// 1 locked into place.
+    std::array<float, kRingCount> ringArrival{};
+    /// How far the globe wireframe has drawn itself.
+    float globe{0.0F};
+    /// Seconds since the particle stream started, negative before it.
+    float particleTime{0.0F};
     /// Angle of the radial sweep, radians; continuous.
     float sweepAngle{0.0F};
     /// Extra ring rotation, eased from 0 to 1 over the whole boot: the rings
     /// spin fast and wind down to their idle speed. 1 once the boot is over,
     /// so the renderer can add it unconditionally without a jump.
     float spin{0.0F};
-    /// Seconds since the particle phase started, negative before it.
-    float particleTime{0.0F};
+    /// Tick labels counting up from 0 to their final degrees.
+    float labels{0.0F};
     /// Scan line position, 0 at the top of the canvas, 1 at the bottom.
     float scan{0.0F};
     float scanAlpha{0.0F};
-    /// Visibility envelope of the grid fragments (each one flickers on its own).
-    float grid{0.0F};
     /// Characters of the title typed so far.
     std::size_t titleChars{0};
     bool cursorVisible{false};
     float subtitle{0.0F};
     /// Eased progress of the move from the centre to the corner panel.
     float handoff{0.0F};
+    /// Speed of the hand-off as a share of its peak: drives the whip-pan
+    /// motion blur. 0 at both ends, 1 in the middle.
+    float whip{0.0F};
     /// Opacity of elements that only exist during boot (fades over the handoff).
     float bootOnly{1.0F};
+    /// Glitch amount of the boot beats (flash, ring locks, title, hand-off).
+    float glitch{0.0F};
     bool finished{false};
 };
+
+/// How a flying ring is posed: scale of its radius, tilt out of the screen
+/// plane (radians, projected as an ellipse) and opacity.
+struct RingPose {
+    float scale{1.0F};
+    float tilt{0.0F};
+    float alpha{1.0F};
+};
+
+/// Pose of a ring at @p arrival (BootFrame::ringArrival): it starts large,
+/// tilted and invisible in front of the screen and locks flat at scale 1.
+[[nodiscard]] RingPose ringPose(float arrival) noexcept;
 
 /// Maps time since the boot started to a BootFrame.
 class BootTimeline {
@@ -232,15 +274,30 @@ public:
     [[nodiscard]] float timelineTime(float sinceStart,
                                      std::optional<float> skippedAfter) const noexcept;
 
+    /// Characters of readout line @p line (@p length long) typed at @p time.
+    /// Lines start one after another; each types at its own pace.
+    [[nodiscard]] std::size_t readoutChars(std::size_t line, std::size_t length,
+                                           float time) const noexcept;
+
+    /// The act @p time falls in.
+    [[nodiscard]] BootAct actAt(float time) const noexcept;
+
     /// Seconds from start to finished when nothing is skipped.
     [[nodiscard]] float duration() const noexcept;
 
     [[nodiscard]] const BootBeats& beats() const noexcept { return beats_; }
     [[nodiscard]] const std::string& title() const noexcept { return title_; }
+    [[nodiscard]] std::span<const GlitchSpike> spikes() const noexcept { return spikes_; }
 
 private:
+    void evaluateIgnition(float time, BootFrame& frame) const noexcept;
+    void evaluateAssembly(float time, BootFrame& frame) const noexcept;
+    void evaluateSystems(float time, BootFrame& frame) const noexcept;
+    void evaluateHandoff(float time, BootFrame& frame) const noexcept;
+
     BootBeats beats_;
     std::string title_;
+    std::vector<GlitchSpike> spikes_;
 };
 
 // --- state animations ---------------------------------------------------------------------
@@ -316,67 +373,6 @@ struct Ripple {
 void radialWaveform(std::span<const float> levels, float energy, float time, float floor,
                     std::span<float> out) noexcept;
 
-// --- the animator ---------------------------------------------------------------------------
-
-/// Tunables of the state animations.
-struct AnimatorConfig {
-    float crossFadeSeconds = 0.2F;
-    float attackSeconds = 0.05F;
-    float releaseSeconds = 0.30F;
-    float breathingPeriod = 5.5F;
-    float rippleSpread = 0.5F;
-    std::uint64_t particleSeed = 0x4A415256ULL;  // fixed so every boot looks the same
-};
-
-/// Everything time-dependent the renderer needs for one frame.
-struct AnimationFrame {
-    /// Seconds since the animator was created; drives every rotation.
-    float time{0.0F};
-    /// Present while the boot sequence is playing.
-    std::optional<BootFrame> boot;
-    StateWeights weights{1.0F, 0.0F, 0.0F, 0.0F};
-    /// Smoothed level of whichever source the state is showing.
-    float level{0.0F};
-    float breathing{0.0F};
-    Ripple ripple;
-};
-
-/// How fast the UI thread should draw.
-enum class Pace : std::uint8_t { Active, Idle };
-
-/// The UI thread's animation state: one per window, advanced once per frame.
-class OverlayAnimator {
-public:
-    using Clock = OverlayModel::Clock;
-
-    explicit OverlayAnimator(Clock::time_point epoch, AnimatorConfig config = {},
-                             BootTimeline timeline = BootTimeline{});
-
-    /// Advance to @p now for @p snapshot and return the frame to draw.
-    const AnimationFrame& advance(const OverlaySnapshot& snapshot, Clock::time_point now);
-
-    /// Active while booting, cross-fading, rippling or not idle; Idle lets
-    /// the window drop to its low frame rate while the ring only breathes.
-    [[nodiscard]] Pace pace(const OverlaySnapshot& snapshot) const noexcept;
-
-    [[nodiscard]] const AnimationFrame& frame() const noexcept { return frame_; }
-    [[nodiscard]] const BootTimeline& timeline() const noexcept { return timeline_; }
-    [[nodiscard]] const ParticleField& particles() const noexcept { return particles_; }
-
-private:
-    [[nodiscard]] std::optional<BootFrame> bootFrame(const OverlaySnapshot& snapshot,
-                                                     Clock::time_point now) const noexcept;
-
-    Clock::time_point epoch_;
-    AnimatorConfig config_;
-    BootTimeline timeline_;
-    ParticleField particles_;
-    StateBlend blend_;
-    LevelSmoother smoother_;
-    std::optional<float> lastTime_;
-    AnimationFrame frame_;
-};
-
 // --- frame statistics -------------------------------------------------------------------------
 
 /// Exponential moving averages of how long frames take and how far apart
@@ -387,6 +383,11 @@ struct FrameStats {
     double renderMs{0.0};
     /// Time between the starts of two consecutive frames, milliseconds.
     double intervalMs{0.0};
+    /// GPU time of one frame from D3D11 timestamp queries, milliseconds;
+    /// 0 until the first query result arrives (a few frames late by design).
+    double gpuMs{0.0};
+    /// Frames for which a GPU time was recorded.
+    std::uint64_t gpuFrames{0};
 };
 
 /// Folds frame timings into FrameStats with a fixed smoothing factor.
@@ -397,6 +398,8 @@ public:
     /// Record one frame that took @p renderMs and started @p intervalMs
     /// after the previous one (ignored for the very first frame).
     void record(double renderMs, double intervalMs) noexcept;
+    /// Record the GPU time of a (past) frame.
+    void recordGpu(double gpuMs) noexcept;
     void reset() noexcept { stats_ = {}; }
     [[nodiscard]] const FrameStats& stats() const noexcept { return stats_; }
 

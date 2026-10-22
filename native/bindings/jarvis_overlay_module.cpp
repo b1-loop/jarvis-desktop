@@ -8,9 +8,11 @@
 
 #include "jarvis/common/errors.hpp"
 #include "jarvis/overlay/animation.hpp"
+#include "jarvis/overlay/effects.hpp"
 #include "jarvis/overlay/errors.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/system_info.hpp"
 #include "jarvis/overlay/window.hpp"
 
 #include <pybind11/chrono.h>
@@ -21,6 +23,8 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace py = pybind11;
 using namespace jarvis::overlay;  // NOLINT(google-build-using-namespace) - binding file only
@@ -52,6 +56,17 @@ void defineEnums(const py::module_& module) {
     py::enum_<ThemeName>(module, "Theme", "Palette of the HUD.")
         .value("CYAN", ThemeName::Cyan)
         .value("AMBER", ThemeName::Amber);
+
+    py::enum_<PanelSize>(module, "PanelSize", "How big the corner HUD is.")
+        .value("COMPACT", PanelSize::Compact)
+        .value("NORMAL", PanelSize::Normal)
+        .value("LARGE", PanelSize::Large);
+
+    py::enum_<anim::Intensity>(module, "Intensity",
+                               "How rich the HUD is: particles, bloom and motion.")
+        .value("CALM", anim::Intensity::Calm)
+        .value("NORMAL", anim::Intensity::Normal)
+        .value("MAX", anim::Intensity::Max);
 }
 
 void defineConfig(const py::module_& module) {
@@ -67,8 +82,10 @@ void defineConfig(const py::module_& module) {
                               "Geometry and behaviour of the window (sizes at 96 DPI).")
         .def(py::init<>())
         .def_readwrite("corner", &OverlayConfig::corner)
-        .def_readwrite("width", &OverlayConfig::width)
-        .def_readwrite("height", &OverlayConfig::height)
+        .def_readwrite("size", &OverlayConfig::size)
+        .def_readwrite("width", &OverlayConfig::width, "Explicit width; 0 takes the size preset's.")
+        .def_readwrite("height", &OverlayConfig::height,
+                       "Explicit height; 0 takes the size preset's.")
         .def_readwrite("margin", &OverlayConfig::margin)
         .def_readwrite("click_through", &OverlayConfig::clickThrough)
         .def_readwrite("opacity", &OverlayConfig::opacity)
@@ -77,6 +94,9 @@ void defineConfig(const py::module_& module) {
         .def_readwrite("transparent", &OverlayConfig::transparent,
                        "Prefer per-pixel transparency (DirectComposition).")
         .def_readwrite("theme", &OverlayConfig::theme)
+        .def_readwrite("intensity", &OverlayConfig::intensity)
+        .def_readwrite("bloom", &OverlayConfig::bloom,
+                       "Run the GPU bloom pipeline (falls back to plain additive light).")
         .def_readwrite("title", &OverlayConfig::title)
         .def_readwrite("limits", &OverlayConfig::limits);
 }
@@ -96,6 +116,16 @@ void defineSnapshot(const py::module_& module) {
         .def_property_readonly(
             "boot_skipped",
             [](const OverlaySnapshot& snapshot) { return snapshot.bootSkippedAt.has_value(); })
+        .def_property_readonly("boot_readout",
+                               [](const OverlaySnapshot& snapshot) {
+                                   std::vector<std::pair<std::string, std::string>> lines;
+                                   if (snapshot.bootReadout != nullptr) {
+                                       for (const ReadoutLine& line : *snapshot.bootReadout) {
+                                           lines.emplace_back(line.label, line.value);
+                                       }
+                                   }
+                                   return lines;
+                               })
         .def_readonly("revision", &OverlaySnapshot::revision);
 
     py::class_<anim::FrameStats>(module, "FrameStats",
@@ -104,7 +134,11 @@ void defineSnapshot(const py::module_& module) {
         .def_readonly("render_ms", &anim::FrameStats::renderMs,
                       "CPU time to build and submit one frame, milliseconds.")
         .def_readonly("interval_ms", &anim::FrameStats::intervalMs,
-                      "Time between consecutive frames, milliseconds.");
+                      "Time between consecutive frames, milliseconds.")
+        .def_readonly("gpu_ms", &anim::FrameStats::gpuMs,
+                      "GPU time of one frame from timestamp queries, milliseconds.")
+        .def_readonly("gpu_frames", &anim::FrameStats::gpuFrames,
+                      "Frames for which a GPU time was measured.");
 }
 
 void setStateByName(OverlayWindow& window, std::string_view name) {
@@ -116,6 +150,17 @@ void setStateByName(OverlayWindow& window, std::string_view name) {
     window.setState(*state);
 }
 
+using ReadoutPairs = std::vector<std::pair<std::string, std::string>>;
+
+bool playBoot(OverlayWindow& window, const ReadoutPairs& info) {
+    BootReadout readout;
+    readout.reserve(info.size());
+    for (const auto& [label, value] : info) {
+        readout.push_back(ReadoutLine{.label = label, .value = value});
+    }
+    return window.playBoot(std::move(readout));
+}
+
 using WindowClass = py::class_<OverlayWindow>;
 
 void defineWindowAnimation(WindowClass& window) {
@@ -123,14 +168,18 @@ void defineWindowAnimation(WindowClass& window) {
         .def("wake_pulse", &OverlayWindow::flashWakeWord,
              "Pulse a ripple outwards from the ring to acknowledge the wake word.")
         .def("flash_wake_word", &OverlayWindow::flashWakeWord, "Alias of wake_pulse().")
-        .def("play_boot", &OverlayWindow::playBoot,
-             "Start the boot sequence; non-blocking, idempotent. True if this call started it.")
+        .def("play_boot", &playBoot, py::arg("info") = ReadoutPairs{},
+             "Start the boot sequence with (label, value) readout lines; non-blocking,\n"
+             "idempotent. True if this call started it.")
         .def("skip_boot", &OverlayWindow::skipBoot,
              "Cut the boot sequence short; it still glides into the corner.")
         .def("transparent", &OverlayWindow::transparent,
              "True when the window has per-pixel transparency.")
         .def("fallback_reason", &OverlayWindow::fallbackReason,
              "Why the whole-window-alpha fallback is used; empty when transparent.")
+        .def("bloom", &OverlayWindow::bloom, "True while the GPU bloom pipeline runs.")
+        .def("bloom_reason", &OverlayWindow::bloomReason,
+             "Why there is no bloom; empty when bloom() is True.")
         .def("frame_stats", &OverlayWindow::frameStats)
         .def("reset_frame_stats", &OverlayWindow::resetFrameStats);
 }
@@ -179,6 +228,8 @@ PYBIND11_MODULE(jarvis_overlay, module) {
     jarvis::bindings::defineModuleInfo(module, "implemented in step 13");
 
     module.attr("BOOT_DURATION_SECONDS") = anim::BootTimeline{}.duration();
+    module.def("default_microphone_name", &defaultMicrophoneName,
+               "Friendly name of the default capture device, or None.");
 
     defineExceptions(module);
     defineEnums(module);

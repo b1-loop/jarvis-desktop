@@ -25,6 +25,8 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR"]
 
 LLMProvider = Literal["anthropic", "ollama", "local"]
 OverlayThemeName = Literal["cyan", "amber"]
+OverlayIntensityName = Literal["calm", "normal", "max"]
+OverlaySizeName = Literal["compact", "normal", "large"]
 """Which ``LLMClient`` answers: Claude, a local Ollama server, or in-process llama.cpp."""
 
 DEFAULT_LOCAL_MODELS_DIR: Final = Path("models")
@@ -320,6 +322,10 @@ class Settings(BaseSettings):
     # Overlay animations
     overlay_boot_animation: bool = True
     overlay_theme: OverlayThemeName = "cyan"
+
+    # Overlay richness
+    overlay_intensity: OverlayIntensityName = "normal"
+    overlay_size: OverlaySizeName = "large"
 
     # Integrations demo data
     demo_integrations: bool = False

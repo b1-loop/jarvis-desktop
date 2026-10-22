@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 
@@ -38,10 +39,12 @@ class FakeNativeOverlay:
     def wake_pulse(self) -> None:
         self.calls.append(("wake_pulse", None))
 
-    def play_boot(self) -> bool:
+    def play_boot(self, info: Sequence[tuple[str, str]] = ()) -> bool:
         started = not self._boot_started
         self._boot_started = True
         self.calls.append(("play_boot", started))
+        if info:
+            self.calls.append(("boot_info", list(info)))
         return started
 
     def skip_boot(self) -> bool:
@@ -53,6 +56,12 @@ class FakeNativeOverlay:
 
     def fallback_reason(self) -> str:
         return "" if self._transparent else "fake: no composition"
+
+    def bloom(self) -> bool:
+        return self._transparent
+
+    def bloom_reason(self) -> str:
+        return "" if self._transparent else "fake: no bloom"
 
     def visible(self) -> bool:
         return self._visible

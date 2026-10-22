@@ -9,11 +9,14 @@ from jarvis.ui.overlay import (
     OverlayConfig,
     OverlayCorner,
     OverlayError,
+    OverlayIntensity,
+    OverlaySize,
     OverlayState,
     OverlayTheme,
     StubOverlay,
     create_native_overlay,
     create_overlay,
+    default_microphone_name,
 )
 from jarvis.utils.errors import JarvisError, NativeUnavailableError
 from tests.ui.fakes import FakeNativeOverlay
@@ -163,6 +166,42 @@ def test_play_boot_is_idempotent_and_reports_who_started_it(
     assert native.calls == [("play_boot", True), ("play_boot", False)]
 
 
+def test_play_boot_passes_the_readout_in_order(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    assert overlay.play_boot({"MODEL": "qwen2.5:7b", "MODE": "CLOUD", "MIC": "Mic"})
+
+    assert native.calls == [
+        ("play_boot", True),
+        ("boot_info", [("MODEL", "qwen2.5:7b"), ("MODE", "CLOUD"), ("MIC", "Mic")]),
+    ]
+
+
+def test_stub_keeps_the_first_readout_only() -> None:
+    stub = StubOverlay()
+
+    assert stub.play_boot([("MODE", "LOCAL")])
+    assert not stub.play_boot([("MODE", "CLOUD")])
+    assert stub.boot_info == [("MODE", "LOCAL")]
+    assert not stub.bloom()
+    assert "stub" in stub.bloom_reason()
+
+
+def test_bloom_reflects_the_native_window(overlay: Overlay, native: FakeNativeOverlay) -> None:
+    assert overlay.bloom
+    native._transparent = False
+    assert not overlay.bloom
+
+
+def test_microphone_name_is_none_without_the_native_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(name: str) -> ModuleType:
+        raise NativeUnavailableError(name, "not built")
+
+    monkeypatch.setattr(_native, "load", unavailable)
+
+    assert default_microphone_name() is None
+
+
 def test_play_boot_is_a_no_op_when_the_animation_is_disabled(native: FakeNativeOverlay) -> None:
     overlay = Overlay(native, boot_animation=False)
 
@@ -223,7 +262,10 @@ def test_config_defaults_are_the_documented_ones() -> None:
     config = OverlayConfig()
 
     assert config.corner is OverlayCorner.BOTTOM_RIGHT
-    assert (config.width, config.height, config.margin) == (420, 132, 24)
+    assert config.size is OverlaySize.LARGE
+    assert (config.width, config.height, config.margin) == (None, None, 24)
+    assert config.intensity is OverlayIntensity.NORMAL
+    assert config.bloom
     assert config.click_through
     assert config.opacity == 235
     assert (config.active_fps, config.idle_fps) == (60, 15)
@@ -284,7 +326,9 @@ def test_native_module_mirrors_the_python_enums(jarvis_overlay: ModuleType) -> N
     assert set(jarvis_overlay.AssistantState.__members__) == {s.value for s in OverlayState}
     assert set(jarvis_overlay.Corner.__members__) == {c.value for c in OverlayCorner}
     assert set(jarvis_overlay.Theme.__members__) == {t.name for t in OverlayTheme}
-    assert 2.0 < jarvis_overlay.BOOT_DURATION_SECONDS < 3.0
+    assert set(jarvis_overlay.Intensity.__members__) == {i.name for i in OverlayIntensity}
+    assert set(jarvis_overlay.PanelSize.__members__) == {s.name for s in OverlaySize}
+    assert 3.5 < jarvis_overlay.BOOT_DURATION_SECONDS < 4.5
     assert issubclass(jarvis_overlay.OverlayError, jarvis_overlay.NativeError)
     assert "step 13" in jarvis_overlay.IMPLEMENTATION_STATUS
 
@@ -326,10 +370,11 @@ def test_native_boot_is_non_blocking_and_idempotent(jarvis_overlay: ModuleType) 
         pytest.skip(f"overlay window unavailable here: {exc}")
 
     with overlay:
-        assert overlay.play_boot()
+        assert overlay.play_boot({"MODEL": "test-model", "MODE": "CLOUD"})
         assert not overlay.play_boot()
         snapshot = overlay._native.snapshot()  # type: ignore[attr-defined]
         assert snapshot.boot_started
+        assert snapshot.boot_readout == [("MODEL", "test-model"), ("MODE", "CLOUD")]
         assert not snapshot.boot_skipped
         assert overlay.skip_boot()
         assert overlay._native.snapshot().boot_skipped  # type: ignore[attr-defined]

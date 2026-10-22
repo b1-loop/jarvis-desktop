@@ -208,3 +208,35 @@ TEST_CASE("leaving Idle during the boot skips it", "[overlay][model]") {
     model.setState(AssistantState::Listening, at(700));
     REQUIRE(model.snapshot().bootSkippedAt == at(700));
 }
+
+TEST_CASE("the boot readout is kept as given, within its limits", "[overlay][model][boot]") {
+    ModelLimits limits;
+    limits.maxReadoutLines = 2;
+    limits.maxReadoutLabelChars = 5;
+    limits.maxReadoutValueChars = 8;
+    OverlayModel model{limits};
+    const jarvis::overlay::BootReadout readout{
+        {.label = "MODEL", .value = "qwen2.5:7b-instruct"},
+        {.label = "MICROPHONE", .value = "Mic"},
+        {.label = "DROPPED", .value = "never shown"},
+    };
+    REQUIRE(model.playBoot(readout, at(0)));
+    const auto snapshot = model.snapshot(at(1));
+    REQUIRE(snapshot.bootReadout != nullptr);
+    REQUIRE(snapshot.bootReadout->size() == 2);
+    REQUIRE(snapshot.bootReadout->at(0).label == "MODEL");
+    REQUIRE(snapshot.bootReadout->at(0).value == "qwen2.5…");
+    REQUIRE(snapshot.bootReadout->at(1).label == "MICR…");
+    REQUIRE(snapshot.bootReadout->at(1).value == "Mic");
+}
+
+TEST_CASE("a repeated boot request keeps the first readout", "[overlay][model][boot]") {
+    OverlayModel model;
+    REQUIRE(model.playBoot({{.label = "MODE", .value = "CLOUD"}}, at(0)));
+    REQUIRE_FALSE(model.playBoot({{.label = "MODE", .value = "LOCAL"}}, at(10)));
+    REQUIRE(model.snapshot(at(20)).bootReadout->front().value == "CLOUD");
+    OverlayModel plain;
+    REQUIRE(plain.playBoot(at(0)));
+    REQUIRE(plain.snapshot(at(1)).bootReadout->empty());
+    REQUIRE(OverlayModel{}.snapshot(at(0)).bootReadout == nullptr);
+}

@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <optional>
 #include <span>
 #include <string>
@@ -85,6 +86,16 @@ enum class ThemeName : std::uint8_t { Cyan, Amber };
 /// of a transcript are the ones the user is waiting to see confirmed.
 /// Never splits a multi-byte sequence; @p maxChars of 0 yields "".
 [[nodiscard]] std::string truncateUtf8Tail(std::string_view utf8, std::size_t maxChars);
+
+/// Keep the first @p maxChars code points of @p utf8, ending with an
+/// ellipsis when anything was cut; for labels and values whose start is
+/// the informative part (a model or device name). Never splits a
+/// multi-byte sequence; @p maxChars of 0 yields "".
+[[nodiscard]] std::string truncateUtf8Head(std::string_view utf8, std::size_t maxChars);
+
+/// The first @p codePoints code points of @p utf8 (all of it if shorter),
+/// as a view into it; used to type text on one character at a time.
+[[nodiscard]] std::string_view utf8Prefix(std::string_view utf8, std::size_t codePoints);
 
 /// How many characters of average width @p charWidthPx fit in @p widthPx.
 /// Zero or negative inputs yield 0 rather than dividing by zero.
@@ -163,6 +174,42 @@ struct HudGeometry {
 
     [[nodiscard]] bool operator==(const HudGeometry&) const noexcept = default;
 };
+
+/// How big the corner HUD is.
+enum class PanelSize : std::uint8_t { Compact, Normal, Large };
+
+/// Lower-case name as used in settings ("compact", "normal", "large").
+[[nodiscard]] std::string_view toString(PanelSize size) noexcept;
+
+/// Inverse of toString(PanelSize); std::nullopt for anything else.
+[[nodiscard]] std::optional<PanelSize> parsePanelSize(std::string_view name) noexcept;
+
+/// Dimensions of a panel size at 96 DPI and how much its text is scaled.
+struct PanelMetrics {
+    int width{0};
+    int height{0};
+    float textScale{1.0F};
+
+    [[nodiscard]] bool operator==(const PanelMetrics&) const noexcept = default;
+};
+
+/// The metrics of @p size: Compact is the ADR-0011 strip (420 x 132),
+/// Large a showpiece HUD with a ring of about 280 px (760 x 300).
+[[nodiscard]] PanelMetrics panelMetrics(PanelSize size) noexcept;
+
+/// @p metrics with an explicit @p width / @p height override applied;
+/// 0 keeps the preset's value for that side.
+[[nodiscard]] PanelMetrics withOverride(PanelMetrics metrics, int width, int height) noexcept;
+
+/// "14:32:07" for @p local.
+[[nodiscard]] std::string formatClock(const std::tm& local);
+
+/// "02:14:07" for @p seconds of uptime; hours keep counting past 99.
+[[nodiscard]] std::string formatUptime(float seconds);
+
+/// "WED 22 OCT" for @p local; HUD dates are upper-case English on purpose
+/// (they are part of the instrument, not of the user's locale).
+[[nodiscard]] std::string formatDate(const std::tm& local);
 
 /// Corner panel: ring on the left, text column on the right.
 [[nodiscard]] HudGeometry panelGeometry(RectF panel, float padding) noexcept;
