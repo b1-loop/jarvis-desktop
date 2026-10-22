@@ -5,7 +5,9 @@ Jarvis" and both write the memory database. The first launch therefore
 takes an exclusive lock on ``data_dir/jarvis.lock`` and keeps it for the
 life of the process. A later launch that cannot take the lock connects to
 the first one over ``127.0.0.1`` (port and a random token in
-``data_dir/jarvis.instance``), asks it to show its dashboard, and exits.
+``data_dir/jarvis.instance``), asks it to come forward (a
+:class:`HandoverRequest`: the HUD with its boot animation, plus the
+dashboard unless only the HUD was asked for), and exits.
 
 The lock is held by the operating system (``msvcrt.locking`` on Windows,
 ``flock`` elsewhere), not by the file's existence, so a crashed instance
@@ -22,6 +24,7 @@ import secrets
 import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import IO, Final
 
@@ -53,11 +56,24 @@ log = get_logger(__name__)
 LOCK_FILENAME: Final = "jarvis.lock"
 HANDOFF_FILENAME: Final = "jarvis.instance"
 LOOPBACK: Final = "127.0.0.1"
-SHOW_COMMAND: Final = "show"
 ACK: Final = b"ok\n"
 EXCHANGE_TIMEOUT_S: Final = 2.0
 """A local round trip takes milliseconds; two seconds means the first instance is stuck."""
 _TOKEN_BYTES: Final = 16
+
+
+class HandoverRequest(StrEnum):
+    """What a later launch asks the running instance to do; the value is the wire command.
+
+    Attributes:
+        SHOW: The plain shortcut: bring the HUD forward with its boot
+            animation and open the dashboard.
+        SHOW_HUD: The "Jarvis HUD" shortcut (``--show-hud``): the HUD and
+            its boot animation only.
+    """
+
+    SHOW = "show"
+    SHOW_HUD = "show-hud"
 
 
 class InstanceLock:
@@ -150,15 +166,15 @@ def read_handoff(path: Path) -> Handoff | None:
 
 
 class InstanceServer:
-    """Loopback listener in the running instance that answers "show" requests.
+    """Loopback listener in the running instance that answers hand-over requests.
 
     Args:
-        on_show: Called on the loop when a valid request arrives.
+        on_request: Called on the loop with the request when a valid one arrives.
         handoff_path: Where the port and token are published.
     """
 
-    def __init__(self, on_show: Callable[[], None], handoff_path: Path) -> None:
-        self._on_show = on_show
+    def __init__(self, on_request: Callable[[HandoverRequest], None], handoff_path: Path) -> None:
+        self._on_request = on_request
         self._handoff_path = handoff_path
         self._token = secrets.token_urlsafe(_TOKEN_BYTES)
         self._server: asyncio.Server | None = None
@@ -183,23 +199,36 @@ class InstanceServer:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             line = await asyncio.wait_for(reader.readline(), EXCHANGE_TIMEOUT_S)
-            if line.decode("utf-8", "replace").strip() == f"{SHOW_COMMAND} {self._token}":
-                log.info("instance.show_requested")
-                self._on_show()
+            request = self._parse(line)
+            if request is None:
+                log.warning("instance.request.rejected")
+            else:
+                log.info("instance.show_requested", request=request.value)
+                self._on_request(request)
                 writer.write(ACK)
                 await writer.drain()
-            else:
-                log.warning("instance.request.rejected")
         except (TimeoutError, OSError) as error:
             log.warning("instance.request.failed", error=str(error))
         finally:
             await _close(writer)
 
+    def _parse(self, line: bytes) -> HandoverRequest | None:
+        """The request in ``<command> <token>``; None unless both are exactly right."""
+        command, _, token = line.decode("utf-8", "replace").strip().partition(" ")
+        if not secrets.compare_digest(token.encode(), self._token.encode()):
+            return None
+        try:
+            return HandoverRequest(command)
+        except ValueError:
+            return None
+
 
 async def ask_running_instance_to_show(
-    handoff_path: Path, reply_within: float = EXCHANGE_TIMEOUT_S
+    handoff_path: Path,
+    reply_within: float = EXCHANGE_TIMEOUT_S,
+    request: HandoverRequest = HandoverRequest.SHOW,
 ) -> bool:
-    """Ask the instance that holds the lock to bring its dashboard up.
+    """Ask the instance that holds the lock to come forward as ``request`` says.
 
     Returns:
         True when it acknowledged; False when it has not published a port
@@ -214,7 +243,7 @@ async def ask_running_instance_to_show(
             asyncio.open_connection(LOOPBACK, handoff.port), reply_within
         )
         try:
-            writer.write(f"{SHOW_COMMAND} {handoff.token}\n".encode())
+            writer.write(f"{request.value} {handoff.token}\n".encode())
             await writer.drain()
             reply = await asyncio.wait_for(reader.readline(), reply_within)
         finally:
@@ -245,7 +274,12 @@ async def _close(writer: asyncio.StreamWriter) -> None:
 # - An ephemeral port published in a file beats a fixed port: nothing else
 #   on the machine can already own it, and the token in the same file
 #   means another local user's process cannot trigger the "show" action.
-# - The server never trusts the request beyond the exact command line; the
-#   only thing a request can do is call on_show (show the dashboard).
+# - The server never trusts the request beyond the exact command line: a
+#   known command and the exact token (compared in constant time). The
+#   only thing a request can do is call on_request with one of the
+#   HandoverRequest members, which can only show things.
+# - An instance from before HandoverRequest.SHOW_HUD existed rejects
+#   "show-hud"; the new launch then notifies "already running", the same
+#   degradation as any instance that does not answer.
 # - A failed ping is not an error worth raising: the second launch still
 #   exits, and the caller notifies "Jarvis is already running" instead.

@@ -642,6 +642,7 @@ class VoiceFrontEndBuilder:
             microphone=microphone,
             bind_controls=hud.bind_controls,
             toggle_hud_minimized=hud.toggle_minimized,
+            bring_hud_forward=hud.bring_forward,
         )
 
     def _hud(
@@ -673,6 +674,7 @@ class VoiceFrontEndBuilder:
             microphone=microphone,
             open_log=self._hooks.open_log,
             restart=self._hooks.restart,
+            boot_readout=lambda: boot_readout(settings),
         )
         overlay.bridge.attach_handlers(actions)
         return actions

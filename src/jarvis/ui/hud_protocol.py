@@ -37,7 +37,7 @@ class SubmitText:
 
 @dataclass(frozen=True, slots=True)
 class CloseRequested:
-    """Hide the HUD; the tray's "Show overlay" brings it back."""
+    """Hide the HUD until it is needed: a wake, a relaunch or the tray brings it back."""
 
 
 @dataclass(frozen=True, slots=True)

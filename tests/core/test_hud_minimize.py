@@ -30,6 +30,24 @@ def bound_tray(hud: HudActions) -> StubTray:
     return tray
 
 
+async def test_a_launch_while_running_restores_the_orb_and_remembers_it(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    hud, overlay, _typed, _store = actions(make_settings, tmp_path)
+    overlay.is_minimized = True
+    overlay.is_expanded = True
+    tray = bound_tray(hud)
+    assert tray.hud_minimized
+
+    await hud.bring_forward()
+
+    assert not overlay.minimized
+    assert not overlay.expanded  # the boot hands off into the corner HUD
+    assert not tray.hud_minimized
+    assert reloaded(make_settings, tmp_path).hud_minimized is False
+    assert overlay.replays == [None]  # no readout source: the boot plays without one
+
+
 async def test_the_users_minimize_and_restore_are_remembered(
     make_settings: MakeSettings, tmp_path: Path
 ) -> None:

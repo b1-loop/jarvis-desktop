@@ -230,6 +230,54 @@ TEST_CASE("the boot readout is kept as given, within its limits", "[overlay][mod
     REQUIRE(snapshot.bootReadout->at(1).value == "Mic");
 }
 
+TEST_CASE("a replay restarts a finished or skipped boot from the top", "[overlay][model][boot]") {
+    OverlayModel model;
+    REQUIRE(model.playBoot({{.label = "MIC", .value = "Old mic"}}, at(0)));
+    REQUIRE(model.skipBoot(at(300)));
+    const auto revision = model.revision();
+
+    model.replayBoot({{.label = "MIC", .value = "New mic"}}, at(9000));
+
+    const auto snapshot = model.snapshot(at(9001));
+    REQUIRE(model.revision() > revision);
+    REQUIRE(snapshot.bootStartedAt == at(9000));
+    REQUIRE_FALSE(snapshot.bootSkippedAt.has_value());
+    REQUIRE(snapshot.bootReadout->front().value == "New mic");
+    REQUIRE(model.skipBoot(at(9100)));  // the replay can be skipped like the first boot
+}
+
+TEST_CASE("a replay plays even when no boot played before", "[overlay][model][boot]") {
+    OverlayModel model;
+    model.replayBoot({}, at(50));
+    REQUIRE(model.snapshot(at(60)).bootStartedAt == at(50));
+    REQUIRE_FALSE(model.playBoot(at(70)));  // the start-up boot counts as played
+}
+
+TEST_CASE("a replay restarts a boot that is still playing", "[overlay][model][boot]") {
+    OverlayModel model;
+    model.playBoot(at(0));
+    model.replayBoot({}, at(1200));
+    REQUIRE(model.snapshot(at(1300)).bootStartedAt == at(1200));
+}
+
+TEST_CASE("a replay during a conversation only glides into place", "[overlay][model][boot]") {
+    OverlayModel model;
+    model.setState(AssistantState::Speaking, at(0));
+    model.replayBoot({{.label = "MODE", .value = "CLOUD"}}, at(500));
+    const auto snapshot = model.snapshot(at(510));
+    REQUIRE(snapshot.bootStartedAt == at(500));
+    REQUIRE(snapshot.bootSkippedAt == at(500));
+    REQUIRE(snapshot.bootReadout->front().value == "CLOUD");
+}
+
+TEST_CASE("a replayed readout is bounded like the first one", "[overlay][model][boot]") {
+    ModelLimits limits;
+    limits.maxReadoutLines = 1;
+    OverlayModel model{limits};
+    model.replayBoot({{.label = "A", .value = "1"}, {.label = "B", .value = "2"}}, at(0));
+    REQUIRE(model.snapshot(at(1)).bootReadout->size() == 1);
+}
+
 TEST_CASE("a repeated boot request keeps the first readout", "[overlay][model][boot]") {
     OverlayModel model;
     REQUIRE(model.playBoot({{.label = "MODE", .value = "CLOUD"}}, at(0)));

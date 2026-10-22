@@ -59,6 +59,40 @@ async def test_bridge_mirrors_state_text_and_levels() -> None:
     assert native.response == "Half past nine."
 
 
+@pytest.mark.parametrize("minimized", [False, True])
+async def test_a_wake_brings_a_closed_hud_back_with_the_ripple(minimized: bool) -> None:
+    bus, native = EventBus(), StubOverlay()
+    overlay = Overlay(native)
+    if minimized:
+        overlay.minimize()
+    overlay.hide()  # the HUD's close control
+    bridge = OverlayBridge(overlay, bus, input_level=lambda: 0.0, output_level=lambda: 0.0)
+    bridge.start()
+
+    bus.publish(WakeWordHeard(score=1.0))  # the voice hotkey reports full confidence
+    await bridge.aclose()
+
+    assert overlay.visible
+    assert native.wake_flashes == 1
+    assert not native.boot_started  # the boot is for launches only
+    assert overlay.minimized is minimized  # an orb stays an orb, now visible
+
+
+async def test_a_wake_leaves_a_visible_hud_alone() -> None:
+    bus, native = EventBus(), StubOverlay()
+    overlay = Overlay(native)
+    shown: list[bool] = []
+    native.set_visible = shown.append  # type: ignore[method-assign]
+    bridge = OverlayBridge(overlay, bus, input_level=lambda: 0.0, output_level=lambda: 0.0)
+    bridge.start()
+
+    bus.publish(WakeWordHeard(score=0.8))
+    await bridge.aclose()
+
+    assert shown == []
+    assert native.wake_flashes == 1
+
+
 class RecordingHandlers:
     """``HudHandlers`` that records every call in order."""
 

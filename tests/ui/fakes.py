@@ -47,6 +47,10 @@ class FakeNativeOverlay:
             self.calls.append(("boot_info", list(info)))
         return started
 
+    def replay_boot(self, info: Sequence[tuple[str, str]] = ()) -> None:
+        self._boot_started = True
+        self.calls.append(("replay_boot", list(info)))
+
     def skip_boot(self) -> bool:
         self.calls.append(("skip_boot", None))
         return self._boot_started

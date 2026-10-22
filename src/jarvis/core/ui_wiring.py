@@ -3,8 +3,9 @@
 The tray (``ui/tray.py``) and dashboard (``ui/dashboard.py``) observe the
 bus and never drive the pipeline. The tray's menu needs five actions that
 only the composition root can perform (show the dashboard, toggle the
-overlay, minimize or restore the HUD, mute the microphone, quit);
-:class:`AppControls` implements them
+overlay, minimize or restore the HUD, mute the microphone, quit), and a
+launch while Jarvis runs needs a sixth (bring the HUD forward with its
+boot animation, ADR-0025); :class:`AppControls` implements them
 over whatever the session actually has, so a text-mode session without an
 overlay or microphone gets a logged no-op instead of an error.
 """
@@ -44,6 +45,8 @@ class AppControls:
         microphone: Mutes speech input; ``None`` in text mode.
         toggle_hud_minimized: Shrinks the HUD to its orb or restores it
             (and remembers the choice); ``None`` without an interactive HUD.
+        bring_hud_forward: Shows the HUD in full and replays its boot
+            (a launch while running); ``None`` without a HUD.
     """
 
     def __init__(
@@ -54,12 +57,14 @@ class AppControls:
         toggle_overlay: Callable[[], None] | None = None,
         microphone: MicrophoneSwitch | None = None,
         toggle_hud_minimized: Callable[[], Awaitable[None]] | None = None,
+        bring_hud_forward: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._stop = stop
         self._dashboard = dashboard
         self._toggle_overlay = toggle_overlay
         self._microphone = microphone
         self._toggle_hud_minimized = toggle_hud_minimized
+        self._bring_hud_forward = bring_hud_forward
         self._tray: TraySurface | None = None
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -92,6 +97,13 @@ class AppControls:
             log.info("ui.hud.absent")
             return
         self._spawn(self._toggle_hud_minimized())
+
+    def bring_hud_forward(self) -> None:
+        """Show the HUD in full and replay its boot; the choice is saved off this callback."""
+        if self._bring_hud_forward is None:
+            log.info("ui.hud.absent")
+            return
+        self._spawn(self._bring_hud_forward())
 
     def toggle_microphone(self) -> None:
         """Mute or unmute speech input; the device is touched off this callback."""

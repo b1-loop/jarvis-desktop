@@ -217,6 +217,41 @@ def test_boot_calls_after_close_do_nothing(overlay: Overlay, native: FakeNativeO
     assert native.names() == ["close"]
 
 
+def test_replay_boot_always_restarts_with_the_new_readout(
+    overlay: Overlay, native: FakeNativeOverlay
+) -> None:
+    assert overlay.play_boot({"MIC": "Old"})
+
+    assert overlay.replay_boot({"MIC": "New", "MODE": "CLOUD"})
+    assert overlay.replay_boot()
+
+    assert native.calls[-2:] == [
+        ("replay_boot", [("MIC", "New"), ("MODE", "CLOUD")]),
+        ("replay_boot", []),
+    ]
+
+
+def test_replay_boot_respects_the_setting_and_close(native: FakeNativeOverlay) -> None:
+    disabled = Overlay(native, boot_animation=False)
+    assert not disabled.replay_boot({"MODE": "CLOUD"})
+    closed = Overlay(native)
+    closed.close()
+    assert not closed.replay_boot()
+    assert native.names() == ["close"]
+
+
+def test_stub_records_replays_and_their_readout() -> None:
+    stub = StubOverlay()
+    assert stub.play_boot([("MODE", "LOCAL")])
+    assert stub.skip_boot()
+
+    stub.replay_boot([("MODE", "CLOUD")])
+
+    assert stub.boot_replays == 1
+    assert stub.boot_info == [("MODE", "CLOUD")]
+    assert stub.skip_boot()  # the replay can be skipped again
+
+
 def test_skip_boot_forwards(overlay: Overlay, native: FakeNativeOverlay) -> None:
     overlay.play_boot()
 
@@ -380,6 +415,11 @@ def test_native_boot_is_non_blocking_and_idempotent(jarvis_overlay: ModuleType) 
         assert overlay._native.snapshot().boot_skipped  # type: ignore[attr-defined]
         stats = overlay._native.frame_stats()  # type: ignore[attr-defined]
         assert stats.frames >= 0
+        assert overlay.replay_boot({"MODEL": "again"})
+        replay = overlay._native.snapshot()  # type: ignore[attr-defined]
+        assert replay.boot_started
+        assert not replay.boot_skipped
+        assert replay.boot_readout == [("MODEL", "again")]
 
 
 @pytestmark_native

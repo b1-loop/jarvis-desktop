@@ -4,11 +4,15 @@ Run from the checkout:
 
     uv run python scripts/install_shortcuts.py --autostart
 
-Each shortcut starts ``uvw run --project <checkout> jarvis --background``
-(no console window; the tray icon is the app). Options say what should
-exist afterwards: ``--no-desktop`` removes a desktop shortcut this script
-made earlier, ``--uninstall`` removes every shortcut it made. Only files
-recorded in ``data/desktop-shortcuts.json`` are ever deleted.
+Each **Jarvis** shortcut starts ``uvw run --project <checkout> jarvis
+--background`` (no console window; the tray icon is the app). The **Jarvis
+HUD** shortcut, on the desktop and in the Start menu, adds ``--show-hud``:
+it starts Jarvis if it is not running and otherwise brings the HUD forward
+and replays its boot animation, without opening the dashboard. Options say
+what should exist afterwards: ``--no-desktop`` removes desktop shortcuts
+this script made earlier, ``--no-hud`` removes the HUD shortcuts,
+``--uninstall`` removes every shortcut it made. Only files recorded in
+``data/desktop-shortcuts.json`` are ever deleted.
 
 Windows only. The logic lives in :mod:`jarvis.app.shortcuts`.
 """
@@ -19,14 +23,18 @@ import argparse
 import sys
 from pathlib import Path
 
-from jarvis.app.icon import ICON_PATH
+from jarvis.app.icon import HUD_ICON_PATH, ICON_PATH
 from jarvis.app.shortcuts import (
     MANIFEST_FILENAME,
+    Launcher,
     Manifest,
     PowerShellShortcutWriter,
     ShortcutError,
+    ShortcutKind,
     ShortcutLocation,
     ShortcutPlan,
+    ShortcutSlot,
+    ShortcutSpec,
     apply_plan,
     build_shortcut_spec,
     resolve_launcher,
@@ -36,6 +44,7 @@ from jarvis.app.shortcuts import (
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / "data" / MANIFEST_FILENAME
 LOG_PATH = REPO / "data" / "logs" / "jarvis.log"
+ICONS = {ShortcutKind.JARVIS: ICON_PATH, ShortcutKind.HUD: HUD_ICON_PATH}
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,20 +57,39 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--autostart", action=toggle, default=False, help="start with Windows (Startup folder)"
     )
     parser.add_argument(
+        "--hud",
+        action=toggle,
+        default=True,
+        help="'Jarvis HUD' shortcuts (desktop, Start menu): show the HUD and its animation",
+    )
+    parser.add_argument(
         "--uninstall", action="store_true", help="remove every shortcut this script created"
     )
     return parser.parse_args(argv)
 
 
 def plan_from(args: argparse.Namespace) -> ShortcutPlan:
-    """The wanted state of each location."""
+    """The wanted state of each slot.
+
+    The HUD shortcut exists where a Jarvis shortcut is wanted on the desktop
+    or in the Start menu, never in the Startup folder: starting with Windows
+    already plays the boot animation.
+    """
+    jarvis, hud = ShortcutKind.JARVIS, ShortcutKind.HUD
     return ShortcutPlan(
         wanted={
-            ShortcutLocation.DESKTOP: args.desktop,
-            ShortcutLocation.START_MENU: args.start_menu,
-            ShortcutLocation.STARTUP: args.autostart,
+            ShortcutSlot(jarvis, ShortcutLocation.DESKTOP): args.desktop,
+            ShortcutSlot(jarvis, ShortcutLocation.START_MENU): args.start_menu,
+            ShortcutSlot(jarvis, ShortcutLocation.STARTUP): args.autostart,
+            ShortcutSlot(hud, ShortcutLocation.DESKTOP): args.desktop and args.hud,
+            ShortcutSlot(hud, ShortcutLocation.START_MENU): args.start_menu and args.hud,
         }
     )
+
+
+def spec_for(launcher: Launcher, slot: ShortcutSlot, folder: Path) -> ShortcutSpec:
+    """The ``.lnk`` for ``slot`` in ``folder``, with that kind's icon."""
+    return build_shortcut_spec(folder, launcher, REPO, ICONS[slot.kind], slot.kind)
 
 
 def install(args: argparse.Namespace) -> None:
@@ -71,11 +99,11 @@ def install(args: argparse.Namespace) -> None:
         plan_from(args),
         PowerShellShortcutWriter(),
         Manifest(MANIFEST),
-        lambda folder: build_shortcut_spec(folder, launcher, REPO, ICON_PATH),
+        lambda slot, folder: spec_for(launcher, slot, folder),
     )
     print(f"Launcher: {launcher.target} {' '.join(launcher.arguments)}")
-    for location, path in entries.items():
-        print(f"  {location.name.lower():<10} {path}")
+    for slot, path in entries.items():
+        print(f"  {slot.location.name.lower():<10} {path}")
     print(f"Log file: {LOG_PATH}")
     print("Remove with: uv run python scripts/install_shortcuts.py --uninstall")
 

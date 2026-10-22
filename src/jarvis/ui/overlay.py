@@ -217,6 +217,9 @@ class NativeOverlay(Protocol):
     def play_boot(self, info: Sequence[tuple[str, str]] = ()) -> bool:
         """Start the boot sequence with ``info`` as its readout; True only once."""
 
+    def replay_boot(self, info: Sequence[tuple[str, str]] = ()) -> None:
+        """Play the whole boot sequence again with a fresh readout, even after the first."""
+
     def skip_boot(self) -> bool:
         """Cut a running boot sequence short; True if one was skipped."""
 
@@ -295,6 +298,7 @@ class StubOverlay:
         self.wake_flashes = 0
         self.boot_started = False
         self.boot_skipped = False
+        self.boot_replays = 0
         self.boot_info: list[tuple[str, str]] = []
         self.muted = False
         self.history: list[tuple[str, str, str]] = []
@@ -340,6 +344,13 @@ class StubOverlay:
         self.boot_started = True
         self.boot_info = list(info)
         return True
+
+    def replay_boot(self, info: Sequence[tuple[str, str]] = ()) -> None:
+        """Record a replay and its readout; a replay counts as a started boot."""
+        self.boot_replays += 1
+        self.boot_started = True
+        self.boot_skipped = False
+        self.boot_info = list(info)
 
     def skip_boot(self) -> bool:
         """Record a skip of a started boot, once."""
@@ -523,11 +534,33 @@ class Overlay:
         if self._closed or not self._boot_animation:
             log.debug("overlay.boot.skipped", closed=self._closed, enabled=self._boot_animation)
             return False
-        lines = [(str(label), str(value)) for label, value in (info or {}).items()]
+        lines = _readout_lines(info)
         started = self._native.play_boot(lines)
         if started:
             log.info("overlay.boot.started", readout=[label for label, _ in lines])
         return started
+
+    def replay_boot(self, info: BootInfo | None = None) -> bool:
+        """Play the whole boot sequence again, readout included. Non-blocking.
+
+        Unlike :meth:`play_boot` this always restarts the sequence, even after
+        the start-up boot played or while one is playing: it is what a launch
+        of an already running Jarvis asks for. The readout is passed again
+        because its values (the microphone above all) may have changed since.
+        When Jarvis is not idle the native side skips straight to the glide
+        into the corner rather than covering the conversation.
+
+        Returns:
+            True when a replay was requested; False after :meth:`close` or with
+            ``boot_animation`` disabled.
+        """
+        if self._closed or not self._boot_animation:
+            log.debug("overlay.boot.replay_skipped", closed=self._closed)
+            return False
+        lines = _readout_lines(info)
+        self._native.replay_boot(lines)
+        log.info("overlay.boot.replayed", readout=[label for label, _ in lines])
+        return True
 
     def skip_boot(self) -> bool:
         """Cut a running boot sequence short; it still glides into the corner."""
@@ -633,6 +666,11 @@ class Overlay:
 
 class _Setter(Protocol):
     def __call__(self) -> None: ...
+
+
+def _readout_lines(info: BootInfo | None) -> list[tuple[str, str]]:
+    """``info`` as the (label, value) pairs the native boot takes, in order."""
+    return [(str(label), str(value)) for label, value in (info or {}).items()]
 
 
 def create_native_overlay(config: OverlayConfig | None = None) -> Overlay:
@@ -747,6 +785,9 @@ def create_overlay(config: OverlayConfig | None = None, *, enabled: bool = True)
 # - play_boot returns a bool instead of raising on repeats: the launcher and
 #   the voice front end may both ask for it at startup, and "already
 #   playing" is not an error, just a no-op worth knowing about in tests.
+#   replay_boot is the separate, deliberate way to play it again (a launch
+#   while running, ADR-0025); keeping the two apart means a second start-up
+#   caller can never replay the boot by accident.
 # - All animation timing lives natively (native/overlay/animation.hpp) and
 #   depends on elapsed time only, so Python never needs to tick anything.
 # - The facade swallows nothing but calls after close(); every other error is

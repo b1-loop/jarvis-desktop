@@ -6,7 +6,9 @@ forwards to the component that owns the behaviour (the combined input for
 typed requests, the app controls for quit and mute, the settings controller
 for edits, the user settings store for the HUD's remembered position and
 whether it was left minimized). :meth:`HudActions.toggle_minimized` is
-what the tray's "Minimize HUD"/"Restore HUD" and the HUD hotkey call.
+what the tray's "Minimize HUD"/"Restore HUD" and the HUD hotkey call, and
+:meth:`HudActions.bring_forward` is what a launch of an already running
+Jarvis calls (ADR-0025).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from typing import Final, Protocol
 from jarvis.core.ui_wiring import AppControls, MicrophoneSwitch
 from jarvis.ui.hud_protocol import HistoryRole, PlacementChanged
 from jarvis.ui.hud_settings import SettingsController
+from jarvis.ui.overlay import BootInfo
 from jarvis.user_settings import UserSettingsError, UserSettingsStore
 from jarvis.utils.logging import get_logger
 
@@ -33,6 +36,13 @@ LOG_UNAVAILABLE: Final = "This session logs to the terminal, not to a file."
 
 class HudOverlay(Protocol):
     """The slice of ``ui.overlay.Overlay`` the actions use."""
+
+    @property
+    def visible(self) -> bool:
+        """Whether the HUD is shown (not closed)."""
+
+    def show(self) -> None:
+        """Show the HUD (after the close control or the tray hid it)."""
 
     def hide(self) -> None:
         """Hide the HUD."""
@@ -52,6 +62,16 @@ class HudOverlay(Protocol):
 
     def restore(self) -> None:
         """Grow the orb back into the HUD."""
+
+    @property
+    def expanded(self) -> bool:
+        """Whether the HUD shows (or is opening) the expanded panel."""
+
+    def set_expanded(self, expanded: bool) -> None:
+        """Expand to the panel or collapse to the corner HUD."""
+
+    def replay_boot(self, info: BootInfo | None = None) -> bool:
+        """Play the whole boot sequence again with ``info`` as its readout."""
 
 
 class TypedRequests(Protocol):
@@ -73,6 +93,9 @@ class HudActions:
         open_log: Opens the log file; None when the session has none.
         restart: Arranges a relaunch after exit; None when that is impossible
             (a console session cannot reattach its terminal).
+        boot_readout: The boot's systems-check values (model, mode,
+            microphone), read again for each replay; None replays the boot
+            without a readout.
     """
 
     def __init__(
@@ -85,6 +108,7 @@ class HudActions:
         microphone: MicrophoneSwitch | None = None,
         open_log: Callable[[], None] | None = None,
         restart: Callable[[], None] | None = None,
+        boot_readout: Callable[[], BootInfo] | None = None,
     ) -> None:
         self._overlay = overlay
         self._typed = typed
@@ -93,6 +117,7 @@ class HudActions:
         self._microphone = microphone
         self._open_log = open_log
         self._restart = restart
+        self._boot_readout = boot_readout
         self._controls: AppControls | None = None
 
     def bind_controls(self, controls: AppControls) -> None:
@@ -111,7 +136,11 @@ class HudActions:
         self._typed.submit(text)
 
     def close(self) -> None:
-        """Hide the HUD; the tray's "Show overlay" brings it back."""
+        """Hide the HUD until it is needed again.
+
+        The next wake word or voice hotkey shows it again (the overlay
+        bridge), and so do a launch while running and the tray's toggle.
+        """
         log.info("hud.close")
         self._overlay.hide()
 
@@ -181,6 +210,31 @@ class HudActions:
             self._overlay.restore()
         await self._minimized_changed(minimized, False)
 
+    async def bring_forward(self) -> None:
+        """Show the whole HUD and replay its boot animation: a launch while running.
+
+        A closed HUD reappears, an orb grows back into the HUD (remembered,
+        like the tray's "Restore HUD": the user asked to see Jarvis) and the
+        expanded panel collapses, because the boot hands off into the corner
+        HUD. The readout is read off the loop: it asks the audio stack for
+        the default microphone's name.
+        """
+        log.info(
+            "hud.bring_forward",
+            visible=self._overlay.visible,
+            minimized=self._overlay.minimized,
+        )
+        self._overlay.show()
+        if self._overlay.expanded:
+            self._overlay.set_expanded(False)
+        if self._overlay.minimized:
+            self._overlay.restore()
+            await self._minimized_changed(False, False)
+        readout = (
+            None if self._boot_readout is None else await asyncio.to_thread(self._boot_readout)
+        )
+        self._overlay.replay_boot(readout)
+
     async def _minimized_changed(self, minimized: bool, automatic: bool) -> None:
         log.info("hud.minimized", minimized=minimized, automatic=automatic)
         self._show_minimized(minimized)
@@ -221,6 +275,10 @@ def _position_json(event: PlacementChanged) -> dict[str, object]:
 #   what app.background does after its session ends.
 # - A position that cannot be saved is logged, not raised: the HUD is where
 #   the user put it for this session either way.
+# - bring_forward restores the orb instead of replaying the boot over it:
+#   launching Jarvis is asking to see it, so the whole HUD is what should
+#   be left on screen. The orb keeps its place in the native window, so a
+#   replay without the restore would still play in full and shrink back.
 # - Only the user's own minimize and restore are remembered for the next
 #   start. An orb made by auto-minimize is a passing state; starting the
 #   next session minimized because of it would look like a bug.

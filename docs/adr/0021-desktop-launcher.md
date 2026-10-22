@@ -40,7 +40,9 @@ exactly those.
 - logs to a size-capped rotating file, `data/logs/jarvis.log` (JSON lines);
 - takes a single-instance lock (`data/jarvis.lock`, an OS file lock); a
   second launch asks the first, over a loopback socket with a random token,
-  to show its dashboard, and exits;
+  to show its dashboard, and exits (since ADR-0025 it also brings the HUD
+  forward and replays its boot, and a "Jarvis HUD" shortcut asks for the
+  HUD alone);
 - starts Ollama hidden if it is the LLM and is not answering;
 - runs voice mode with the dashboard hidden and the tray icon as the only
   visible surface, and shows one notification on start;

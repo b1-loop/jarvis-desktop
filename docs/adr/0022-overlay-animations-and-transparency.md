@@ -58,7 +58,9 @@ centred canvas and its last beat interpolates the ring's centre and radius
 into the corner panel's (`lerpGeometry`). On the transparent surface the
 window spans the work area during the boot, so the glide is pure drawing
 and the window is resized exactly twice; on the fallback the window follows
-the canvas. The boot is always click-through. `play_boot()` is idempotent;
+the canvas. The boot is always click-through. `play_boot()` is idempotent
+(a launch while running replays it with the separate `replay_boot()`,
+ADR-0025);
 `skip_boot()` and any state other than Idle jump straight to the handoff so
 the panel still glides into place.
 

@@ -18,6 +18,7 @@ import typer
 
 from jarvis import __version__
 from jarvis.app.background import run_windowless
+from jarvis.app.single_instance import HandoverRequest
 from jarvis.app.windowless import is_windowless
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core.bootstrap import Overrides, run_text_mode
@@ -60,6 +61,11 @@ def load_settings(mode_override: RuntimeMode | None) -> Settings:
     return settings.model_copy(update={"mode": mode_override})
 
 
+def handover_request(*, show_hud: bool) -> HandoverRequest:
+    """What this launch asks a Jarvis that is already running for."""
+    return HandoverRequest.SHOW_HUD if show_hud else HandoverRequest.SHOW
+
+
 def _show_version(value: bool) -> None:
     if value:
         typer.echo(f"jarvis {__version__}")
@@ -94,6 +100,16 @@ def run(
             help="Run as a desktop app: tray icon only, log file, one instance (shortcuts).",
         ),
     ] = False,
+    show_hud: Annotated[
+        bool,
+        typer.Option(
+            "--show-hud",
+            help=(
+                "Like --background, but a running Jarvis only brings its HUD forward and "
+                "replays the boot animation, without the dashboard (the Jarvis HUD shortcut)."
+            ),
+        ),
+    ] = False,
     version: Annotated[  # noqa: ARG001 - consumed by the eager callback
         bool, typer.Option("--version", callback=_show_version, is_eager=True)
     ] = False,
@@ -102,9 +118,10 @@ def run(
     if ctx.invoked_subcommand is not None:
         return
     settings = load_settings(mode)
-    if is_windowless(background=background, stdout=sys.stdout):
+    if is_windowless(background=background or show_hud, stdout=sys.stdout):
         # No console to talk to: voice mode with the tray, logging to a file.
-        raise typer.Exit(code=run_windowless(settings, wake_word=not no_wakeword))
+        request = handover_request(show_hud=show_hud)
+        raise typer.Exit(code=run_windowless(settings, wake_word=not no_wakeword, request=request))
     configure_logging(settings.log_level)
     options = LaunchOptions(
         mode=settings.mode, text_only=text_only, wake_word_enabled=not no_wakeword
@@ -168,6 +185,10 @@ if __name__ == "__main__":
 #   meaningless there and ignored.
 # - Ctrl+C cancels the main task; the bootstrap's exit stack still closes
 #   the database and connections before KeyboardInterrupt reaches here.
+# - --show-hud implies --background: it only means something to the
+#   single-instance hand-over of the desktop session, and a shortcut that
+#   needed both flags would just be one more way to get it wrong. When no
+#   Jarvis is running it starts one normally, so the boot plays anyway.
 # - The launch is the app's callback (invoke_without_command) rather than a
 #   command so `jarvis --text-only` and the shortcuts' `jarvis --background`
 #   keep working unchanged while `jarvis connect ...` is a sub-command.

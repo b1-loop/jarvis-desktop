@@ -126,6 +126,12 @@ public:
     /// its systems check. Non-blocking and idempotent: later calls return
     /// false and change nothing.
     bool playBoot(BootReadout readout = {});
+    /// Play the whole boot sequence again with a fresh @p readout, even if
+    /// it played before (OverlayModel::replayBoot). The boot spans the work
+    /// area, so re-placing the window for it also raises it to the top of
+    /// the always-on-top band. The orb, if chosen, waits for the hand-off
+    /// and then shrinks back, as after the start-up boot.
+    void replayBoot(BootReadout readout = {});
     /// Cut the boot sequence short; it still glides into the corner.
     bool skipBoot();
 

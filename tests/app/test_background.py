@@ -18,6 +18,7 @@ from jarvis.app.background import (
     BackgroundDeps,
     ErrorTrayControls,
     boot_overlay,
+    come_forward,
     hotkey_label,
     listening_message,
     notify,
@@ -26,6 +27,7 @@ from jarvis.app.background import (
     uses_ollama,
 )
 from jarvis.app.ollama_launcher import OllamaStartError, OllamaStatus
+from jarvis.app.single_instance import HandoverRequest
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core.bootstrap import Overrides
 from jarvis.core.voice_bootstrap import SessionHooks, VoiceUnavailableError
@@ -49,8 +51,8 @@ class FakeLock:
 
 
 class FakeServer:
-    def __init__(self, on_show: Callable[[], None], path: Path) -> None:
-        self.on_show = on_show
+    def __init__(self, on_request: Callable[[HandoverRequest], None], path: Path) -> None:
+        self.on_request = on_request
         self.path = path
         self.started = False
         self.closed = False
@@ -78,9 +80,13 @@ class FakeControls:
     def __init__(self) -> None:
         self.tray = FakeTray()
         self.shown = 0
+        self.huds = 0
 
     def show_dashboard(self) -> None:
         self.shown += 1
+
+    def bring_hud_forward(self) -> None:
+        self.huds += 1
 
 
 class FakeApplication:
@@ -115,6 +121,7 @@ class Harness:
     def __init__(self, application: FakeApplication | None = None) -> None:
         self.lock = FakeLock()
         self.ping_result = False
+        self.pinged: list[HandoverRequest] = []
         self.platform = StubPlatform()
         self.application = application or FakeApplication()
         self.build_error: Exception | None = None
@@ -142,11 +149,12 @@ class Harness:
             spawn=lambda command, _cwd: self.spawned.append(list(command)),
         )
 
-    async def _ping(self, _path: Path) -> bool:
+    async def _ping(self, _path: Path, request: HandoverRequest) -> bool:
+        self.pinged.append(request)
         return self.ping_result
 
-    def _server(self, on_show: Callable[[], None], path: Path) -> FakeServer:
-        server = FakeServer(on_show, path)
+    def _server(self, on_request: Callable[[HandoverRequest], None], path: Path) -> FakeServer:
+        server = FakeServer(on_request, path)
         self.servers.append(server)
         return server
 
@@ -199,6 +207,20 @@ async def test_second_launch_hands_over_and_starts_nothing(
 
     assert harness.built_with == []
     assert harness.messages == []
+    assert harness.pinged == [HandoverRequest.SHOW]
+
+
+async def test_a_hud_only_launch_asks_the_running_one_for_the_hud(
+    settings: Settings, harness: Harness
+) -> None:
+    harness.lock.free = False
+    harness.ping_result = True
+
+    code = await run_background(settings, request=HandoverRequest.SHOW_HUD, deps=harness.deps())
+
+    assert code == EXIT_OK
+    assert harness.pinged == [HandoverRequest.SHOW_HUD]
+    assert harness.built_with == []
 
 
 async def test_second_launch_notifies_when_the_first_does_not_answer(
@@ -265,32 +287,57 @@ async def test_open_log_from_the_hud_opens_the_session_log(
     assert harness.servers[0].path == settings.data_dir / "jarvis.instance"
 
 
-async def test_a_later_launch_opens_the_dashboard_of_the_running_one(
+async def test_a_later_launch_replays_the_hud_and_opens_the_dashboard(
     settings: Settings, harness: Harness
 ) -> None:
     application = harness.application
 
     def second_launch() -> None:  # the server only exists once the session runs
-        harness.servers[0].on_show()
+        harness.servers[0].on_request(HandoverRequest.SHOW)
 
     application.during_run = second_launch
 
     await run_background(settings, deps=harness.deps())
 
+    assert application.controls.huds == 1
     assert application.controls.shown == 1
+
+
+async def test_a_later_hud_only_launch_leaves_the_dashboard_closed(
+    settings: Settings, harness: Harness
+) -> None:
+    application = harness.application
+    application.during_run = lambda: harness.servers[0].on_request(HandoverRequest.SHOW_HUD)
+
+    await run_background(settings, deps=harness.deps())
+
+    assert application.controls.huds == 1
+    assert application.controls.shown == 0
+
+
+@pytest.mark.parametrize(
+    ("request_kind", "dashboards"), [(HandoverRequest.SHOW, 1), (HandoverRequest.SHOW_HUD, 0)]
+)
+def test_come_forward_always_brings_the_hud(request_kind: HandoverRequest, dashboards: int) -> None:
+    controls = FakeControls()
+
+    come_forward(controls, request_kind)
+
+    assert (controls.huds, controls.shown) == (1, dashboards)
 
 
 async def test_show_request_while_starting_is_harmless(
     settings: Settings, harness: Harness
 ) -> None:
     async def build(_settings: Settings, _overrides: Overrides) -> Any:
-        harness.servers[0].on_show()  # arrives before the assistant exists
+        harness.servers[0].on_request(HandoverRequest.SHOW)  # before the assistant exists
         return harness.application
 
     deps = replace(harness.deps(), application=build)
 
     assert await run_background(settings, deps=deps) == EXIT_OK
     assert harness.application.controls.shown == 0
+    assert harness.application.controls.huds == 0
 
 
 # -- failures stay visible -------------------------------------------------------------------
@@ -340,6 +387,7 @@ async def test_error_tray_menu_explains_and_quits() -> None:
     controls.show_dashboard()
     controls.toggle_overlay()
     controls.toggle_microphone()
+    controls.bring_hud_forward()
     controls.quit()
 
     assert explained.is_set()
@@ -361,6 +409,22 @@ async def test_show_from_the_error_tray_notifies_the_reason_again(
 
     assert len(harness.messages) == 2
     assert harness.messages[0] == harness.messages[1]
+
+
+async def test_a_hud_only_launch_into_the_error_tray_repeats_the_reason(
+    settings: Settings, harness: Harness
+) -> None:
+    harness.build_error = VoiceUnavailableError("no models")
+
+    async def tray(_bus: object, callbacks: ErrorTrayControls, _settings: object) -> FakeTray:
+        loop = asyncio.get_running_loop()
+        loop.call_soon(harness.servers[0].on_request, HandoverRequest.SHOW_HUD)
+        loop.call_later(0.05, callbacks.quit)
+        return FakeTray()
+
+    assert await run_background(settings, deps=replace(harness.deps(), tray=tray)) == EXIT_FAILED
+
+    assert len(harness.messages) == 2
 
 
 async def test_a_failing_notification_is_logged_not_raised() -> None:
@@ -478,13 +542,17 @@ def _file_logging_cleanup() -> Iterator[None]:
 def test_run_windowless_logs_to_the_file_and_returns_the_session_code(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def session(_settings: Settings, *, wake_word: bool) -> int:
+    requests: list[HandoverRequest] = []
+
+    async def session(_settings: Settings, *, wake_word: bool, request: HandoverRequest) -> int:
         background.log.info("inside", wake_word=wake_word)
+        requests.append(request)
         return EXIT_OK
 
     monkeypatch.setattr(background, "run_background", session)
 
-    assert run_windowless(settings, wake_word=False) == EXIT_OK
+    assert run_windowless(settings, wake_word=False, request=HandoverRequest.SHOW_HUD) == EXIT_OK
+    assert requests == [HandoverRequest.SHOW_HUD]
 
     log_path = settings.data_dir / "logs" / "jarvis.log"
     events = [json.loads(line)["event"] for line in log_path.read_text("utf-8").splitlines()]
@@ -495,7 +563,7 @@ def test_run_windowless_logs_to_the_file_and_returns_the_session_code(
 def test_run_windowless_logs_an_unexpected_crash_and_fails(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    async def session(_settings: Settings, *, wake_word: bool) -> int:
+    async def session(_settings: Settings, **_options: object) -> int:
         raise OSError("data directory is read-only")
 
     monkeypatch.setattr(background, "run_background", session)

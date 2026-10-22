@@ -135,6 +135,9 @@ class FrontEnd:
             the interactive HUD's quit and mute go through them (ADR-0024).
         toggle_hud_minimized: Shrinks the HUD to its orb or restores it,
             for the tray's "Minimize HUD" entry, if there is a HUD.
+        bring_hud_forward: Shows the HUD in full and replays its boot
+            animation, for a launch while Jarvis runs (ADR-0025), if there
+            is a HUD.
     """
 
     source: InputSource
@@ -147,6 +150,7 @@ class FrontEnd:
     microphone: MicrophoneSwitch | None = None
     bind_controls: Callable[[AppControls], None] | None = None
     toggle_hud_minimized: Callable[[], Awaitable[None]] | None = None
+    bring_hud_forward: Callable[[], Awaitable[None]] | None = None
 
 
 FrontEndBuilder = Callable[[FrontEndRequest], Awaitable[FrontEnd]]
@@ -618,6 +622,7 @@ async def build_ui(
         toggle_overlay=front.toggle_overlay,
         microphone=front.microphone,
         toggle_hud_minimized=front.toggle_hud_minimized,
+        bring_hud_forward=front.bring_hud_forward,
     )
     await build_tray(settings, bus, stack, controls)
     if front.bind_controls is not None:

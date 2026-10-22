@@ -737,6 +737,10 @@ bool OverlayWindow::playBoot(BootReadout readout) {
     return impl_->model.playBoot(std::move(readout));
 }
 
+void OverlayWindow::replayBoot(BootReadout readout) {
+    impl_->model.replayBoot(std::move(readout));
+}
+
 bool OverlayWindow::skipBoot() {
     return impl_->model.skipBoot();
 }

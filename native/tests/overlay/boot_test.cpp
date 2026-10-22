@@ -169,6 +169,23 @@ TEST_CASE("leaving Idle during the boot skips to the hand-off", "[overlay][boot]
     REQUIRE_FALSE(animator.advance(snapshot, at(1.01 + glide)).boot.has_value());
 }
 
+TEST_CASE("a replayed boot plays every act again after the first one ended", "[overlay][boot]") {
+    jarvis::overlay::OverlayModel model;
+    anim::OverlayAnimator animator{at(0.0)};
+    REQUIRE(model.playBoot(at(0.0)));
+    const float duration = animator.timeline().duration();
+    REQUIRE_FALSE(
+        animator.advance(model.snapshot(at(duration + 1.0)), at(duration + 1.0)).boot.has_value());
+
+    const double replayAt = duration + 10.0;
+    model.replayBoot({}, at(replayAt));
+    const auto& ignition = animator.advance(model.snapshot(at(replayAt)), at(replayAt));
+    REQUIRE(ignition.boot.value_or(anim::BootFrame{}).act == anim::BootAct::Ignition);
+    const double systems = replayAt + animator.timeline().beats().systemsStart + 0.1;
+    const auto& check = animator.advance(model.snapshot(at(systems)), at(systems));
+    REQUIRE(check.boot.value_or(anim::BootFrame{}).act == anim::BootAct::SystemsCheck);
+}
+
 TEST_CASE("the boot is the brightest, glitchiest moment and idle the calmest", "[overlay][boot]") {
     anim::OverlayAnimator animator{at(0.0)};
     OverlaySnapshot snapshot;

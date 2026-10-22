@@ -2,7 +2,8 @@
 
 The overlay (ADR-0011) has cheap, thread-safe setters and never calls
 back. This bridge is the only code that feeds it: state changes, the wake
-pulse and the transcript arrive as bus events; response lines come from the
+pulse and the transcript arrive as bus events (a wake word or the voice
+hotkey also brings back a HUD the user closed); response lines come from the
 voice output as each sentence starts; and a small task samples the
 microphone level while LISTENING and the playback level while SPEAKING at
 about 20 Hz for the waveform.
@@ -84,6 +85,13 @@ class OverlayView(Protocol):
     def flash_wake_word(self) -> None:
         """Pulse the indicator."""
 
+    @property
+    def visible(self) -> bool:
+        """Whether the HUD is shown (not closed)."""
+
+    def show(self) -> None:
+        """Show the HUD again."""
+
     def add_history(self, role: HistoryRole, text: str) -> None:
         """Append one line to the expanded view's conversation."""
 
@@ -98,7 +106,7 @@ class HudHandlers(Protocol):
         """A typed request."""
 
     def close(self) -> None:
-        """Hide the HUD."""
+        """Hide the HUD until it is needed again."""
 
     def quit(self) -> None:
         """Quit Jarvis (confirmed in the HUD)."""
@@ -211,6 +219,12 @@ class OverlayBridge:
         self._overlay.set_state(OverlayState[event.new.name])
 
     def _on_wake(self, _event: WakeWordHeard) -> None:
+        if not self._overlay.visible:
+            # Closed with the HUD's close control (or hidden from the tray):
+            # waking Jarvis is wanting to see it, so it comes back. An orb
+            # stays an orb; it is shown, not restored.
+            log.info("overlay.revealed_by_wake")
+            self._overlay.show()
         self._overlay.flash_wake_word()
 
     def _on_transcript(self, event: TranscriptReady) -> None:
@@ -289,6 +303,12 @@ async def _route(handlers: HudHandlers, event: UiEvent) -> None:
 # - Bus callbacks rather than a subscription task: the overlay setters take
 #   nanoseconds, so running them synchronously on publish is cheaper than
 #   a queue hop and still never blocks the publisher.
+# - A wake (the word or the voice hotkey, both publish WakeWordHeard)
+#   shows a closed HUD with the ordinary wake ripple, not the boot: the
+#   user is about to talk and the HUD must be ready to listen at once.
+#   The full boot is kept for launches (ADR-0025). A HUD hidden because a
+#   full-screen application is in front is not "closed" (that hiding is
+#   native and does not change visible), so a wake does not fight it.
 # - The level pump runs only one source at a time, chosen by state, so the
 #   waveform shows the user while they talk and Jarvis while it talks, and
 #   stays flat when idle instead of drawing room noise.

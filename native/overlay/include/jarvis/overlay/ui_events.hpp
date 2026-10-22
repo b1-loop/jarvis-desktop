@@ -28,7 +28,9 @@ struct SubmitText {
     [[nodiscard]] bool operator==(const SubmitText&) const = default;
 };
 
-/// The close control: hide the HUD (the tray brings it back).
+/// The close control: hide the HUD until it is needed again. Python
+/// shows it on the next wake word or voice hotkey, on a relaunch, or from
+/// the tray (core/overlay_bridge.py, core/hud_wiring.py).
 struct CloseRequested {
     [[nodiscard]] bool operator==(const CloseRequested&) const = default;
 };

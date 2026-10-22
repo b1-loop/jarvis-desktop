@@ -127,8 +127,10 @@ public:
     void setVisible(bool visible);
     void flashWakeWord(Clock::time_point now = Clock::now());
 
-    /// Start the boot sequence at @p now. Idempotent: only the first call
-    /// in the model's lifetime starts it.
+    /// Start the start-up boot sequence at @p now. Idempotent: only the
+    /// first call in the model's lifetime starts it, because the launcher
+    /// and the voice front end may both ask for it. replayBoot() is the
+    /// deliberate way to play it again.
     /// @return true if this call started it.
     bool playBoot(Clock::time_point now = Clock::now());
 
@@ -136,6 +138,14 @@ public:
     /// characters beyond the limits are dropped. A repeat call changes
     /// nothing, including the readout.
     bool playBoot(BootReadout readout, Clock::time_point now = Clock::now());
+
+    /// Play the whole boot sequence again from its first act at @p now,
+    /// with a fresh @p readout (bounded like playBoot's), whether or not a
+    /// boot played before or is playing now. Used when the user launches
+    /// Jarvis while it is already running. When Jarvis is not Idle the
+    /// replay is skipped at once, as leaving Idle skips a running boot: it
+    /// only glides into the corner instead of covering a conversation.
+    void replayBoot(BootReadout readout, Clock::time_point now = Clock::now());
 
     /// Skip the boot sequence at @p now (it still eases into the corner).
     /// @return true if a started, not yet skipped boot was skipped.
