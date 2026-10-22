@@ -75,7 +75,7 @@ class IntegrationFactory:
             from jarvis.integrations.outlook import OutlookProvider
 
             providers.append(OutlookProvider(self._http, self._microsoft()))
-        return _chosen("email", providers, StubEmailProvider)
+        return _chosen("email", providers, StubEmailProvider, demo=self._settings.demo_integrations)
 
     def calendar(self) -> list[CalendarProvider]:
         """Google Calendar and/or Outlook, else the stub."""
@@ -88,7 +88,9 @@ class IntegrationFactory:
             from jarvis.integrations.outlook import OutlookProvider
 
             providers.append(OutlookProvider(self._http, self._microsoft()))
-        return _chosen("calendar", providers, StubCalendarProvider)
+        return _chosen(
+            "calendar", providers, StubCalendarProvider, demo=self._settings.demo_integrations
+        )
 
     def music(self) -> list[MusicProvider]:
         """Spotify when both client id and secret are set, else the stub."""
@@ -100,7 +102,7 @@ class IntegrationFactory:
             cache_path = settings.data_dir / TOKENS_SUBDIR / "spotify.json"
             auth = SpotifyAuth.from_settings(settings, cache_path)
             providers.append(SpotifyProvider(self._http, auth))
-        return _chosen("music", providers, StubMusicProvider)
+        return _chosen("music", providers, StubMusicProvider, demo=self._settings.demo_integrations)
 
     def chat(self) -> list[ChatProvider]:
         """Slack, Discord and/or Teams, else the stub."""
@@ -117,7 +119,7 @@ class IntegrationFactory:
             from jarvis.integrations.teams import TeamsProvider
 
             providers.append(TeamsProvider(self._http, self._microsoft()))
-        return _chosen("chat", providers, StubChatProvider)
+        return _chosen("chat", providers, StubChatProvider, demo=self._settings.demo_integrations)
 
     def smart_home(self) -> list[SmartHomeProvider]:
         """Home Assistant when URL and token are set, else the stub."""
@@ -127,7 +129,9 @@ class IntegrationFactory:
             from jarvis.integrations.home_assistant import HomeAssistantProvider
 
             providers.append(HomeAssistantProvider.from_settings(settings, self._http))
-        return _chosen("smart_home", providers, StubSmartHomeProvider)
+        return _chosen(
+            "smart_home", providers, StubSmartHomeProvider, demo=self._settings.demo_integrations
+        )
 
     def _google(self) -> TokenSource:
         """One Google sign-in covering Gmail and Calendar."""
@@ -152,8 +156,19 @@ class IntegrationFactory:
         return self._microsoft_auth
 
 
-def _chosen[P: Provider](service: str, providers: Sequence[P], stub: Callable[[], P]) -> list[P]:
-    chosen = list(providers) or [stub()]
+def _chosen[P: Provider](
+    service: str, providers: Sequence[P], stub: Callable[[], P], *, demo: bool
+) -> list[P]:
+    """Real providers, else the ``Stub*`` demo data only when asked for, else none.
+
+    Without credentials the list is empty, so tools answer "that integration
+    isn't configured" and the proactive meeting trigger stays quiet. Stub
+    fixtures are sample data; serving them unasked made Jarvis announce a
+    made-up meeting as if it were on the user's calendar.
+    """
+    chosen = list(providers) or ([stub()] if demo else [])
+    if not chosen:
+        log.info("integrations.provider.none", service=service)
     for provider in chosen:
         log.info(
             "integrations.provider.selected",

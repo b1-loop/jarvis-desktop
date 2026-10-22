@@ -137,13 +137,26 @@ def test_registry_discovers_the_bundled_tools() -> None:
     assert "current_time" in registry
 
 
-async def test_integrations_default_to_stubs(make_settings: MakeSettings, tmp_path: Path) -> None:
+async def test_integrations_are_empty_without_accounts(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
     async with AsyncExitStack() as stack:
         providers = build_integrations(make_settings(data_dir=tmp_path), stack)
 
+    assert providers.email == providers.calendar == ()
+    assert providers.music == providers.chat == providers.smart_home == ()
+
+
+async def test_integrations_serve_stubs_only_in_demo_mode(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    async with AsyncExitStack() as stack:
+        providers = build_integrations(
+            make_settings(data_dir=tmp_path, demo_integrations=True), stack
+        )
+
     assert isinstance(providers.email[0], StubEmailProvider)
     assert isinstance(providers.calendar[0], StubCalendarProvider)
-    assert len(providers.music) == len(providers.chat) == len(providers.smart_home) == 1
 
 
 async def test_application_runs_a_conversation_and_releases_resources(
