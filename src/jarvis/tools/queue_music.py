@@ -38,6 +38,7 @@ class QueueMusicTool(Tool[QueueMusicInput]):
     )
     Input = QueueMusicInput
     category = ToolCategory.MEDIA
+    keywords = ("kö", "kön", "köa")
 
     async def run(self, params: QueueMusicInput, context: ToolContext) -> ToolResult:
         """Queue the best hit and say what it was."""

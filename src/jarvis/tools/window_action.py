@@ -53,6 +53,7 @@ class WindowActionTool(Tool[WindowActionInput]):
     )
     Input = WindowActionInput
     category = ToolCategory.SYSTEM
+    keywords = ("minimera", "maximera", "fönster", "fönstret")
 
     def needs_confirmation(self, params: WindowActionInput, context: ToolContext) -> bool:
         """Only closing can lose anything; the size changes are trivially undone."""

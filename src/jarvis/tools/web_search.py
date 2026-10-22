@@ -50,7 +50,19 @@ class WebSearchTool(Tool[WebSearchInput]):
     )
     Input = WebSearchInput
     category = ToolCategory.WEB
-    keywords = ("weather", "news", "google", "internet", "online")
+    keywords = (
+        "weather",
+        "news",
+        "google",
+        "internet",
+        "online",
+        "sök",
+        "söka",
+        "googla",
+        "väder",
+        "vädret",
+        "nyheter",
+    )
 
     async def run(self, params: WebSearchInput, context: ToolContext) -> ToolResult:
         """Query the backend and format the hits."""

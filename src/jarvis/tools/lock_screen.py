@@ -22,7 +22,7 @@ class LockScreenTool(Tool[LockScreenInput]):
     description = "Lock the computer (the user must sign in again). Use for 'lock my PC'."
     Input = LockScreenInput
     category = ToolCategory.SYSTEM
-    keywords = ("computer", "pc", "laptop")
+    keywords = ("computer", "pc", "laptop", "lås", "låsa", "dator")
     requires_confirmation = True
 
     def confirmation_prompt(self, params: LockScreenInput) -> str:

@@ -212,3 +212,36 @@ def test_wake_word_threshold_defaults_above_observed_false_triggers(
     assert make_settings().wake_word_threshold == pytest.approx(0.8)
     with pytest.raises(ValidationError):
         make_settings(wake_word_threshold=1.0)
+
+
+def test_tool_selection_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The suite turns the embedding model off by environment; check the real default.
+    monkeypatch.delenv("JARVIS_TOOL_EMBEDDING_MODEL")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.tool_embedding_model == "bge-m3"
+    assert settings.tool_embedding_timeout_ms == 150
+    assert settings.tool_selection_keyword_weight == pytest.approx(0.4)
+    assert settings.tool_selection_semantic_weight == pytest.approx(0.6)
+    assert settings.ollama_think is False
+
+
+@pytest.mark.parametrize(("value", "expected"), [("none", None), ("OFF", None), ("nomic", "nomic")])
+def test_tool_embedding_model_can_be_switched_off(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: str | None
+) -> None:
+    monkeypatch.setenv("JARVIS_TOOL_EMBEDDING_MODEL", value)
+
+    assert Settings(_env_file=None).tool_embedding_model == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("false", False), ("true", True), ("default", None), ("auto", None)]
+)
+def test_ollama_think_accepts_the_model_default(
+    monkeypatch: pytest.MonkeyPatch, value: str, expected: bool | None
+) -> None:
+    monkeypatch.setenv("JARVIS_OLLAMA_THINK", value)
+
+    assert Settings(_env_file=None).ollama_think is expected

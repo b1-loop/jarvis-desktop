@@ -51,6 +51,7 @@ class AddReminderTool(Tool[AddReminderInput]):
     )
     Input = AddReminderInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("remind", "påminn", "påminnelse")
 
     async def run(self, params: AddReminderInput, context: ToolContext) -> ToolResult:
         """Normalise the time, check it is in the future and store it."""

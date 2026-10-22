@@ -66,6 +66,7 @@ class FindFilesTool(Tool[FindFilesInput]):
     )
     Input = FindFilesInput
     category = ToolCategory.FILES
+    keywords = ("hitta", "fil", "filer", "dokument")
 
     async def run(self, params: FindFilesInput, context: ToolContext) -> ToolResult:
         """Search the roots and phrase the matches."""

@@ -30,7 +30,7 @@ class GetVolumeTool(Tool[GetVolumeInput]):
     description = "Get the current master volume (0-100) and whether sound is muted."
     Input = GetVolumeInput
     category = ToolCategory.SYSTEM
-    keywords = ("loud", "sound", "audio")
+    keywords = ("loud", "sound", "audio", "volym", "ljud")
 
     async def run(self, params: GetVolumeInput, context: ToolContext) -> ToolResult:
         """Read both values; mute matters because "it's silent" may not be the level."""
@@ -79,7 +79,20 @@ class SetVolumeTool(Tool[SetVolumeInput]):
     )
     Input = SetVolumeInput
     category = ToolCategory.SYSTEM
-    keywords = ("louder", "quieter", "sound", "audio")
+    keywords = (
+        "louder",
+        "quieter",
+        "sound",
+        "audio",
+        "volym",
+        "ljud",
+        "höj",
+        "höja",
+        "sänk",
+        "sänka",
+        "högre",
+        "lägre",
+    )
 
     async def run(self, params: SetVolumeInput, context: ToolContext) -> ToolResult:
         """Compute the target, clamp, apply and unmute."""
@@ -107,7 +120,7 @@ class MuteTool(Tool[MuteInput]):
     description = "Mute (muted=true) or unmute (muted=false) all sound output."
     Input = MuteInput
     category = ToolCategory.SYSTEM
-    keywords = ("silence", "quiet", "sound", "audio")
+    keywords = ("silence", "quiet", "sound", "audio", "tyst", "tysta", "ljudet")
 
     async def run(self, params: MuteInput, context: ToolContext) -> ToolResult:
         """Apply the mute state."""

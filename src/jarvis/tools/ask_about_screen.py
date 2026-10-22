@@ -35,6 +35,7 @@ class AskAboutScreenTool(Tool[AskAboutScreenInput]):
     )
     Input = AskAboutScreenInput
     category = ToolCategory.INFORMATION
+    keywords = ("skärm", "skärmen")
 
     async def run(self, params: AskAboutScreenInput, context: ToolContext) -> ToolResult:
         """Pass the question straight to the vision service."""

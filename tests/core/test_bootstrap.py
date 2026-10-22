@@ -7,6 +7,8 @@ from typing import Any
 import pytest
 
 from jarvis.agent.registry import ToolRegistry
+from jarvis.agent.tool_embeddings import EmbeddingToolRanker
+from jarvis.agent.tool_selection import RelevanceToolSelector
 from jarvis.config import Settings
 from jarvis.core import bootstrap
 from jarvis.core.bootstrap import (
@@ -36,6 +38,43 @@ MakeSettings = Callable[..., Settings]
 
 def ollama_settings(make_settings: MakeSettings, tmp_path: Path, **extra: Any) -> Settings:
     return make_settings(llm_provider="ollama", data_dir=tmp_path, **extra)
+
+
+async def test_tool_selection_is_hybrid_with_an_embedding_model(
+    make_settings: MakeSettings, tmp_path: Path
+) -> None:
+    # A closed port: the background warm-up fails fast and the turn falls back to words.
+    settings = ollama_settings(
+        make_settings,
+        tmp_path,
+        tool_embedding_model="bge-m3",
+        tool_embedding_timeout_ms=40,
+        ollama_base_url="http://127.0.0.1:9",
+    )
+    async with AsyncExitStack() as stack:
+        selector = bootstrap.build_tool_selector(settings, stack, ToolRegistry.discover())
+
+        assert isinstance(selector, RelevanceToolSelector)
+        assert isinstance(selector.semantic, EmbeddingToolRanker)
+        assert selector.semantic.budget_seconds == pytest.approx(0.04)
+        assert selector.semantic.cache is not None
+        assert selector.semantic.cache.path == tmp_path / "cache" / "tool_embeddings.json"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"tool_embedding_model": None}, {"llm_provider": "anthropic"}],
+    ids=["no-model", "claude-gets-every-tool"],
+)
+async def test_tool_selection_is_words_only_without_a_model_or_a_cap(
+    make_settings: MakeSettings, tmp_path: Path, overrides: dict[str, Any]
+) -> None:
+    settings = make_settings(**{"data_dir": tmp_path, "tool_embedding_model": "bge-m3"} | overrides)
+    async with AsyncExitStack() as stack:
+        selector = bootstrap.build_tool_selector(settings, stack, ToolRegistry.discover())
+
+        assert isinstance(selector, RelevanceToolSelector)
+        assert selector.semantic is None
 
 
 async def test_platform_falls_back_to_the_stub_without_the_native_build(
