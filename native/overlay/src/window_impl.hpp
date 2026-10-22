@@ -5,7 +5,8 @@
 /// window.cpp holds the lifecycle, the frame loop and the public facade;
 /// window_input.cpp the window procedure, hit-testing, hover, dragging and
 /// keyboard focus; window_place.cpp monitors, placement and the per-frame
-/// layout. Nothing outside those three files includes this header.
+/// layout; window_orb.cpp minimizing to the orb, auto-minimize and hiding
+/// in full screen. Nothing outside those four files includes this header.
 
 #pragma once
 
@@ -14,6 +15,7 @@
 #include "jarvis/overlay/hud_data.hpp"
 #include "jarvis/overlay/hud_layout.hpp"
 #include "jarvis/overlay/layout.hpp"
+#include "jarvis/overlay/minimize_policy.hpp"
 #include "jarvis/overlay/model.hpp"
 #include "jarvis/overlay/placement.hpp"
 #include "jarvis/overlay/ui_events.hpp"
@@ -77,19 +79,26 @@ struct FrameLayout {
     RectF frame;
     CollapsedLayout collapsed;
     ExpandedLayout expanded;
+    /// Linear HUD-to-orb morph progress (orb.hpp), 0 = HUD, 1 = orb.
+    float orb{0.0F};
 };
 
 /// What a mouse drag is doing.
 enum class DragMode : std::uint8_t { None, Move, Resize };
 
+/// The three movable things, each with its own remembered placement.
+enum class HudPanel : std::uint8_t { Corner, Expanded, Orb };
+
 /// A drag in progress (UI thread only).
 struct DragState {
     DragMode mode{DragMode::None};
-    /// Which panel: the corner HUD or the expanded panel.
-    bool expanded{false};
+    HudPanel panel{HudPanel::Corner};
     DragAnchor anchor;
     POINT start{.x = 0, .y = 0};
     Placement startRect;
+    /// The cursor left the system drag rectangle. A press on the orb is a
+    /// click (restore) until it does, then a drag.
+    bool moved{true};
 };
 
 /// UTF-8 to UTF-16 for Win32 calls.
@@ -129,6 +138,8 @@ struct OverlayWindow::Impl {
     UiEventQueue events;
     HudDataModel hudData;
     std::atomic<bool> expandedNow{false};
+    std::atomic<bool> minimizedNow{false};
+    std::atomic<bool> fullscreenNow{false};
     mutable std::mutex demoMutex;
     DemoOverrides demo;  // guarded by demoMutex
     std::atomic<std::uint64_t> demoRevision{0};
@@ -193,6 +204,22 @@ struct OverlayWindow::Impl {
     std::uint64_t seenDemo{0};
     bool demoHover{false};
 
+    // Minimize to the orb (ADR-0024, update).
+    std::optional<SavedPlacement> orbSaved;
+    /// The orb in screen pixels (no bleed), wherever it docks or was dragged.
+    Placement orbPanel;
+    /// Someone asked for the orb (the control, Python, auto-minimize).
+    bool orbTarget{false};
+    /// What the morph heads for: the orb waits for the boot and a collapse.
+    bool orbGoal{false};
+    float orbLinear{0.0F};
+    std::uint64_t seenMinimizeRequest{0};
+    AutoMinimizer autoMinimizer;
+    bool fullscreenHidden{false};
+    Clock::time_point nextForegroundCheck{};
+    /// Size of the elliptic window region on the opaque fallback, if any.
+    std::optional<SIZE> regionSize;
+
 private:
     // window.cpp: creation and the frame loop.
     void threadMain();
@@ -208,20 +235,32 @@ private:
     void pumpMessages();
     void waitUntil(Clock::time_point deadline) const;
     void updateVisibility(bool visible);
-    void renderFrame(const OverlaySnapshot& snapshot, Clock::time_point now);
+    void renderFrame(const OverlaySnapshot& snapshot, const HudData& data, Clock::time_point now);
     void drawFrame(const OverlaySnapshot& snapshot, const anim::AnimationFrame& frame,
                    const FrameLayout& layout, const HudData& data);
     void runInteraction(const hud::HudScene& scene, const FrameLayout& layout, const HudData& data);
     void submitFrame();
     void applyHudData(const HudData& data);
     void applyDemo();
-    void advanceInteraction(Clock::time_point now);
+    void advanceInteraction(Clock::time_point now, bool booting);
+
+    // window_orb.cpp: minimize to the orb, auto-minimize, full-screen hiding.
+    void applyMinimizeRequest(const HudData& data);
+    void setOrbTarget(bool minimized, bool automatic, bool report);
+    void runAutoMinimize(const OverlaySnapshot& snapshot, const HudData& data, bool booting,
+                         Clock::time_point now);
+    void advanceOrb(float dt, bool booting);
+    [[nodiscard]] Placement orbHome() const;
+    void syncWindowRegion(const FrameLayout& layout);
+    void checkFullscreen(Clock::time_point now, bool enabled);
+    [[nodiscard]] bool orbMorphing() const noexcept;
     void recordFrame(Clock::time_point start, Clock::time_point end);
     void collectGpuTime();
     void retirePostProcessing();
     [[nodiscard]] PostSettings postSettings(const anim::AnimationFrame& frame,
                                             const FrameLayout& layout) const noexcept;
-    [[nodiscard]] std::chrono::microseconds framePeriodFor(const OverlaySnapshot& snapshot);
+    [[nodiscard]] std::chrono::microseconds framePeriodFor(const OverlaySnapshot& snapshot,
+                                                           bool visible);
     void shutdown();
 
     // window_place.cpp: monitors, placement, layout.
@@ -234,10 +273,16 @@ private:
     void placeBoot(FrameLayout& layout, const anim::BootFrame& boot,
                    const HudGeometry& panelHud) const;
     void placeExpanded(FrameLayout& layout, const HudGeometry& panelHud) const;
+    void placeOrb(FrameLayout& layout, const HudGeometry& panelHud) const;
     void applyPlacement(const Placement& target);
     void resetPlacement(bool expanded);
-    void reportPlacement(bool expanded);
+    void reportPlacement(HudPanel panel);
+    void forgetOrbPlacement();
     [[nodiscard]] const MonitorArea& monitorOf(const Placement& rect) const;
+    /// The placement of @p panel (cornerPanel, expandedPanel or orbPanel).
+    [[nodiscard]] Placement& panelRect(HudPanel panel) noexcept;
+    /// Which panel is fully on screen (mid-morph: the one it comes from).
+    [[nodiscard]] HudPanel activePanel() const noexcept;
 
     // window_input.cpp: input, hit-testing, focus, dragging.
     void setClickThrough(bool on) const;
@@ -250,8 +295,12 @@ private:
     [[nodiscard]] HitKind hitAt(LPARAM screenPoint) const;
     [[nodiscard]] HitKind hitAtClient(POINT client) const;
     bool beginDrag(POINT client, bool doubleClick);
+    /// The cursor moved beyond the system's drag threshold since the press.
+    [[nodiscard]] bool leftDragRectangle(POINT cursor) const noexcept;
     void continueDrag();
-    void endDrag();
+    /// @p released: the button went up (a click on the orb restores);
+    /// false when the capture was taken away.
+    void endDrag(bool released);
     [[nodiscard]] bool onSetCursor() const;
     [[nodiscard]] std::optional<LRESULT> handleInput(UINT message, WPARAM wParam, LPARAM lParam);
     [[nodiscard]] std::optional<LRESULT> handleMouse(UINT message, LPARAM lParam);

@@ -31,6 +31,9 @@ struct MonitorArea {
     /// DPI scale of the monitor (1 at 96 DPI).
     float scale{1.0F};
     bool primary{false};
+    /// The whole monitor (MONITORINFO::rcMonitor), taskbar included; what a
+    /// full-screen window covers.
+    PixelRect bounds;
 
     [[nodiscard]] bool operator==(const MonitorArea&) const = default;
 };

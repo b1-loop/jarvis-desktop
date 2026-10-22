@@ -40,6 +40,15 @@ TEST_CASE("every event kind has the snake-case name Python dispatches on", "[ove
     REQUIRE(kindOf(RestartRequested{}) == "restart");
     REQUIRE(kindOf(jarvis::overlay::SettingsOpened{}) == "settings_opened");
     REQUIRE(kindOf(PlacementChanged{}) == "placement_changed");
+    REQUIRE(kindOf(jarvis::overlay::Minimized{.automatic = true}) == "minimize");
+    REQUIRE(kindOf(jarvis::overlay::Restored{}) == "restore");
+}
+
+TEST_CASE("the orb's placement coalesces apart from the HUD's", "[overlay][events]") {
+    REQUIRE(coalesces(PlacementChanged{.orb = true}, PlacementChanged{.orb = true}));
+    REQUIRE_FALSE(coalesces(PlacementChanged{.orb = false}, PlacementChanged{.orb = true}));
+    REQUIRE_FALSE(coalesces(jarvis::overlay::Minimized{}, jarvis::overlay::Minimized{}));
+    REQUIRE_FALSE(coalesces(jarvis::overlay::Minimized{}, jarvis::overlay::Restored{}));
 }
 
 TEST_CASE("events come out in the order they went in, and drain empties", "[overlay][events]") {

@@ -65,6 +65,18 @@ struct OverlayConfig {
     /// opens it at kExpandedWidth x kExpandedHeight next to the corner HUD.
     std::optional<SavedPlacement> expandedBounds;
     HudDataLimits hudLimits;
+    /// Start as the orb (the user left the HUD minimized last time); the
+    /// boot sequence, if played, still runs and then shrinks into it.
+    bool startMinimized = false;
+    /// Remembered position of the orb; unset docks it next to the HUD
+    /// (orb.hpp). Moving the HUD forgets it.
+    std::optional<SavedPlacement> orbPosition;
+    /// Shrink to the orb after this many seconds of quiet; 0 is off
+    /// (minimize_policy.hpp).
+    float autoMinimizeSeconds = 0.0F;
+    /// Hide the HUD and the orb while a full-screen application is in
+    /// front on their monitor.
+    bool hideInFullscreen = true;
 };
 
 /// Demo and test hooks that show interactive states without touching the
@@ -166,6 +178,20 @@ public:
     [[nodiscard]] bool expanded() const noexcept;
     /// Copy of the data pushed so far; for tests.
     [[nodiscard]] HudData hudData() const;
+
+    // --- minimize to the orb (ADR-0024, update) ------------------------------
+
+    /// Shrink the HUD into the orb (true) or grow it back (false), animated.
+    /// Asked for by Python, so no Minimized/Restored event is queued.
+    void setMinimized(bool minimized);
+    /// Whether the HUD is (or is animating towards) the orb, whoever asked.
+    [[nodiscard]] bool minimized() const noexcept;
+    /// Auto-minimize after @p seconds of quiet; 0 switches it off.
+    void setAutoMinimize(float seconds);
+    /// Hide while a full-screen application is in front (on by default).
+    void setHideInFullscreen(bool hide);
+    /// True while hidden because a full-screen application is in front.
+    [[nodiscard]] bool fullscreenHidden() const noexcept;
     /// Demo hook, see DemoOverrides.
     void setDemo(DemoOverrides demo);
 

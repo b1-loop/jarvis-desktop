@@ -55,6 +55,10 @@ struct InteractResult {
     bool takeFocus{false};
     /// Give keyboard focus back to the previous window.
     bool releaseFocus{false};
+    /// The minimize control was clicked: shrink to the orb. The window owns
+    /// the minimized state (it changes the window, the hit map and drags),
+    /// so the interaction layer only asks for it.
+    bool minimize{false};
 };
 
 /// UI-thread-only state and widgets of the interactive HUD.

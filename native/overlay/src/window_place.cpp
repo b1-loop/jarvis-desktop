@@ -1,6 +1,7 @@
 #include "jarvis/overlay/animation.hpp"
 #include "jarvis/overlay/hud_layout.hpp"
 #include "jarvis/overlay/layout.hpp"
+#include "jarvis/overlay/orb.hpp"
 #include "jarvis/overlay/placement.hpp"
 #include "jarvis/overlay/ui_events.hpp"
 #include "jarvis/overlay/window.hpp"
@@ -47,7 +48,11 @@ MonitorArea describeMonitor(HMONITOR monitor) {
                           .right = info.rcWork.right,
                           .bottom = info.rcWork.bottom},
         .scale = monitorScale(monitor),
-        .primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0};
+        .primary = (info.dwFlags & MONITORINFOF_PRIMARY) != 0,
+        .bounds = PixelRect{.left = info.rcMonitor.left,
+                            .top = info.rcMonitor.top,
+                            .right = info.rcMonitor.right,
+                            .bottom = info.rcMonitor.bottom}};
 }
 
 BOOL CALLBACK collectMonitor(HMONITOR monitor, HDC /*dc*/, LPRECT /*rect*/, LPARAM data) {
@@ -93,6 +98,7 @@ void OverlayWindow::Impl::resolvePlacements() {
     } else {
         expandedPanel = defaultExpanded();
     }
+    orbPanel = orbHome();
     placementDirty = false;
 }
 
@@ -135,6 +141,8 @@ FrameLayout OverlayWindow::Impl::layoutFor(const anim::AnimationFrame& frame) co
                        .frame = panelHud.text};
     if (frame.boot.has_value()) {
         placeBoot(layout, *frame.boot, panelHud);
+    } else if (orbLinear > 0.0F) {
+        placeOrb(layout, panelHud);
     } else if (expandLinear > 0.0F) {
         placeExpanded(layout, panelHud);
     } else if (transparent.load()) {
@@ -197,6 +205,30 @@ void OverlayWindow::Impl::placeExpanded(FrameLayout& layout, const HudGeometry& 
     }
 }
 
+void OverlayWindow::Impl::placeOrb(FrameLayout& layout, const HudGeometry& panelHud) const {
+    const OrbMorph morph = orbMorphAt(orbLinear);
+    const RectF orb = toRectF(orbPanel);
+    const HudGeometry orbRing{.centreX = orb.x + (orb.width * 0.5F),
+                              .centreY = orb.y + (orb.height * 0.5F),
+                              .radius = orb.width * 0.5F,
+                              .text = panelHud.text};
+    layout.orb = orbLinear;
+    layout.geometry = lerpGeometry(panelHud, orbRing, morph.travel);
+    if (transparent.load()) {
+        const Placement orbWindow = inflated(orbPanel, scaled(kOrbBleed, dpiScale));
+        // Both rectangles for the whole morph, like the expand morph.
+        layout.window = orbLinear >= 1.0F
+                            ? orbWindow
+                            : unionOf(inflated(cornerPanel, scaled(kBleed, dpiScale)), orbWindow);
+        return;
+    }
+    // The opaque fallback has no invisible pixels: the window is the
+    // shrinking ring's square, cut to a circle (syncWindowRegion).
+    const int side =
+        std::max(static_cast<int>(std::lround(layout.geometry.radius * 2.0F)), orbPanel.width);
+    layout.window = squareAt(layout.geometry.centreX, layout.geometry.centreY, side);
+}
+
 void OverlayWindow::Impl::applyPlacement(const Placement& target) {
     if (target == placement) {
         return;
@@ -218,21 +250,56 @@ void OverlayWindow::Impl::resetPlacement(bool expanded) {
     events.push(PlacementChanged{.expanded = expanded, .custom = false});
 }
 
-void OverlayWindow::Impl::reportPlacement(bool expanded) {
-    const Placement& rect = expanded ? expandedPanel : cornerPanel;
+void OverlayWindow::Impl::reportPlacement(HudPanel panel) {
+    const Placement& rect = panelRect(panel);
     const SavedPlacement saved = savePlacement(rect, monitorOf(rect));
-    if (expanded) {
-        expandedSaved = saved;
-    } else {
-        cornerSaved = saved;
+    switch (panel) {
+        case HudPanel::Expanded:
+            expandedSaved = saved;
+            break;
+        case HudPanel::Orb:
+            orbSaved = saved;
+            break;
+        case HudPanel::Corner:
+            cornerSaved = saved;
+            forgetOrbPlacement();  // the orb docks next to the HUD's new place
+            break;
     }
-    events.push(PlacementChanged{.expanded = expanded,
+    events.push(PlacementChanged{.expanded = panel == HudPanel::Expanded,
                                  .custom = true,
                                  .monitor = saved.monitor,
                                  .x = saved.x,
                                  .y = saved.y,
                                  .width = saved.width,
-                                 .height = saved.height});
+                                 .height = saved.height,
+                                 .orb = panel == HudPanel::Orb});
+}
+
+void OverlayWindow::Impl::forgetOrbPlacement() {
+    if (!orbSaved.has_value()) {
+        return;
+    }
+    orbSaved.reset();
+    events.push(PlacementChanged{.expanded = false, .custom = false, .orb = true});
+}
+
+Placement& OverlayWindow::Impl::panelRect(HudPanel panel) noexcept {
+    switch (panel) {
+        case HudPanel::Expanded:
+            return expandedPanel;
+        case HudPanel::Orb:
+            return orbPanel;
+        case HudPanel::Corner:
+            break;
+    }
+    return cornerPanel;
+}
+
+HudPanel OverlayWindow::Impl::activePanel() const noexcept {
+    if (orbLinear >= 1.0F) {
+        return HudPanel::Orb;
+    }
+    return expandLinear >= 1.0F ? HudPanel::Expanded : HudPanel::Corner;
 }
 
 }  // namespace jarvis::overlay
@@ -246,6 +313,10 @@ void OverlayWindow::Impl::reportPlacement(bool expanded) {
 // - The morph keeps the transparent window at the union of both panels
 //   for its duration (one resize at each end); the opaque fallback has no
 //   invisible pixels to spare and follows the interpolated rectangle.
+// - The orb is a third remembered rectangle. Unless the user dragged the
+//   orb itself, it docks next to wherever the HUD is (orb.hpp); dragging
+//   the HUD forgets a dragged orb, so the two never end up on opposite
+//   sides of the desktop by accident.
 // - The default expanded panel is aligned with the corner the HUD sits in,
 //   so expanding from the bottom-right corner grows up and to the left and
 //   the ring's flight into the header stays short.
