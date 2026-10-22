@@ -22,13 +22,17 @@ from numpy.typing import NDArray
 
 from jarvis import _native
 from jarvis.audio.models import AudioModelPaths
-from jarvis.utils.errors import ConfigError
+from jarvis.utils.errors import ConfigError, JarvisError
 from jarvis.utils.logging import get_logger
 
 Samples = NDArray[np.float32]
 """Mono float32 PCM in [-1, 1]."""
 
 log = get_logger(__name__)
+
+
+class AudioModelError(JarvisError):
+    """The native engine rejected a model file (corrupt, wrong format, wrong version)."""
 
 
 class AudioEventKind(StrEnum):
@@ -53,6 +57,22 @@ class AudioEvent:
     kind: AudioEventKind
     value: float
     sample_position: int
+
+
+@dataclass(frozen=True, slots=True)
+class Utterance:
+    """What :meth:`AudioEngine.record_utterance` captured.
+
+    Attributes:
+        samples: Captured audio (pre-roll included), float32 at 16 kHz.
+        speech_detected: Whether the VAD reported speech at all. False means
+            the user said nothing before the start timeout.
+        truncated: Whether the maximum utterance length cut the speech off.
+    """
+
+    samples: Samples
+    speech_detected: bool
+    truncated: bool = False
 
 
 class NativeEventType(Protocol):
@@ -99,6 +119,9 @@ class NativePlayback(Protocol):
 
     def stop_count(self) -> int:
         """How many times ``stop`` has run, including native barge-in."""
+
+    def output_level(self) -> float:
+        """RMS of the most recently rendered block, for the overlay waveform."""
 
     def sample_rate(self) -> int:
         """Rate of the output device."""
@@ -227,6 +250,23 @@ class AudioEngine:
         """Start or stop retaining audio for STT; see the native docs."""
         self._native.set_listening(listening)
 
+    def discard_pending_events(self) -> int:
+        """Drop every event already queued and return how many there were.
+
+        Events queue up while nobody waits for them (the assistant thinking
+        or speaking). A stale ``SPEECH_ENDED`` would end the next capture
+        before it began, and a stale ``WAKE_WORD_DETECTED`` (Jarvis saying
+        its own name) would open a turn nobody asked for, so the voice front
+        end clears the queue before it starts waiting.
+        """
+        discarded = 0
+        while not self._events.empty():
+            self._events.get_nowait()
+            discarded += 1
+        if discarded:
+            log.debug("audio.events.discarded", count=discarded)
+        return discarded
+
     def take_captured(self) -> Samples:
         """Return and clear the audio retained while listening."""
         return self._native.take_captured()
@@ -244,15 +284,45 @@ class AudioEngine:
         either way, so a user who talks for too long is transcribed rather
         than ignored.
         """
+        return (await self.record_utterance(speech_in_progress=True)).samples
+
+    async def record_utterance(
+        self, *, start_timeout: float | None = None, speech_in_progress: bool = False
+    ) -> Utterance:
+        """Record one utterance and report whether it contained speech.
+
+        Args:
+            start_timeout: Seconds to wait for speech to begin; ``None``
+                waits as long as the utterance limit allows.
+            speech_in_progress: The user is already talking (barge-in), so
+                only the end of speech is awaited.
+        """
         self.set_listening(True)
+        try:
+            heard = speech_in_progress or await self._speech_starts(start_timeout)
+            truncated = heard and not await self._speech_ends()
+        finally:
+            self.set_listening(False)
+        return Utterance(self.take_captured(), speech_detected=heard, truncated=truncated)
+
+    async def _speech_starts(self, limit_s: float | None) -> bool:
+        limit = self._max_utterance_seconds if limit_s is None else limit_s
+        try:
+            async with asyncio.timeout(limit):
+                await self.next_event(AudioEventKind.SPEECH_STARTED)
+        except TimeoutError:
+            log.info("audio.capture.no_speech", waited_s=limit)
+            return False
+        return True
+
+    async def _speech_ends(self) -> bool:
         try:
             async with asyncio.timeout(self._max_utterance_seconds):
                 await self.next_event(AudioEventKind.SPEECH_ENDED)
         except TimeoutError:
             log.warning("audio.capture.timeout", limit_s=self._max_utterance_seconds)
-        finally:
-            self.set_listening(False)
-        return self.take_captured()
+            return False
+        return True
 
     async def _poll_forever(self) -> None:
         try:
@@ -300,6 +370,16 @@ class Speaker:
         """True while audio is queued or more chunks are expected."""
         return self._native.is_playing()
 
+    @property
+    def output_level(self) -> float:
+        """RMS of what is being played right now, for the overlay waveform."""
+        return self._native.output_level()
+
+    @property
+    def stop_count(self) -> int:
+        """Stops so far (Python or native barge-in); a change means "interrupted"."""
+        return self._native.stop_count()
+
     async def play(self, chunks: AsyncIterator[Samples]) -> bool:
         """Play ``chunks`` as they arrive and wait for the last one to finish.
 
@@ -327,14 +407,24 @@ class Speaker:
             await asyncio.sleep(self._poll_interval)
 
 
-def create_native_engine(paths: AudioModelPaths, *, wake_word: bool = True) -> NativeEngine:
+def create_native_engine(
+    paths: AudioModelPaths, *, wake_word: bool = True, min_speech_ms: int | None = None
+) -> NativeEngine:
     """Construct the real ``jarvis_audio.AudioEngine``.
 
+    Args:
+        paths: Model files; the wake-word ones are only needed with ``wake_word``.
+        wake_word: Load openWakeWord; False runs the VAD only (hotkey operation).
+        min_speech_ms: How long speech must last before the engine reports
+            ``SPEECH_STARTED`` (and triggers native barge-in); ``None`` keeps
+            the native default.
+
     Raises:
-        ConfigError: If a model file is missing.
+        ConfigError: If a needed model file is missing.
+        AudioModelError: If the engine cannot load a model file.
         NativeUnavailableError: If the extension module is not built.
     """
-    missing = paths.missing()
+    missing = paths.missing() if wake_word else tuple(p for p in paths.missing() if p == paths.vad)
     if missing:
         names = ", ".join(path.name for path in missing)
         raise ConfigError(f"audio models missing ({names}); run scripts/download_models.py")
@@ -342,7 +432,13 @@ def create_native_engine(paths: AudioModelPaths, *, wake_word: bool = True) -> N
     wake_word_models = (
         (paths.melspectrogram, paths.embedding, paths.wake_word) if wake_word else None
     )
-    return cast(NativeEngine, module.AudioEngine(paths.vad, wake_word_models))
+    config = module.EngineConfig()
+    if min_speech_ms is not None:
+        config.pipeline.segmenter.min_speech_ms = min_speech_ms
+    try:
+        return cast(NativeEngine, module.AudioEngine(paths.vad, wake_word_models, config))
+    except module.ModelError as error:
+        raise AudioModelError(str(error)) from error
 
 
 def create_native_playback(sample_rate: int) -> NativePlayback:
@@ -358,4 +454,6 @@ def create_native_playback(sample_rate: int) -> NativePlayback:
 # - Speaker.play reports interruption via the native stop counter because
 #   barge-in happens entirely in C++; Python only learns about it afterwards.
 # - capture_utterance returns partial audio on timeout on purpose: a long
-#   monologue should be transcribed, not dropped.
+#   monologue should be transcribed, not dropped. record_utterance adds a
+#   separate start timeout so a wake word followed by silence gives up after
+#   a few seconds instead of the full utterance limit.

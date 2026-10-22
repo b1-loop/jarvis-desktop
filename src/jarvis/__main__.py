@@ -9,6 +9,7 @@ construction decision lives in a small, tested builder there.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Annotated, Final
 
@@ -17,16 +18,12 @@ import typer
 from jarvis import __version__
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core.bootstrap import run_text_mode
+from jarvis.core.voice_bootstrap import run_voice_mode
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import configure_logging, get_logger
 
 EXIT_STARTUP_FAILED: Final = 2
 """Exit code when the assistant cannot be assembled (missing key, broken database)."""
-
-VOICE_MODE_NOTICE: Final = (
-    "Voice mode (wake word, speech in and out) arrives in step 7. "
-    "Starting text mode instead; type your requests."
-)
 
 app = typer.Typer(
     add_completion=False,
@@ -89,7 +86,7 @@ def run(
     )
     _announce(options)
     try:
-        asyncio.run(run_text_mode(settings))
+        asyncio.run(session(settings, options))
     except JarvisError as error:
         typer.echo(f"Jarvis could not start: {error}", err=True)
         raise typer.Exit(code=EXIT_STARTUP_FAILED) from error
@@ -108,8 +105,13 @@ def _announce(options: LaunchOptions) -> None:
         f"Starting Jarvis (mode={options.mode.value}, text_only={options.text_only}, "
         f"wake_word={options.wake_word_enabled})."
     )
-    if not options.text_only:
-        typer.echo(VOICE_MODE_NOTICE)
+
+
+def session(settings: Settings, options: LaunchOptions) -> Coroutine[object, object, None]:
+    """The conversation to run: voice by default, the terminal with ``--text-only``."""
+    if options.text_only:
+        return run_text_mode(settings)
+    return run_voice_mode(settings, wake_word=options.wake_word_enabled)
 
 
 def main() -> None:
@@ -126,7 +128,8 @@ if __name__ == "__main__":
 #   and the same declaration serves ``python -m jarvis`` and ``uv run jarvis``.
 # - LaunchOptions is separate from Settings on purpose: command-line flags
 #   describe this launch, settings describe the environment.
-# - Without --text-only the CLI says plainly that voice mode is not built
-#   yet and runs text mode, rather than pretending to listen.
+# - Voice is the default. When it cannot run (no native build, no models,
+#   no microphone) run_voice_mode says why and continues in text mode
+#   rather than pretending to listen.
 # - Ctrl+C cancels the main task; the bootstrap's exit stack still closes
 #   the database and connections before KeyboardInterrupt reaches here.

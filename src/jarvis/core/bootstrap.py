@@ -15,6 +15,7 @@ orchestrator.
 from __future__ import annotations
 
 import importlib.util
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Final, Protocol, runtime_checkable
@@ -29,6 +30,7 @@ from jarvis.agent.tool import ConfirmationAsker, IntegrationProviders, ToolConte
 from jarvis.config import Settings
 from jarvis.core.events import EventBus
 from jarvis.core.orchestrator import (
+    HELP_NOTICE,
     InputSource,
     Orchestrator,
     OutputSink,
@@ -61,11 +63,57 @@ class _Closeable(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class FrontEndRequest:
+    """What a front-end builder may use: the shared core built before it.
+
+    Attributes:
+        settings: The session's settings.
+        bus: The process-wide event bus.
+        state: The state machine the orchestrator will drive.
+        platform: The OS backend (hotkeys).
+        llm: The LLM client, which a front end may wrap (latency probes).
+        stack: Where the front end registers its own cleanup.
+    """
+
+    settings: Settings
+    bus: EventBus
+    state: StateMachine
+    platform: Platform
+    llm: LLMClient
+    stack: AsyncExitStack
+
+
+@dataclass(frozen=True, slots=True)
+class FrontEnd:
+    """How the user talks to the assistant: terminal or voice.
+
+    Attributes:
+        source: Where requests come from.
+        sink: Where answers go.
+        ask: How confirmation questions are asked.
+        llm: Replacement LLM client (a wrapper of the request's), if any.
+        greeting: First notice of the session.
+        attach: Called with the orchestrator once it exists (barge-in).
+    """
+
+    source: InputSource
+    sink: OutputSink
+    ask: ConfirmationAsker
+    llm: LLMClient | None = None
+    greeting: str = HELP_NOTICE
+    attach: Callable[[Orchestrator], None] | None = None
+
+
+FrontEndBuilder = Callable[[FrontEndRequest], Awaitable[FrontEnd]]
+"""Builds a front end from the shared core; the voice one lives in ``voice_bootstrap``."""
+
+
+@dataclass(frozen=True, slots=True)
 class Overrides:
     """Pre-built components that replace what the builders would create.
 
-    Used by tests (fake LLM, scripted input) and by future front ends that
-    bring their own input and output (the voice pipeline in step 7).
+    Used by tests (fake LLM, scripted input) and by front ends that bring
+    their own input and output (``front_end``, the voice pipeline).
     """
 
     source: InputSource | None = None
@@ -74,6 +122,7 @@ class Overrides:
     platform: Platform | None = None
     vectors: VectorStore | None = None
     registry: ToolRegistry | None = None
+    front_end: FrontEndBuilder | None = None
 
 
 @dataclass
@@ -128,13 +177,32 @@ async def _assemble(settings: Settings, overrides: Overrides, stack: AsyncExitSt
     registry = overrides.registry or build_registry()
     platform = overrides.platform or build_platform(stack)
     integrations = build_integrations(settings, stack)
+    state = StateMachine(bus)
+    request = FrontEndRequest(settings, bus, state, platform, llm, stack)
+    front = await (overrides.front_end or _text_front_end(overrides))(request)
+    context = build_tool_context(settings, bus, front.ask, platform, integrations)
+    agent = build_agent(settings, front.llm or llm, registry, context, memory)
+    orchestrator = Orchestrator(
+        agent=agent, state=state, source=front.source, sink=front.sink, greeting=front.greeting
+    )
+    if front.attach is not None:
+        front.attach(orchestrator)
+    return Application(orchestrator=orchestrator, agent=agent, resources=stack)
+
+
+def _text_front_end(overrides: Overrides) -> FrontEndBuilder:
+    async def build(request: FrontEndRequest) -> FrontEnd:
+        return build_text_front_end(request.settings, overrides)
+
+    return build
+
+
+def build_text_front_end(settings: Settings, overrides: Overrides | None = None) -> FrontEnd:
+    """Terminal input and output, with y/n confirmation; scripted ones from ``overrides``."""
+    overrides = overrides or Overrides()
     source = overrides.source or TerminalInput()
     sink = overrides.sink or TerminalOutput(settings.assistant_name)
-    ask = TerminalConfirmation(source, sink)
-    context = build_tool_context(settings, bus, ask, platform, integrations)
-    agent = build_agent(settings, llm, registry, context, memory)
-    orchestrator = Orchestrator(agent=agent, state=StateMachine(bus), source=source, sink=sink)
-    return Application(orchestrator=orchestrator, agent=agent, resources=stack)
+    return FrontEnd(source=source, sink=sink, ask=TerminalConfirmation(source, sink))
 
 
 def build_bus(stack: AsyncExitStack) -> EventBus:

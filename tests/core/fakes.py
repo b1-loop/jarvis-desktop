@@ -26,12 +26,17 @@ class ScriptedInput:
 class RecordingOutput:
     said: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
+    flushes: int = 0
 
     async def say(self, sentence: str) -> None:
         self.said.append(sentence)
 
     async def notice(self, text: str) -> None:
         self.notices.append(text)
+
+    async def flush(self) -> bool:
+        self.flushes += 1
+        return True
 
 
 @dataclass

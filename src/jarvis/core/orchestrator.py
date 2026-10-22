@@ -4,9 +4,10 @@ The orchestrator reads a request from an :class:`InputSource`, drives the
 state machine (``IDLE -> LISTENING -> THINKING -> SPEAKING -> IDLE``), runs
 the agent's turn as its own task, and streams every sentence to an
 :class:`OutputSink`. Text mode plugs in :class:`TerminalInput` and
-:class:`TerminalOutput`; the voice pipeline (step 7) will plug in a
-microphone/STT source and a TTS sink and reuse everything else, including
-:meth:`Orchestrator.cancel_current_turn` for barge-in.
+:class:`TerminalOutput`; the voice pipeline plugs in a microphone/STT
+source and a TTS sink (``core/voice_io.py``) and reuses everything else,
+including :meth:`Orchestrator.cancel_current_turn` for barge-in
+(``core/interruption.py``).
 """
 
 from __future__ import annotations
@@ -54,10 +55,21 @@ class OutputSink(Protocol):
     """Where the assistant's words and system notices go."""
 
     async def say(self, sentence: str) -> None:
-        """Deliver one sentence of the assistant's answer."""
+        """Deliver one sentence of the assistant's answer.
+
+        May return before the sentence has been delivered (speech is
+        synthesised and played in the background); :meth:`flush` waits.
+        """
 
     async def notice(self, text: str) -> None:
         """Show a system message that is not the assistant speaking."""
+
+    async def flush(self) -> bool:
+        """Wait until everything passed to :meth:`say` has been delivered.
+
+        Returns:
+            True if it was delivered in full, False if the user interrupted.
+        """
 
 
 class TurnRunner(Protocol):
@@ -143,6 +155,10 @@ class TerminalOutput:
         """Print a system message in brackets so it is not mistaken for the assistant."""
         self._write(f"[{text}]\n")
 
+    async def flush(self) -> bool:
+        """Printing is synchronous, so everything is already delivered."""
+        return True
+
 
 def parse_yes_no(answer: str) -> bool | None:
     """``"yes"`` -> True, ``"no"`` -> False, anything unclear -> None."""
@@ -191,15 +207,23 @@ class Orchestrator:
         state: The assistant state machine; must start in IDLE.
         source: Where requests come from.
         sink: Where answers go.
+        greeting: Notice shown when the session starts (how to talk to Jarvis).
     """
 
     def __init__(
-        self, *, agent: TurnRunner, state: StateMachine, source: InputSource, sink: OutputSink
+        self,
+        *,
+        agent: TurnRunner,
+        state: StateMachine,
+        source: InputSource,
+        sink: OutputSink,
+        greeting: str = HELP_NOTICE,
     ) -> None:
         self._agent = agent
         self._state = state
         self._source = source
         self._sink = sink
+        self._greeting = greeting
         self._current: asyncio.Task[TurnReport] | None = None
 
     @property
@@ -215,17 +239,23 @@ class Orchestrator:
     async def run(self) -> None:
         """Converse until "exit", end of input or cancellation (Ctrl+C)."""
         log.info("orchestrator.started")
-        await self._sink.notice(HELP_NOTICE)
+        await self._sink.notice(self._greeting)
         while (text := await self._next_request()) is not None:
             await self.handle_text(text)
         await self._sink.say(FAREWELL)
+        await self._sink.flush()
         log.info("orchestrator.stopped")
 
     async def handle_text(self, text: str) -> TurnReport | None:
-        """Run one turn for ``text``; ``None`` if it was cancelled or failed."""
-        self._state.transition(AssistantState.LISTENING, "typed input")
+        """Run one turn for ``text``; ``None`` if it was cancelled or failed.
+
+        A voice source has already moved the machine to LISTENING while it
+        captured the request; typed input passes through LISTENING here.
+        """
+        if self._state.state is not AssistantState.LISTENING:
+            self._state.transition(AssistantState.LISTENING, "typed input")
         self._state.transition(AssistantState.THINKING, "request received")
-        self._current = asyncio.create_task(self._agent.respond(text, self._speak), name="turn")
+        self._current = asyncio.create_task(self._respond(text), name="turn")
         try:
             return await self._current
         except asyncio.CancelledError:
@@ -249,14 +279,31 @@ class Orchestrator:
         self._current.cancel()
         return True
 
+    async def _respond(self, text: str) -> TurnReport:
+        """The turn task: answer, then wait until the answer has been delivered.
+
+        Waiting for the sink inside the task keeps SPEAKING truthful (the
+        machine returns to IDLE only once the last word was played) and lets
+        barge-in cancel a turn that is only playing its final sentence.
+        """
+        report = await self._agent.respond(text, self._speak)
+        if not await self._sink.flush():
+            log.info("orchestrator.turn.output_interrupted")
+        return report
+
     async def _next_request(self) -> str | None:
         while (line := await self._source.read_line(USER_PROMPT)) is not None:
             text = line.strip()
-            if text.lower() in EXIT_COMMANDS:
+            if text.lower().rstrip(".!?") in EXIT_COMMANDS:
+                self._leave_listening("exit requested")
                 return None
             if text:
                 return text
         return None
+
+    def _leave_listening(self, reason: str) -> None:
+        if self._state.state is AssistantState.LISTENING:
+            self._state.transition(AssistantState.IDLE, reason)
 
     async def _speak(self, sentence: str) -> None:
         if self._state.state is AssistantState.THINKING:
@@ -292,3 +339,9 @@ def _caller_is_cancelled() -> bool:
 # - Unclear confirmation answers default to "no" after a few tries: the
 #   policy only asks for actions where doing the wrong thing is worse than
 #   doing nothing.
+# - Exit words are compared without trailing punctuation because speech
+#   recognisers write "Goodbye." where a typist writes "goodbye".
+# - OutputSink.flush is part of the turn, not an afterthought: a voice sink
+#   returns from say() at once and plays in the background (sentence
+#   pipelining, ADR-0019), so without the flush the machine would report
+#   IDLE while Jarvis was still talking.

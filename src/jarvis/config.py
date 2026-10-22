@@ -206,6 +206,14 @@ class Settings(BaseSettings):
     persona_tone: str = "calm, concise and dryly witty, like a capable butler"
     max_tool_rounds: int = Field(default=6, ge=1)
 
+    # Voice (step 7)
+    barge_in_echo_guard_ms: int = Field(default=400, ge=0)
+    vad_min_speech_ms: int = Field(default=250, ge=32)
+    listen_timeout_seconds: float = Field(default=6.0, gt=0)
+    max_utterance_seconds: float = Field(default=20.0, gt=0)
+    min_transcript_chars: int = Field(default=2, ge=1)
+    overlay_enabled: bool = True
+
 
 # Design notes:
 # - Flat settings, not nested groups: the env file is flat, and a reviewer can
@@ -220,3 +228,7 @@ class Settings(BaseSettings):
 #   option that runs locally but is not the fully offline LOCAL mode (it
 #   still pairs with faster-whisper and edge-tts). The default Ollama model
 #   is a small tool-capable one so tool calling works out of the box.
+# - The echo guard defaults to 400 ms: long enough to cover the burst of
+#   Jarvis's own first syllable reaching the microphone through speakers,
+#   short enough that a user who interrupts at once is heard. There is no
+#   echo cancellation (ADR-0019), so headphones remain the real fix.
