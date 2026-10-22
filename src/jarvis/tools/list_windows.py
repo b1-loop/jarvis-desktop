@@ -45,6 +45,7 @@ class ListWindowsTool(Tool[ListWindowsInput]):
     )
     Input = ListWindowsInput
     category = ToolCategory.SYSTEM
+    keywords = ("fönster",)
 
     async def run(self, params: ListWindowsInput, context: ToolContext) -> ToolResult:
         """Query, filter and render the window list."""

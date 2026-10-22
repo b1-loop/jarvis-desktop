@@ -162,7 +162,20 @@ class SystemMonitorTool(Tool[SystemMonitorInput]):
     )
     Input = SystemMonitorInput
     category = ToolCategory.SYSTEM
-    keywords = ("ram", "memory", "cpu", "battery", "disk", "slow")
+    keywords = (
+        "ram",
+        "memory",
+        "cpu",
+        "battery",
+        "disk",
+        "slow",
+        "minne",
+        "arbetsminne",
+        "processor",
+        "batteri",
+        "hårddisk",
+        "långsam",
+    )
 
     def __init__(self, probe: SystemProbe | None = None) -> None:
         self._probe = probe or PsutilProbe()

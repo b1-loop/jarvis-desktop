@@ -56,6 +56,7 @@ class ListUnreadEmailTool(Tool[ListUnreadEmailInput]):
     )
     Input = ListUnreadEmailInput
     category = ToolCategory.COMMUNICATION
+    keywords = ("mail", "inbox", "mejl", "epost", "inkorg", "olästa")
 
     async def run(self, params: ListUnreadEmailInput, context: ToolContext) -> ToolResult:
         """Fan out ``list_unread`` and merge by receipt time."""

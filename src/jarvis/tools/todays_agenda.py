@@ -55,6 +55,7 @@ class TodaysAgendaTool(Tool[TodaysAgendaInput]):
     )
     Input = TodaysAgendaInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("calendar", "schedule", "kalender", "kalendern", "schema")
 
     async def run(self, params: TodaysAgendaInput, context: ToolContext) -> ToolResult:
         """Query each calendar for the local day and merge by start time."""

@@ -45,6 +45,7 @@ class AddNoteTool(Tool[AddNoteInput]):
     )
     Input = AddNoteInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("anteckna", "anteckning", "notera")
 
     async def run(self, params: AddNoteInput, context: ToolContext) -> ToolResult:
         """Store and confirm briefly."""

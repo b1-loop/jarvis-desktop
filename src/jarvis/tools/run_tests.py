@@ -98,6 +98,7 @@ class RunTestsTool(Tool[RunTestsInput]):
     )
     Input = RunTestsInput
     category = ToolCategory.DEVELOPER
+    keywords = ("test", "tester", "testerna")
 
     def __init__(self, detector: RunnerDetector = detect_test_command) -> None:
         self._detect = detector

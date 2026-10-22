@@ -51,6 +51,7 @@ class OpenFileTool(Tool[OpenFileInput]):
     )
     Input = OpenFileInput
     category = ToolCategory.FILES
+    keywords = ("fil", "filen")
 
     async def run(self, params: OpenFileInput, context: ToolContext) -> ToolResult:
         """Check the path, refuse executables, then launch."""

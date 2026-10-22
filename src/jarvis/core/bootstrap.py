@@ -22,6 +22,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
 from typing import Final, Protocol, runtime_checkable
 
 import httpx
@@ -31,6 +32,8 @@ from jarvis.agent.loop import Agent, AgentLimits
 from jarvis.agent.persona import Persona
 from jarvis.agent.registry import ToolRegistry
 from jarvis.agent.tool import ConfirmationAsker, ToolContext
+from jarvis.agent.tool_embeddings import EmbeddingToolRanker, ToolVectorCache
+from jarvis.agent.tool_selection import ALL_TOOLS, RelevanceToolSelector, ToolSelector
 from jarvis.config import Settings
 from jarvis.core import providers
 from jarvis.core.events import EventBus
@@ -60,6 +63,7 @@ from jarvis.integrations.base import ConsentRequiredError
 from jarvis.integrations.consent import ConsentNotifier
 from jarvis.integrations.services import IntegrationServices, build_integration_services
 from jarvis.llm.base import LLMClient
+from jarvis.llm.ollama_embeddings import OllamaEmbedder
 from jarvis.memory import ChromaVectorStore, InMemoryVectorStore, MemoryManager, SqliteStore
 from jarvis.memory.vector_store import VectorStore
 from jarvis.os_integration.base import Platform
@@ -83,6 +87,9 @@ CHROMA_SUBDIR: Final = "chroma"
 INTEGRATIONS_TIMEOUT: Final = httpx.Timeout(30.0, connect=10.0)
 BATTERY_TOOL_MODULE: Final = "jarvis.tools.battery_status"
 CONSENT_NOTIFICATION_TITLE: Final = "Jarvis: account not connected"
+TOOL_VECTOR_CACHE: Final = Path("cache") / "tool_embeddings.json"
+"""Embedded tool descriptions, under ``data_dir``, so a restart does not re-embed them."""
+MS_PER_SECOND: Final = 1000
 
 
 @runtime_checkable
@@ -261,7 +268,8 @@ async def _assemble(settings: Settings, overrides: Overrides, stack: AsyncExitSt
     request = FrontEndRequest(settings, bus, state, platform, llm, stack)
     front = await (overrides.front_end or _text_front_end(overrides))(request)
     context = build_tool_context(settings, bus, front.ask, services)
-    agent = build_agent(settings, front.llm or llm, registry, context, memory)
+    selector = build_tool_selector(settings, stack, registry)
+    agent = build_agent(settings, front.llm or llm, registry, context, memory, selector=selector)
     routines = build_routines(settings)
     invoker = RegistryToolInvoker(registry, agent.policy, context)
     orchestrator = Orchestrator(
@@ -483,12 +491,41 @@ def build_tool_context(
     )
 
 
+def build_tool_selector(
+    settings: Settings, stack: AsyncExitStack, registry: ToolRegistry
+) -> ToolSelector:
+    """Hybrid per-turn tool selection; words only without an embedding model (ADR-0020).
+
+    The embedding ranker starts embedding the tool descriptions in the
+    background right away, so the first turns may rank by words alone.
+    """
+    model = settings.tool_embedding_model
+    if model is None or settings.tools_per_turn() == ALL_TOOLS:
+        log.info("tool_selection.ready", semantic=False, max_tools=settings.tools_per_turn())
+        return RelevanceToolSelector.from_settings(settings)
+    embedder = OllamaEmbedder.from_settings(settings, model)
+    stack.push_async_callback(embedder.aclose)
+    ranker = EmbeddingToolRanker(
+        embedder,
+        cache=ToolVectorCache(settings.data_dir / TOOL_VECTOR_CACHE),
+        budget_seconds=settings.tool_embedding_timeout_ms / MS_PER_SECOND,
+    )
+    stack.push_async_callback(ranker.aclose)
+    ranker.warm_up(registry.tools())
+    log.info(
+        "tool_selection.ready", semantic=True, model=model, max_tools=settings.tools_per_turn()
+    )
+    return RelevanceToolSelector.from_settings(settings, ranker)
+
+
 def build_agent(
     settings: Settings,
     llm: LLMClient,
     registry: ToolRegistry,
     context: ToolContext,
     memory: MemoryManager,
+    *,
+    selector: ToolSelector | None = None,
 ) -> Agent:
     """The agent loop with persona, limits and the central confirmation policy."""
     return Agent(
@@ -500,6 +537,7 @@ def build_agent(
         memory=memory,
         limits=AgentLimits(max_tool_rounds=settings.max_tool_rounds),
         cloud_provider=settings.llm_provider == "anthropic",
+        selector=selector,
     )
 
 

@@ -43,6 +43,7 @@ class DescribeScreenTool(Tool[DescribeScreenInput]):
     )
     Input = DescribeScreenInput
     category = ToolCategory.INFORMATION
+    keywords = ("skärm", "skärmen", "tittar")
 
     async def run(self, params: DescribeScreenInput, context: ToolContext) -> ToolResult:
         """Build the summary prompt and ask the vision service."""

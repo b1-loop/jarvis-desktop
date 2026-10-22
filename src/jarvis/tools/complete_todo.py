@@ -52,6 +52,7 @@ class CompleteTodoTool(Tool[CompleteTodoInput]):
     )
     Input = CompleteTodoInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("tick", "finished", "bocka", "klar", "klart", "avklarad")
 
     async def run(self, params: CompleteTodoInput, context: ToolContext) -> ToolResult:
         """Resolve the item, then complete it."""

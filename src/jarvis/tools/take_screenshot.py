@@ -50,6 +50,7 @@ class TakeScreenshotTool(Tool[TakeScreenshotInput]):
     )
     Input = TakeScreenshotInput
     category = ToolCategory.SYSTEM
+    keywords = ("capture", "skärmdump", "skärmbild", "skärmklipp")
 
     async def run(self, params: TakeScreenshotInput, context: ToolContext) -> ToolResult:
         """Capture, then write the PNG off the event loop."""

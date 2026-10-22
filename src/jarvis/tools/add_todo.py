@@ -36,6 +36,7 @@ class AddTodoTool(Tool[AddTodoInput]):
     )
     Input = AddTodoInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("task", "shopping", "lägg", "attgöra", "göralista", "uppgift", "inköpslista")
 
     async def run(self, params: AddTodoInput, context: ToolContext) -> ToolResult:
         """Store the todo and echo it back so a mishearing is caught."""

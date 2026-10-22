@@ -34,6 +34,7 @@ class ListTodosTool(Tool[ListTodosInput]):
     )
     Input = ListTodosInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("task", "attgöra", "göralista", "uppgift", "uppgifter")
 
     async def run(self, params: ListTodosInput, context: ToolContext) -> ToolResult:
         """Fetch and read out the first few."""

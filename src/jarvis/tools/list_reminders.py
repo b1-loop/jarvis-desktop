@@ -34,6 +34,7 @@ class ListRemindersTool(Tool[ListRemindersInput]):
     )
     Input = ListRemindersInput
     category = ToolCategory.PRODUCTIVITY
+    keywords = ("påminnelse", "påminnelser")
 
     async def run(self, params: ListRemindersInput, context: ToolContext) -> ToolResult:
         """Fetch, convert to local time and read out the first few."""

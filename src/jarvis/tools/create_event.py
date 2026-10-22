@@ -78,6 +78,7 @@ class CreateEventTool(Tool[CreateEventInput]):
     Input = CreateEventInput
     category = ToolCategory.PRODUCTIVITY
     requires_confirmation = True
+    keywords = ("meeting", "book", "boka", "möte", "kalender")
 
     def confirmation_prompt(self, params: CreateEventInput) -> str:
         """Read back title, absolute day and time, length and attendees."""

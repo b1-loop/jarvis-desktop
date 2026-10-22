@@ -30,7 +30,7 @@ class NowPlayingTool(Tool[NowPlayingInput]):
     )
     Input = NowPlayingInput
     category = ToolCategory.MEDIA
-    keywords = ("song", "track", "music", "listening")
+    keywords = ("song", "track", "music", "listening", "låt", "låten", "spelas", "musik")
 
     async def run(self, params: NowPlayingInput, context: ToolContext) -> ToolResult:
         """Read playback state from the first music provider."""

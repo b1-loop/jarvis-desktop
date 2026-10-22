@@ -45,6 +45,7 @@ class RecentFilesTool(Tool[RecentFilesInput]):
     )
     Input = RecentFilesInput
     category = ToolCategory.FILES
+    keywords = ("senaste", "fil", "filer", "dokument")
 
     async def run(self, params: RecentFilesInput, context: ToolContext) -> ToolResult:
         """Find recent documents and open the newest if asked."""
