@@ -484,13 +484,21 @@ class Speaker:
 
 
 def create_native_engine(
-    paths: AudioModelPaths, *, wake_word: bool = True, min_speech_ms: int | None = None
+    paths: AudioModelPaths,
+    *,
+    wake_word: bool = True,
+    min_speech_ms: int | None = None,
+    wake_word_threshold: float | None = None,
 ) -> NativeEngine:
     """Construct the real ``jarvis_audio.AudioEngine``.
 
     Args:
         paths: Model files; the wake-word ones are only needed with ``wake_word``.
         wake_word: Load openWakeWord; False runs the VAD only (hotkey operation).
+        wake_word_threshold: openWakeWord score that counts as the wake phrase;
+            ``None`` keeps the native default (0.5). Higher rejects more
+            look-alike speech, which matters when the user talks in another
+            language near the microphone.
         min_speech_ms: How long speech must last before the engine reports
             ``SPEECH_STARTED`` (and triggers native barge-in); ``None`` keeps
             the native default.
@@ -511,6 +519,8 @@ def create_native_engine(
     config = module.EngineConfig()
     if min_speech_ms is not None:
         config.pipeline.segmenter.min_speech_ms = min_speech_ms
+    if wake_word_threshold is not None:
+        config.pipeline.wake_word_threshold = wake_word_threshold
     try:
         return cast(NativeEngine, module.AudioEngine(paths.vad, wake_word_models, config))
     except module.ModelError as error:

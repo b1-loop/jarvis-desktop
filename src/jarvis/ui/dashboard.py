@@ -90,6 +90,8 @@ _LATENCY_COLUMNS: Final = (
 
 _TK_START_ATTEMPTS: Final = 3
 _TK_RETRY_SECONDS: Final = 0.05
+_TK_TRANSIENT_MARKERS: Final = ("couldn't read file", "tcl_findLibrary", "init.tcl")
+"""Ways a half-read Tcl library shows up; all clear on the next attempt."""
 
 
 def create_tk_root() -> tkinter.Tk:
@@ -98,13 +100,14 @@ def create_tk_root() -> tkinter.Tk:
     On Windows, Tcl occasionally fails to read ``init.tcl`` with "couldn't
     read file ...: No error" while another process (an antivirus scan, a
     parallel build) holds the file; the next attempt succeeds. Any other
-    TclError, such as no display, is raised at once.
+    TclError, such as no display, is raised at once. A partially read
+    library can also surface as ``invalid command name "tcl_findLibrary"``.
     """
     for attempt in range(1, _TK_START_ATTEMPTS + 1):
         try:
             return tkinter.Tk()
         except tkinter.TclError as error:
-            transient = "couldn't read file" in str(error)
+            transient = any(marker in str(error) for marker in _TK_TRANSIENT_MARKERS)
             if not transient or attempt == _TK_START_ATTEMPTS:
                 raise
             log.warning("dashboard.tk.retry", attempt=attempt)
