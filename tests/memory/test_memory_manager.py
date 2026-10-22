@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from jarvis.memory.memory_manager import (
+    MAX_RECALLED_REPLY_CHARS,
     RECENT_HEADER,
     MemoryManager,
     RecalledContext,
@@ -320,6 +321,17 @@ async def test_semantic_hits_lose_the_answers_that_came_from_tools(
     assert "Milk and eggs." not in context.render()
 
 
+async def test_a_hidden_recent_tool_exchange_comes_back_as_its_question(
+    manager: MemoryManager,
+) -> None:
+    await manager.record_turn("what time is it", "It is 09:11.", [{"name": "current_time"}])
+
+    context = await manager.recall("what did I ask about the time")
+
+    assert [hit.text for hit in context.semantic] == ["User: what time is it"]
+    assert "09:11" not in context.render()
+
+
 async def test_semantic_hits_without_a_message_id_are_kept_as_they_are(
     manager: MemoryManager, vectors: InMemoryVectorStore
 ) -> None:
@@ -333,3 +345,23 @@ async def test_semantic_hits_without_a_message_id_are_kept_as_they_are(
 def test_question_only_cuts_the_answer_off_an_embedded_turn() -> None:
     assert question_only("User: q\nJarvis: a\nmore") == "User: q"
     assert question_only("a note without an answer") == "a note without an answer"
+
+
+async def test_recall_carries_the_profile_name_apart_from_a_misheard_history(
+    manager: MemoryManager,
+) -> None:
+    await manager.remember("profile.name", "Bozhi")
+    await manager.record_turn("Hello, Jervis. I'm speaking with Ravel.", "Hello Ravel! " * 40)
+
+    context = await manager.recall("hej")
+
+    assert context.user_name == "Bozhi"
+    rendered = context.render()
+    assert "never override the user profile" in rendered
+    (reply_line,) = [line for line in rendered.splitlines() if "assistant:" in line]
+    assert len(reply_line.split("assistant: ", 1)[1]) == MAX_RECALLED_REPLY_CHARS
+    assert reply_line.endswith("…")
+
+
+async def test_an_unknown_name_is_none(manager: MemoryManager) -> None:
+    assert (await manager.recall("hej")).user_name is None

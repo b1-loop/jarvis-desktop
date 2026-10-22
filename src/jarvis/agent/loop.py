@@ -86,7 +86,11 @@ NOTHING_DONE: Final = "I wasn't able to finish that."
 
 
 class Recollection(Protocol):
-    """What memory returns before a turn; only its prompt rendering is used."""
+    """What memory returns before a turn: its prompt rendering and the user's name."""
+
+    @property
+    def user_name(self) -> str | None:
+        """The profile's name for the user, stated apart from the history."""
 
     def render(self) -> str:
         """Prompt-ready text, empty when nothing is known."""
@@ -246,19 +250,24 @@ class _Turn:
             await self._request_summary()
 
     async def _system_prompt(self) -> str:
-        """Persona, this turn's clock reading and recalled memory (when it can be had)."""
-        return self.agent.persona.system_prompt(await self._recalled(), now=self.clock.now())
+        """Persona, this turn's clock reading, the user's name and recalled memory."""
+        recollection = await self._recalled()
+        if recollection is None:
+            return self.agent.persona.system_prompt(now=self.clock.now())
+        return self.agent.persona.system_prompt(
+            recollection.render(), now=self.clock.now(), user_name=recollection.user_name
+        )
 
-    async def _recalled(self) -> str:
+    async def _recalled(self) -> Recollection | None:
+        """This turn's recollection, or ``None`` without memory or when recall fails."""
         memory = self.agent.memory
         if memory is None:
-            return ""
+            return None
         try:
-            recollection = await memory.recall(self.user_text)
+            return await memory.recall(self.user_text)
         except JarvisError:
             log.exception("agent.memory.recall_failed")
-            return ""
-        return recollection.render()
+            return None
 
     async def _stream_reply(self) -> Done:
         """One model request; sentences go to the sink as they complete."""

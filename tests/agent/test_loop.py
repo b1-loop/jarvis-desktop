@@ -79,6 +79,19 @@ async def test_first_request_has_persona_memory_question_and_tools(
     assert memory.recalled == ["hi"]
 
 
+async def test_the_profile_name_from_memory_becomes_the_form_of_address(
+    make_settings: MakeSettings,
+) -> None:
+    llm = ScriptedLLM(rounds=[text_round("Hej Bozhi.")])
+    memory = FakeMemory(context="user: I'm speaking with Ravel.", user_name="Bozhi")
+
+    await make_agent(make_settings(), llm, memory=memory).respond("hej", SentenceCollector())
+
+    system = llm.requests[0][0]
+    assert isinstance(system, SystemMessage)
+    assert system.text.index("Address them as Bozhi.") < system.text.index("Ravel")
+
+
 async def test_turn_is_recorded_in_memory(make_settings: MakeSettings) -> None:
     llm = ScriptedLLM(
         rounds=[tool_round(call("t1", "echo", text="hi")), text_round("I echoed it for you.")]
