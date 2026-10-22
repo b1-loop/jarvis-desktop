@@ -13,6 +13,7 @@
 #include "jarvis/audio/open_wake_word.hpp"
 #include "jarvis/audio/pipeline.hpp"
 #include "jarvis/audio/playback.hpp"
+#include "jarvis/audio/replay_source.hpp"
 #include "jarvis/audio/silero_vad.hpp"
 #include "jarvis/audio/speaker.hpp"
 #include "jarvis/audio/vad.hpp"
@@ -32,6 +33,7 @@
 #include <span>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace py = pybind11;
@@ -59,16 +61,22 @@ FloatArray toArray(const std::vector<float>& samples) {
 
 std::unique_ptr<AudioEngine> makeEngine(const std::filesystem::path& vadModel,
                                         const std::optional<WakeWordModelPaths>& wakeWordModels,
-                                        const EngineConfig& config) {
+                                        const EngineConfig& config,
+                                        const std::shared_ptr<ReplayFeed>& replay) {
     std::unique_ptr<WakeWordDetector> wakeWord;
     if (wakeWordModels.has_value()) {
         const auto& [melspectrogram, embedding, classifier] = *wakeWordModels;
         wakeWord = std::make_unique<OpenWakeWord>(OpenWakeWord::ModelPaths{
             .melspectrogram = melspectrogram, .embedding = embedding, .classifier = classifier});
     }
-    return std::make_unique<AudioEngine>(std::make_unique<MiniaudioMicrophone>(),
-                                         std::make_unique<SileroVad>(vadModel), std::move(wakeWord),
-                                         config);
+    std::unique_ptr<AudioSource> source;
+    if (replay != nullptr) {
+        source = std::make_unique<ReplaySource>(replay);
+    } else {
+        source = std::make_unique<MiniaudioMicrophone>();
+    }
+    return std::make_unique<AudioEngine>(std::move(source), std::make_unique<SileroVad>(vadModel),
+                                         std::move(wakeWord), config);
 }
 
 // Translators are consulted most-recently-registered first, so the base
@@ -172,13 +180,26 @@ void definePlayback(const py::module_& module) {
         .def("sample_rate", &Playback::sampleRate);
 }
 
+void defineReplay(const py::module_& module) {
+    py::class_<ReplayFeed, std::shared_ptr<ReplayFeed>>(
+        module, "ReplayFeed", "Audio a replaying AudioEngine hears instead of the microphone.")
+        .def(py::init<>())
+        .def(
+            "push", [](ReplayFeed& self, const FloatArray& samples) { self.push(asSpan(samples)); },
+            py::arg("samples"), "Queue 16 kHz mono float32 samples; silence fills the gaps.")
+        .def("pending", &ReplayFeed::pending, "Queued samples not delivered yet.")
+        .def("delivered", &ReplayFeed::delivered,
+             "Samples delivered so far, on the same clock as AudioEvent.sample_position.");
+}
+
 void defineEngine(const py::module_& module) {
     py::class_<AudioEngine>(module, "AudioEngine",
                             "Capture, VAD and wake-word detection on native threads.")
         .def(py::init(&makeEngine), py::arg("vad_model"), py::arg("wake_word_models") = py::none(),
-             py::arg("config") = EngineConfig{},
+             py::arg("config") = EngineConfig{}, py::arg("replay") = nullptr,
              "Load the models. wake_word_models is (melspectrogram, embedding, classifier) "
-             "or None for hotkey-only operation.")
+             "or None for hotkey-only operation. replay replaces the microphone with a "
+             "ReplayFeed (benchmarks and tests).")
         .def("start", &AudioEngine::start, py::call_guard<py::gil_scoped_release>())
         .def("stop", &AudioEngine::stop, py::call_guard<py::gil_scoped_release>())
         .def("running", &AudioEngine::running)
@@ -210,6 +231,7 @@ PYBIND11_MODULE(jarvis_audio, module) {
     defineConfig(module);
     defineEvents(module);
     definePlayback(module);
+    defineReplay(module);
     defineEngine(module);
     defineDecoding(module);
 }

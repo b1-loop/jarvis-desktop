@@ -16,6 +16,7 @@ add_executable(jarvis_tests
     audio/playback_test.cpp
     audio/pipeline_test.cpp
     audio/engine_test.cpp
+    audio/replay_source_test.cpp
     audio/mp3_decoder_test.cpp
     audio/silero_vad_test.cpp
     audio/open_wake_word_test.cpp
