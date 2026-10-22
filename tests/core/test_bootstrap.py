@@ -11,7 +11,6 @@ from jarvis.core import bootstrap
 from jarvis.core.bootstrap import (
     MEMORY_DB_FILENAME,
     Overrides,
-    PlatformToolFacade,
     build_application,
     build_integrations,
     build_llm,
@@ -24,7 +23,6 @@ from jarvis.integrations.stubs import StubCalendarProvider, StubEmailProvider
 from jarvis.llm.ollama_client import OllamaClient
 from jarvis.memory import InMemoryVectorStore
 from jarvis.memory.errors import MemoryStoreError
-from jarvis.os_integration.base import WindowInfo
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.utils.errors import ConfigError, NativeUnavailableError
 from tests.agent.llm_fakes import ScriptedLLM, text_round
@@ -143,20 +141,6 @@ async def test_integrations_default_to_stubs(make_settings: MakeSettings, tmp_pa
     assert isinstance(providers.email[0], StubEmailProvider)
     assert isinstance(providers.calendar[0], StubCalendarProvider)
     assert len(providers.music) == len(providers.chat) == len(providers.smart_home) == 1
-
-
-async def test_platform_facade_adapts_the_platform() -> None:
-    platform = StubPlatform()
-    platform.active = WindowInfo(
-        handle=1, title="Visual Studio Code", process_name="Code.exe", executable_path="", pid=7
-    )
-    facade = PlatformToolFacade(platform)
-
-    assert await facade.active_window_title() == "Visual Studio Code"
-    await facade.notify("Jarvis", "Build finished")
-    platform.active = None
-    assert await facade.active_window_title() == ""
-    assert platform.notifications == [("Jarvis", "Build finished")]
 
 
 async def test_application_runs_a_conversation_and_releases_resources(

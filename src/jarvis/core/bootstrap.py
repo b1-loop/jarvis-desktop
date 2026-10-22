@@ -45,6 +45,7 @@ from jarvis.memory.vector_store import VectorStore
 from jarvis.os_integration.base import Platform
 from jarvis.os_integration.stub import StubPlatform
 from jarvis.os_integration.windows import create_windows_platform
+from jarvis.tools._jobs import BackgroundJobs
 from jarvis.utils.errors import JarvisError, NativeUnavailableError
 from jarvis.utils.logging import get_logger
 
@@ -131,7 +132,8 @@ async def _assemble(settings: Settings, overrides: Overrides, stack: AsyncExitSt
     source = overrides.source or TerminalInput()
     sink = overrides.sink or TerminalOutput(settings.assistant_name)
     ask = TerminalConfirmation(source, sink)
-    context = build_tool_context(settings, bus, ask, platform, integrations)
+    services = ToolServices(platform, memory, integrations, BackgroundJobs())
+    context = build_tool_context(settings, bus, ask, services)
     agent = build_agent(settings, llm, registry, context, memory)
     orchestrator = Orchestrator(agent=agent, state=StateMachine(bus), source=source, sink=sink)
     return Application(orchestrator=orchestrator, agent=agent, resources=stack)
@@ -226,37 +228,36 @@ def build_integrations(settings: Settings, stack: AsyncExitStack) -> Integration
     )
 
 
-class PlatformToolFacade:
-    """Adapts the full ``Platform`` to the narrow ``PlatformFacade`` tools receive."""
-
-    def __init__(self, platform: Platform) -> None:
-        self._platform = platform
-
-    async def active_window_title(self) -> str:
-        """Title of the foreground window, empty when there is none."""
-        window = await self._platform.active_window()
-        return window.title if window is not None else ""
-
-    async def notify(self, title: str, body: str) -> None:
-        """Show a system notification."""
-        await self._platform.notify(title, body)
-
-
 def build_tool_context(
     settings: Settings,
     bus: EventBus,
     ask: ConfirmationAsker,
-    platform: Platform,
-    integrations: IntegrationProviders,
+    services: ToolServices,
 ) -> ToolContext:
     """The services every tool call receives."""
     return ToolContext(
         settings=settings,
         bus=bus,
         ask_confirmation=ask,
-        platform=PlatformToolFacade(platform),
-        integrations=integrations,
+        platform=services.platform,
+        memory=services.memory,
+        integrations=services.integrations,
+        jobs=services.jobs,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ToolServices:
+    """What tools reach through ``ToolContext``, built once per process.
+
+    Grouped so the composition root passes one value instead of a growing
+    argument list as later steps add services (vision, voice).
+    """
+
+    platform: Platform
+    memory: MemoryManager
+    integrations: IntegrationProviders
+    jobs: BackgroundJobs
 
 
 def build_agent(

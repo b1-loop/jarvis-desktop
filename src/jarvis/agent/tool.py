@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, Final, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, JsonValue, ValidationError
 
@@ -35,6 +35,12 @@ from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 from jarvis.utils.timing import Clock, SystemClock
 from jarvis.vision.screen import ScreenReaderProtocol
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from jarvis.memory.models import Note, Reminder, Todo
+    from jarvis.os_integration.base import Platform
 
 log = get_logger(__name__)
 
@@ -120,28 +126,57 @@ class ToolResult:
         return cls(ok=False, spoken=spoken, detail=detail or spoken, data=data)
 
 
-class PlatformFacade(Protocol):
-    """Placeholder for the OS facade until ``jarvis.os_integration.Platform`` lands.
+class MemoryFacade(Protocol):
+    """The part of ``jarvis.memory.MemoryManager`` that tools may use.
 
-    Only the operations the first tools need are listed; the real interface
-    (step 4) is a superset and will replace this Protocol in ``ToolContext``.
+    Notes, todos and reminders only: recall and fact storage belong to the
+    agent loop, which decides what goes into the prompt. ``MemoryManager``
+    satisfies this structurally, so tools never import the memory package.
     """
 
-    async def active_window_title(self) -> str:
-        """Title of the window the user is working in."""
+    async def add_note(self, content: str, title: str = "") -> Note:
+        """Store a note and index it for recall."""
 
-    async def notify(self, title: str, body: str) -> None:
-        """Show a system notification."""
+    async def search_notes(self, query: str, limit: int = 10) -> list[Note]:
+        """Full-text search over notes, best match first."""
+
+    async def add_todo(self, text: str) -> Todo:
+        """Add an open todo."""
+
+    async def list_todos(self, *, include_done: bool = False) -> list[Todo]:
+        """Open todos, or all of them."""
+
+    async def complete_todo(self, todo_id: int) -> Todo:
+        """Tick a todo off; raises ``NotFoundError`` for an unknown id."""
+
+    async def add_reminder(self, text: str, due_at: datetime) -> Reminder:
+        """Schedule a reminder."""
+
+    async def list_reminders(self, *, include_fired: bool = False) -> list[Reminder]:
+        """Pending reminders by due time, or all of them."""
 
 
-class MemoryFacade(Protocol):
-    """Placeholder for ``jarvis.memory.MemoryManager`` (step 9)."""
+class TrackedProcess(Protocol):
+    """A spawned child process as the job tracker needs to see it."""
 
-    async def recall(self, query: str, *, limit: int = 5) -> list[str]:
-        """Facts relevant to ``query``, most relevant first."""
+    @property
+    def pid(self) -> int:
+        """Operating-system process id."""
 
-    async def remember(self, fact: str) -> None:
-        """Store a fact for later sessions."""
+    async def wait(self) -> int:
+        """Wait for the process to exit and return its exit code."""
+
+
+class BackgroundJobTracker(Protocol):
+    """Watches long-running processes a tool started and left running.
+
+    The implementation (``jarvis.tools._jobs.BackgroundJobs``) also satisfies
+    ``jarvis.proactive.triggers.CommandWatcher``, so a dev server or build
+    that exits is announced by the proactive layer.
+    """
+
+    def track(self, command: str, process: TrackedProcess) -> str:
+        """Start watching ``process``; returns a job id."""
 
 
 ConfirmationAsker = Callable[[str], Awaitable[bool]]
@@ -174,20 +209,23 @@ class ToolContext:
             normally never call this themselves; the policy does.
         clock: Time source; a fake in tests.
         platform: OS facade, ``None`` in text-only runs without a backend.
-        memory: Long-term memory, ``None`` until the memory step lands.
+        memory: Notes, todos and reminders, ``None`` when memory is disabled.
         integrations: Email, calendar, music, chat and smart-home
             providers; ``None`` in tests that do not need them.
         vision: Screen understanding, ``None`` when it is not wired in.
+        jobs: Tracker for detached processes such as dev servers, ``None``
+            when nothing consumes their completion.
     """
 
     settings: Settings
     bus: EventBus
     ask_confirmation: ConfirmationAsker
     clock: Clock = field(default_factory=SystemClock)
-    platform: PlatformFacade | None = None
+    platform: Platform | None = None
     memory: MemoryFacade | None = None
     integrations: IntegrationProviders | None = None
     vision: ScreenReaderProtocol | None = None
+    jobs: BackgroundJobTracker | None = None
 
 
 class Tool[InputT: BaseModel](ABC):
@@ -351,5 +389,10 @@ def _describe_validation_error(error: ValidationError) -> str:
 # - ``execute`` converts exceptions into failed results. That is deliberate
 #   graceful degradation, not swallowing: expected failures are logged at
 #   WARNING with their message and unexpected ones at ERROR with a traceback.
-# - Services are Protocols, and the OS/memory ones are placeholders until
-#   their steps land. Tools therefore depend on shapes, never on modules.
+# - Services are interfaces: the ``Platform`` ABC and Protocols that the
+#   concrete services satisfy structurally. They are imported for type
+#   checking only, so importing a tool never drags in the native OS layer
+#   or SQLite. Tools depend on shapes, never on modules.
+# - ``memory`` exposes notes, todos and reminders only. The step-6
+#   placeholder had recall/remember, which no tool used and which never
+#   matched MemoryManager; recall belongs to the agent loop.

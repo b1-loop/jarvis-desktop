@@ -201,10 +201,18 @@ as `DiscoveryFailure`s instead of crashing, and produces the Anthropic-style
 `{name, description, input_schema}` definitions from the pydantic models.
 
 Tools receive services only through `ToolContext` (settings, event bus,
-clock, confirmation callback, OS and memory facades as Protocols) and return
+clock, confirmation callback, the `Platform` interface, a notes/todos/
+reminders Protocol that `MemoryManager` satisfies, and an optional
+background-job tracker) and return
 a `ToolResult` with `spoken` (for TTS), `detail` (for the LLM and dashboard)
 and `data` (JSON). Invalid arguments and tool failures become `ok=False`
 results, never exceptions in the agent loop.
+
+The computer-control, file, dev-mode, notes and system tools are listed with
+their confirmation flags in [docs/tools.md](docs/tools.md). Dev-mode tools
+run fixed command lines through the sandbox; `start_dev_server` uses
+`spawn_sandboxed` and `tools/_jobs.BackgroundJobs`, which also feeds the
+proactive `LongRunningCommandTrigger` (ADR-0017).
 
 `agent/confirmation.py` is the only place that decides whether to ask the
 user: the tool's declaration, a list of always-confirm categories and the

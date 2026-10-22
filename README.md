@@ -126,6 +126,7 @@ chaining, document production, configurable persona, fully offline mode,
 dashboard, latency benchmark.
 
 The feature list is tracked step by step in the Status table above.
+Every tool, whether it asks for confirmation and the service it uses is listed in the [tool catalogue](docs/tools.md).
 
 ## Latency
 
