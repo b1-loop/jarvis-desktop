@@ -18,19 +18,31 @@ add_executable(jarvis_tests
     audio/engine_test.cpp
     audio/mp3_decoder_test.cpp
     audio/silero_vad_test.cpp
-    audio/open_wake_word_test.cpp)
+    audio/open_wake_word_test.cpp
+    os/clipboard_test.cpp
+    os/hotkey_manager_test.cpp
+    os/hotkey_parser_test.cpp
+    os/process_control_test.cpp
+    os/screenshot_test.cpp
+    os/system_controls_test.cpp
+    os/text_encoding_test.cpp
+    os/window_manager_test.cpp)
 
 target_include_directories(jarvis_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(jarvis_tests PRIVATE
     jarvis::common
     jarvis::audio_engine
+    jarvis::os_integration
     Catch2::Catch2WithMain)
 # Model-backed tests skip themselves when the files are absent, so a checkout
 # without downloaded models still runs the rest of the suite. Fixtures are
-# shared with the Python suite so both decode the same clip.
+# shared with the Python suite so both decode the same clip. The OS tests
+# include <windows.h> for their desktop probe, hence the lean/no-min-max defines.
 target_compile_definitions(jarvis_tests PRIVATE
     JARVIS_MODELS_DIR="${JARVIS_MODELS_DIR}"
-    JARVIS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures")
+    JARVIS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures"
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX)
 jarvis_set_warnings(jarvis_tests)
 jarvis_copy_onnxruntime_dll(jarvis_tests)
 
