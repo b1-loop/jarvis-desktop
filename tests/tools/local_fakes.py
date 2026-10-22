@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from jarvis.agent.tool import BackgroundJobTracker, MemoryFacade, ToolContext, TrackedProcess
 from jarvis.config import Settings
 from jarvis.core.events import EventBus
+from jarvis.memory import InMemoryVectorStore, MemoryManager, SqliteStore
 from jarvis.os_integration.base import Platform, WindowInfo
 from tests.agent.fakes import FakeConfirmation
 from tests.fakes import FakeClock
@@ -45,6 +49,16 @@ def local_context(
         memory=memory,
         jobs=jobs,
     )
+
+
+@asynccontextmanager
+async def open_memory(
+    directory: Path, clock: FakeClock | None = None
+) -> AsyncIterator[MemoryManager]:
+    """A real ``MemoryManager`` over SQLite in ``directory`` with in-memory vectors."""
+    fake_clock = clock or FakeClock()
+    async with SqliteStore(directory / "memory.db", clock=fake_clock.utc) as store:
+        yield MemoryManager(store, InMemoryVectorStore())
 
 
 @dataclass

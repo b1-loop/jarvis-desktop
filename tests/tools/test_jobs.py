@@ -33,7 +33,8 @@ async def test_satisfies_both_protocols() -> None:
     tracker: BackgroundJobTracker = jobs
     watcher: CommandWatcher = jobs
 
-    assert tracker is watcher
+    assert callable(tracker.track)
+    assert callable(watcher.pop_finished)
 
 
 async def test_reports_each_finished_job_once_with_its_duration() -> None:
