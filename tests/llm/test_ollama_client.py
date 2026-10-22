@@ -301,3 +301,99 @@ async def test_from_settings_points_at_the_configured_server(
 
     assert client.model == "llama3.2"
     await client.aclose()
+
+
+# -- thinking models (qwen3) ---------------------------------------------------
+
+
+def thinking_chunk(thought: str) -> dict[str, Any]:
+    return {
+        "model": "qwen3:8b",
+        "message": {"role": "assistant", "content": "", "thinking": thought},
+        "done": False,
+    }
+
+
+@pytest.mark.parametrize(("think", "sent"), [(False, False), (True, True)])
+async def test_think_is_sent_as_configured(think: bool, sent: bool) -> None:
+    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk()))])
+
+    await collect(make_client(server, think=think), [UserMessage("hi")])
+
+    assert server.requests[0]["think"] is sent
+
+
+async def test_think_is_omitted_when_the_model_should_decide() -> None:
+    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk()))])
+
+    await collect(make_client(server, think=None), [UserMessage("hi")])
+
+    assert "think" not in server.requests[0]
+
+
+async def test_thinking_is_never_part_of_the_answer() -> None:
+    chunks = ndjson(
+        thinking_chunk("The user wants RAM. "),
+        thinking_chunk("I will guess 12 GB."),
+        text_chunk("Du använder 7,9 GB."),
+        done_chunk(),
+    )
+    server = FakeServer([httpx.Response(200, content=chunks)])
+
+    events = await collect(make_client(server, think=True), [UserMessage("RAM?")])
+
+    assert [e for e in events if isinstance(e, TextDelta)] == [TextDelta("Du använder 7,9 GB.")]
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert done.message.text == "Du använder 7,9 GB."
+
+
+async def test_thinking_alongside_a_tool_call_keeps_only_the_call() -> None:
+    call_chunk = {
+        "model": "qwen3:8b",
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "thinking": "Need the clock.",
+            "tool_calls": [{"function": {"name": "open_app", "arguments": {}}}],
+        },
+        "done": False,
+    }
+    server = FakeServer([httpx.Response(200, content=ndjson(call_chunk, done_chunk()))])
+
+    events = await collect(make_client(server, think=True), [UserMessage("hi")], [TOOL])
+
+    done = events[-1]
+    assert isinstance(done, Done)
+    assert done.message.text == ""
+    assert [call.name for call in done.message.tool_calls] == ["open_app"]
+    assert not any(isinstance(event, TextDelta) for event in events)
+
+
+async def test_think_on_a_model_without_thinking_names_the_setting() -> None:
+    refusal = httpx.Response(400, json={"error": '"qwen2.5:7b" does not support thinking'})
+    server = FakeServer([refusal])
+
+    with pytest.raises(LLMError, match="JARVIS_OLLAMA_THINK=false"):
+        await collect(make_client(server, think=True), [UserMessage("hi")])
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [({}, False), ({"ollama_think": "default"}, None), ({"ollama_think": True}, True)],
+)
+async def test_from_settings_passes_the_think_setting(
+    make_settings: Callable[..., Any], overrides: dict[str, Any], expected: bool | None
+) -> None:
+    server = FakeServer([httpx.Response(200, content=ndjson(done_chunk()))])
+    settings = make_settings(ollama_base_url="http://ollama.test:11434", **overrides)
+    client = OllamaClient.from_settings(settings)
+    await client.aclose()
+    client._http = httpx.AsyncClient(
+        base_url=settings.ollama_base_url, transport=httpx.MockTransport(server)
+    )
+
+    await collect(client, [UserMessage("hi")])
+
+    assert server.requests[0].get("think") is expected
+    await client.aclose()
