@@ -249,7 +249,7 @@ class FasterWhisperSTT(STT):
             TranscriptionError: If ``samples`` is not one-dimensional or the
                 model fails.
         """
-        audio = _prepare_audio(samples, sample_rate)
+        audio = prepare_whisper_audio(samples, sample_rate)
         if audio.size == 0:
             return Transcript(text="", language=None, segments=(), duration=0.0, confidence=None)
         model = await self._get_model()
@@ -356,7 +356,8 @@ def _compute_type(configured: str, *, gpu: bool) -> str:
     return configured
 
 
-def _prepare_audio(samples: Samples, sample_rate: int) -> Samples:
+def prepare_whisper_audio(samples: Samples, sample_rate: int) -> Samples:
+    """Mono float32 at Whisper's 16 kHz; both Whisper providers feed this front end."""
     if samples.ndim != 1:
         raise TranscriptionError(f"expected mono audio, got {samples.ndim} dimensions")
     audio = np.ascontiguousarray(samples, dtype=np.float32)

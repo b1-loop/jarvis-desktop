@@ -7,15 +7,12 @@ injected ``Clock`` so the answer is deterministic in tests.
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Final
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field
 
 from jarvis.agent.tool import Tool, ToolCategory, ToolContext, ToolInput, ToolResult
-
-_HOURS_ON_A_CLOCK_FACE: Final = 12
+from jarvis.tools._integration_support import twelve_hour
 
 
 class CurrentTimeInput(ToolInput):
@@ -70,7 +67,7 @@ class CurrentTimeTool(Tool[CurrentTimeInput]):
                 )
         zone = now.tzname() or "local time"
         weekday = now.strftime("%A")
-        spoken = f"It's {spoken_time(now)} on {weekday}, {now.day} {now:%B} {now.year}"
+        spoken = f"It's {twelve_hour(now)} on {weekday}, {now.day} {now:%B} {now.year}"
         if params.timezone is not None:
             spoken += f" in {params.timezone}"
         return ToolResult.success(
@@ -84,13 +81,6 @@ class CurrentTimeTool(Tool[CurrentTimeInput]):
                 "unix": int(now.timestamp()),
             },
         )
-
-
-def spoken_time(moment: datetime) -> str:
-    """``15:05`` -> ``3:05 PM``; avoids the platform-specific ``%-I`` directive."""
-    hour = moment.hour % _HOURS_ON_A_CLOCK_FACE or _HOURS_ON_A_CLOCK_FACE
-    meridiem = "AM" if moment.hour < _HOURS_ON_A_CLOCK_FACE else "PM"
-    return f"{hour}:{moment:%M} {meridiem}"
 
 
 # Design notes:

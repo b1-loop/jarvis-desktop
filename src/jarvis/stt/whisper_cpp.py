@@ -17,8 +17,6 @@ import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
-import numpy as np
-
 from jarvis.inference.native import load_inference_module, require_model_file
 from jarvis.stt.base import (
     ENGINE_SAMPLE_RATE,
@@ -28,7 +26,7 @@ from jarvis.stt.base import (
     TranscriptionError,
     TranscriptSegment,
 )
-from jarvis.stt.faster_whisper import WHISPER_SAMPLE_RATE, resample_linear
+from jarvis.stt.faster_whisper import WHISPER_SAMPLE_RATE, prepare_whisper_audio
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 
@@ -148,7 +146,7 @@ class WhisperCppSTT(STT):
             TranscriptionError: If ``samples`` is not mono, the model cannot
                 be loaded, or whisper.cpp fails.
         """
-        audio = _prepare_audio(samples, sample_rate)
+        audio = prepare_whisper_audio(samples, sample_rate)
         duration = audio.size / WHISPER_SAMPLE_RATE
         if audio.size == 0:
             return Transcript(text="", language=None, segments=(), duration=0.0, confidence=None)
@@ -194,15 +192,6 @@ class WhisperCppSTT(STT):
             threads=self._threads,
             beam_size=self._beam_size,
         )
-
-
-def _prepare_audio(samples: Samples, sample_rate: int) -> Samples:
-    if samples.ndim != 1:
-        raise TranscriptionError(f"expected mono audio, got {samples.ndim} dimensions")
-    audio = np.ascontiguousarray(samples, dtype=np.float32)
-    if sample_rate == WHISPER_SAMPLE_RATE:
-        return audio
-    return resample_linear(audio, sample_rate, WHISPER_SAMPLE_RATE)
 
 
 def to_transcript(native: NativeTranscript, duration: float) -> Transcript:
@@ -254,7 +243,7 @@ def native_whisper_factory(model_path: Path) -> WhisperFactory:
 # - Duration comes from the sample count rather than the last segment end,
 #   so silence trimmed by the model still reports the real audio length,
 #   matching faster-whisper's `info.duration`.
-# - Resampling reuses faster_whisper.resample_linear; both providers feed
+# - Audio preparation reuses faster_whisper.prepare_whisper_audio; both providers feed
 #   the same 16 kHz Whisper front end, so one tested implementation serves.
 # - The factory loads the module eagerly but the weights lazily: building
 #   the provider must fail fast on a missing build, yet stay cheap so

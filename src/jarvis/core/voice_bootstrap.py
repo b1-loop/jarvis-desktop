@@ -20,7 +20,6 @@ headphones, and only the wake word (or hotkey, or typing) does on speakers.
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Final, Protocol, runtime_checkable
@@ -56,7 +55,7 @@ from jarvis.core.hotkey_router import HotkeyRouter
 from jarvis.core.hud_hotkey import HudHotkey
 from jarvis.core.hud_wiring import HudActions
 from jarvis.core.interruption import BargeInController, InterruptPolicy, SpeakingInputs
-from jarvis.core.orchestrator import Orchestrator, TerminalOutput, Writer
+from jarvis.core.orchestrator import Orchestrator, TerminalOutput, Writer, stdout_write
 from jarvis.core.overlay_bridge import OverlayBridge
 from jarvis.core.reply_output import SwitchableOutput, TextReplies
 from jarvis.core.voice_io import (
@@ -255,11 +254,6 @@ def startup_shortcut(settings: Settings) -> Autostart | None:
     return StartupShortcut(settings.data_dir)
 
 
-def _stdout_write(text: str) -> None:
-    sys.stdout.write(text)
-    sys.stdout.flush()
-
-
 @dataclass(frozen=True, slots=True)
 class VoiceFactories:
     """Every concrete thing the voice front end creates; tests swap in fakes."""
@@ -412,7 +406,7 @@ class VoiceFrontEndBuilder:
     ) -> None:
         self._wake_word = wake_word
         self._factories = factories or VoiceFactories()
-        self._write = write or _stdout_write
+        self._write = write or stdout_write
         self._hooks = hooks or SessionHooks()
         self._mode: BargeInMode | None = None
 
@@ -771,7 +765,7 @@ async def run_voice_mode(
 
     Falls back to text mode, after saying why, when voice cannot run here.
     """
-    write = write or _stdout_write
+    write = write or stdout_write
     builder = VoiceFrontEndBuilder(wake_word=wake_word, factories=factories, write=write)
     base = overrides or Overrides()
     try:
