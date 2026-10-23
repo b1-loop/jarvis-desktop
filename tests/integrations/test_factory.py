@@ -8,14 +8,7 @@ from jarvis.config import Settings
 from jarvis.integrations.base import ConsentRequiredError
 from jarvis.integrations.consent import NotifyOnConsent
 from jarvis.integrations.discord import DiscordProvider
-from jarvis.integrations.factory import (
-    IntegrationFactory,
-    build_calendar_providers,
-    build_chat_providers,
-    build_email_providers,
-    build_music_providers,
-    build_smart_home_providers,
-)
+from jarvis.integrations.factory import IntegrationFactory
 from jarvis.integrations.gmail import GmailProvider
 from jarvis.integrations.google_calendar import GoogleCalendarProvider
 from jarvis.integrations.home_assistant import HomeAssistantProvider
@@ -41,13 +34,13 @@ def http() -> httpx.AsyncClient:
 def test_demo_mode_without_credentials_gives_every_service_its_stub(
     make_settings: Callable[..., Settings], http: httpx.AsyncClient
 ) -> None:
-    settings = make_settings(demo_integrations=True)
+    factory = IntegrationFactory(make_settings(demo_integrations=True), http)
 
-    assert type(build_email_providers(settings, http)[0]) is StubEmailProvider
-    assert type(build_calendar_providers(settings, http)[0]) is StubCalendarProvider
-    assert type(build_music_providers(settings, http)[0]) is StubMusicProvider
-    assert type(build_chat_providers(settings, http)[0]) is StubChatProvider
-    assert type(build_smart_home_providers(settings, http)[0]) is StubSmartHomeProvider
+    assert type(factory.email()[0]) is StubEmailProvider
+    assert type(factory.calendar()[0]) is StubCalendarProvider
+    assert type(factory.music()[0]) is StubMusicProvider
+    assert type(factory.chat()[0]) is StubChatProvider
+    assert type(factory.smart_home()[0]) is StubSmartHomeProvider
 
 
 def test_google_settings_select_gmail_and_calendar_with_one_shared_sign_in(
@@ -131,7 +124,7 @@ def test_both_mail_accounts_are_returned_together(
         google_client_secrets_file=tmp_path / "client.json", ms_client_id="fake-client"
     )
 
-    providers = build_email_providers(settings, http, MemoryTokenStore())
+    providers = IntegrationFactory(settings, http, MemoryTokenStore()).email()
 
     assert [type(p) for p in providers] == [GmailProvider, OutlookProvider]
 
@@ -144,8 +137,8 @@ def test_spotify_requires_both_id_and_secret(
         spotify_client_id="fake-id", spotify_client_secret="fake-secret", data_dir=tmp_path
     )
 
-    assert build_music_providers(half, http) == []
-    assert type(build_music_providers(full, http)[0]) is SpotifyProvider
+    assert IntegrationFactory(half, http).music() == []
+    assert type(IntegrationFactory(full, http).music()[0]) is SpotifyProvider
     assert (tmp_path / "tokens").is_dir()
 
 
@@ -159,7 +152,7 @@ def test_chat_lists_every_configured_network(
         teams_enabled=True,
     )
 
-    providers = build_chat_providers(settings, http, MemoryTokenStore())
+    providers = IntegrationFactory(settings, http, MemoryTokenStore()).chat()
 
     assert [type(p) for p in providers] == [SlackProvider, DiscordProvider, TeamsProvider]
 
@@ -170,8 +163,8 @@ def test_home_assistant_requires_url_and_token(
     url_only = make_settings(home_assistant_url="http://ha.local:8123")
     both = make_settings(home_assistant_url="http://ha.local:8123", home_assistant_token="fake")
 
-    assert build_smart_home_providers(url_only, http) == []
-    assert type(build_smart_home_providers(both, http)[0]) is HomeAssistantProvider
+    assert IntegrationFactory(url_only, http).smart_home() == []
+    assert type(IntegrationFactory(both, http).smart_home()[0]) is HomeAssistantProvider
 
 
 def test_default_token_store_lives_under_data_dir(
@@ -187,10 +180,10 @@ def test_without_credentials_no_service_pretends_to_be_connected(
 ) -> None:
     # Regression: stub sample data used to be served by default, and the
     # proactive meeting trigger announced a fixture meeting as real.
-    settings = make_settings()
+    factory = IntegrationFactory(make_settings(), http)
 
-    assert build_email_providers(settings, http) == []
-    assert build_calendar_providers(settings, http) == []
-    assert build_music_providers(settings, http) == []
-    assert build_chat_providers(settings, http) == []
-    assert build_smart_home_providers(settings, http) == []
+    assert factory.email() == []
+    assert factory.calendar() == []
+    assert factory.music() == []
+    assert factory.chat() == []
+    assert factory.smart_home() == []

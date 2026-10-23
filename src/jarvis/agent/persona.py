@@ -168,11 +168,6 @@ def clock_section(now: datetime) -> str:
     )
 
 
-def language_of_voice(voice_id: str) -> str:
-    """``en-GB-RyanNeural`` -> ``English``; unknown prefixes fall back to English."""
-    return languages_of_voice(voice_id)[0]
-
-
 def languages_of_voice(voice_id: str) -> tuple[str, str]:
     """``sv-SE-MattiasNeural`` -> ``("Swedish", "svenska")``; unknown -> English."""
     prefix = voice_id.split("-", 1)[0].lower()
