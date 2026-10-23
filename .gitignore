@@ -42,6 +42,9 @@ data/
 *.swp
 .DS_Store
 Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
 
 # Claude Code agent worktrees and local settings
 .claude/
