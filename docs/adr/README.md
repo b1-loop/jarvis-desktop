@@ -2,7 +2,7 @@
 
 Short, dated records of the decisions that shape Jarvis and the reasons behind
 them. A reviewer who asks "why did you do it this way?" should find the answer
-here. New ADRs follow `template.md`; superseded ones are kept and marked.
+here. New ADRs follow [`template.md`](template.md); superseded ones are kept and marked.
 
 | # | Title | Status |
 | --- | --- | --- |
