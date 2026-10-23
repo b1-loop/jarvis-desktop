@@ -18,12 +18,17 @@ import pytest
 from jarvis.config import RuntimeMode, Settings
 from jarvis.core.providers import build_llm, build_stt, build_tts
 from jarvis.llm.base import (
+    AssistantMessage,
     Done,
     LLMClient,
     LLMEvent,
     Message,
     SystemMessage,
     TextDelta,
+    ToolCall,
+    ToolDefinition,
+    ToolResult,
+    ToolResultMessage,
     UserMessage,
 )
 from jarvis.stt.base import STT
@@ -104,3 +109,20 @@ async def test_offline_round_trip_piper_to_whisper_cpp(tts: TTS, stt: STT) -> No
     transcript = await stt.transcribe(resample_linear(speech, tts.sample_rate, 16_000))
 
     assert "hello" in transcript.text.lower()
+
+
+async def test_llama_cpp_answers_after_a_tool_call_with_a_lone_surrogate(llm: LLMClient) -> None:
+    # Regression: replaying a call whose JSON held "\ud83d" raised a pybind11
+    # cast error in format_prompt and crashed LOCAL mode after a tool round.
+    clock = ToolDefinition("current_time", "The current time", {"type": "object", "properties": {}})
+    call = ToolCall("call_1", "current_time", {"timezone": "\ud83d"})
+    messages: list[Message] = [
+        SystemMessage("Answer in one short sentence."),
+        UserMessage("What time is it?"),
+        AssistantMessage(text="", tool_calls=(call,)),
+        ToolResultMessage((ToolResult("call_1", "current_time", "12:00"),)),
+    ]
+
+    events: list[LLMEvent] = [event async for event in llm.stream(messages, [clock])]
+
+    assert isinstance(events[-1], Done)

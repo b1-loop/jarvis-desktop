@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -250,6 +250,71 @@ async def test_config_errors_from_the_factory_pass_through() -> None:
 
     with pytest.raises(ConfigError, match="build it"):
         await LocalLlamaClient(unconfigured, model_name="m").warm_up()
+
+
+class BrokenLlama(FakeLlama):
+    """Fails the way the native module does, in the named method."""
+
+    def __init__(self, failing: str) -> None:
+        super().__init__(streams=[FakeGenerationStream(["x"])])
+        self.failing = failing
+
+    def format_prompt(self, messages: Sequence[Mapping[str, str]]) -> str:
+        self._maybe_fail("format_prompt")
+        return super().format_prompt(messages)
+
+    def count_tokens(self, text: str) -> int:
+        self._maybe_fail("count_tokens")
+        return super().count_tokens(text)
+
+    def generate_from_prompt(self, prompt: str, **options: Any) -> FakeGenerationStream:
+        self._maybe_fail("generate_from_prompt")
+        return super().generate_from_prompt(prompt, **options)
+
+    def _maybe_fail(self, method: str) -> None:
+        if method == self.failing:
+            raise RuntimeError(f"native {method} failed")
+
+
+@pytest.mark.parametrize("failing", ["format_prompt", "count_tokens", "generate_from_prompt"])
+async def test_native_errors_before_generation_become_llm_error(failing: str) -> None:
+    llama = BrokenLlama(failing)
+    client = LocalLlamaClient(lambda: llama, model_name="tiny.gguf")
+
+    with pytest.raises(LLMError, match=f"native {failing} failed") as info:
+        await collect(client)
+    assert isinstance(info.value.__cause__, RuntimeError)
+
+
+async def test_a_lone_surrogate_in_a_past_tool_call_does_not_break_the_next_round() -> None:
+    # A small model wrote "\ud83d" in its tool JSON; json.loads kept the lone
+    # surrogate, and replaying the call used to crash the native binding.
+    call = ToolCall("call_1", "get_weather", {"city": "\ud83d"})
+    history: list[Message] = [
+        *HELLO,
+        AssistantMessage(text="", tool_calls=(call,)),
+        ToolResultMessage((ToolResult("call_1", "get_weather", "no such city", is_error=True),)),
+    ]
+    client, llama = client_for(FakeGenerationStream(["Sorry."]))
+
+    events = await collect(client, history, [WEATHER])
+
+    assert text_of(events) == "Sorry."
+    assert '"city": "\ufffd"' in llama.prompts[0][2]["content"]
+
+
+def test_chat_messages_are_always_valid_utf8() -> None:
+    messages: list[Message] = [
+        SystemMessage("rules \udc80"),
+        UserMessage("pair \ud83d\ude00 and lone \ud83d"),
+    ]
+
+    converted = to_chat_messages(messages)
+
+    assert converted == [
+        {"role": "system", "content": "rules \ufffd"},
+        {"role": "user", "content": "pair \U0001f600 and lone \ufffd"},
+    ]
 
 
 async def test_history_longer_than_the_context_is_rejected_with_a_remedy() -> None:
