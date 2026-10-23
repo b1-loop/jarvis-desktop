@@ -216,9 +216,9 @@ class Settings(BaseSettings):
         """Accept ``debug`` as well as ``DEBUG``; people type both."""
         return value.upper() if isinstance(value, str) else value
 
-    @field_validator("shell_allowlist", mode="before")
+    @field_validator("shell_allowlist", "core_tools", mode="before")
     @classmethod
-    def _split_allowlist(cls, value: object) -> object:
+    def _split_comma_list(cls, value: object) -> object:
         """Accept ``git,python,uv`` from the env file instead of a JSON list."""
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
@@ -346,14 +346,6 @@ class Settings(BaseSettings):
     core_tools: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: list(DEFAULT_CORE_TOOLS)
     )
-
-    @field_validator("core_tools", mode="before")
-    @classmethod
-    def _split_core_tools(cls, value: object) -> object:
-        """Accept ``current_time,web_search`` from the env file."""
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return value
 
     # Desktop app
     dashboard_start_visible: bool = True

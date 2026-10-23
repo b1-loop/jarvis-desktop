@@ -31,7 +31,7 @@ but a deep blue, so one set of offsets cannot be right for every hue.
 ## Decision
 
 Every palette is a function of one accent colour, computed natively in
-OKLCH (`native/overlay/palette.hpp`, `deriveTheme`). The named presets
+OKLCH (`native/overlay/include/jarvis/overlay/palette.hpp`, `deriveTheme`). The named presets
 (`red`, `green`, `violet`, `ice`, `pink`) are `deriveTheme` of a fixed seed.
 `custom` derives from the user's `overlay_accent`. Cyan and amber stay
 hand-tuned and unchanged, so nobody's HUD changes on upgrade.

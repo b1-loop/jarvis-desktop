@@ -54,7 +54,6 @@ public:
     OnnxSession& operator=(OnnxSession&&) noexcept;
 
     [[nodiscard]] std::size_t inputCount() const noexcept;
-    [[nodiscard]] std::size_t outputCount() const noexcept;
 
     /// Index of the input called @p name. Throws ModelError if absent.
     [[nodiscard]] std::size_t inputIndex(std::string_view name) const;

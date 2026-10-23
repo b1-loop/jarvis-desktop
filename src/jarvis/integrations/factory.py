@@ -220,47 +220,11 @@ def _chosen[P: Provider](
     return chosen
 
 
-def build_email_providers(
-    settings: Settings, http: httpx.AsyncClient, token_store: TokenStore | None = None
-) -> list[EmailProvider]:
-    """One-shot convenience over :meth:`IntegrationFactory.email`."""
-    return IntegrationFactory(settings, http, token_store).email()
-
-
-def build_calendar_providers(
-    settings: Settings, http: httpx.AsyncClient, token_store: TokenStore | None = None
-) -> list[CalendarProvider]:
-    """One-shot convenience over :meth:`IntegrationFactory.calendar`."""
-    return IntegrationFactory(settings, http, token_store).calendar()
-
-
-def build_music_providers(
-    settings: Settings, http: httpx.AsyncClient, token_store: TokenStore | None = None
-) -> list[MusicProvider]:
-    """One-shot convenience over :meth:`IntegrationFactory.music`."""
-    return IntegrationFactory(settings, http, token_store).music()
-
-
-def build_chat_providers(
-    settings: Settings, http: httpx.AsyncClient, token_store: TokenStore | None = None
-) -> list[ChatProvider]:
-    """One-shot convenience over :meth:`IntegrationFactory.chat`."""
-    return IntegrationFactory(settings, http, token_store).chat()
-
-
-def build_smart_home_providers(
-    settings: Settings, http: httpx.AsyncClient, token_store: TokenStore | None = None
-) -> list[SmartHomeProvider]:
-    """One-shot convenience over :meth:`IntegrationFactory.smart_home`."""
-    return IntegrationFactory(settings, http, token_store).smart_home()
-
-
 # Design notes:
 # - Lists, not single providers: a user with both Gmail and Outlook wants
 #   "my unread mail" to cover both, and the tool layer can merge results.
-# - The composition root should hold one IntegrationFactory so Gmail and
-#   Calendar share a GoogleAuth; the build_* functions exist for callers that
-#   need a single service and accept a possible second consent prompt.
+# - The composition root holds one IntegrationFactory so Gmail and Calendar
+#   share a GoogleAuth and the user sees one consent prompt, not two.
 # - Stub selection is logged at INFO with stub=True so a run without keys is
 #   visibly a demo run, never a silent fake.
 # - Sign-in is non-interactive unless the caller says otherwise: forgetting

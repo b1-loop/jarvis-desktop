@@ -507,7 +507,6 @@ void defineWindowAnimation(WindowClass& window) {
     window
         .def("wake_pulse", &OverlayWindow::flashWakeWord,
              "Pulse a ripple outwards from the ring to acknowledge the wake word.")
-        .def("flash_wake_word", &OverlayWindow::flashWakeWord, "Alias of wake_pulse().")
         .def("play_boot", &playBoot, py::arg("info") = ReadoutPairs{},
              "Start the boot sequence with (label, value) readout lines; non-blocking,\n"
              "idempotent. True if this call started it.")

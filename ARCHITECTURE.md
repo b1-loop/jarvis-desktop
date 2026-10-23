@@ -30,7 +30,8 @@ jarvis-desktop/
     third_party/            whisper.cpp, llama.cpp (git submodules)
   src/jarvis/
     __main__.py             CLI (typer): --mode, --text-only, --no-wakeword, --background
-    config.py               pydantic-settings, the only reader of environment variables
+    config.py               pydantic-settings, the only place settings are read from the environment
+    user_settings.py        data/user_settings.json layered over .env (the HUD's settings page)
     _native/                loader for the compiled modules (the .pyd files are git-ignored)
     app/                    windowless desktop app: background session, single instance, shortcuts, icon, Ollama autostart
     core/                   composition root (bootstrap, voice_bootstrap, providers, ui_wiring,
@@ -41,18 +42,18 @@ jarvis-desktop/
     stt/ tts/ llm/          interfaces + providers
     inference/              loader and model manifest for jarvis_inference
     agent/                  loop, tool base, registry, confirmation, chaining, tool selection, persona
-    tools/                  63 tool plugins, one module each (helpers start with "_")
+    tools/                  63 tools in 60 plugin modules (helpers start with "_")
     memory/                 SQLite store, vector stores, memory manager, user profile
     proactive/              scheduler, triggers, YAML routines
     integrations/           email, calendar, chat, music, smart home, web, documents; Stub* providers
       connect/              one-time account sign-in from a terminal (connect_accounts.py)
     vision/                 screenshot -> downscale -> vision-capable LLM
     ui/                     overlay facade, tray icon, dashboard, view model
-    utils/                  errors, logging, timing, retry, sandbox, downloads
+    utils/                  errors, logging, timing, retry, sandbox, downloads, colour (OKLCH)
   tests/                    mirrors src/, plus tests/scripts/ for the scripts
   scripts/                  build_native, download_models, record_test_audio, benchmark_latency,
-                            benchmark_local, demo_ui, install_shortcuts, connect_accounts,
-                            record_demo.md
+                            benchmark_local, compare_models, demo_ui, demo_overlay,
+                            install_shortcuts, make_icon, connect_accounts, record_demo.md
   routines/                 YAML routines (morning briefing)
   docs/                     adr/, tools.md (tool catalogue), media/
 ```
@@ -510,8 +511,8 @@ local inference and overlay features (ADR-0002). Options:
 ONNX Runtime binary by URL hash through FetchContent, Catch2 and Dear ImGui
 by tag, whisper.cpp and llama.cpp as submodules. Warnings are errors
 (`/W4 /WX`) for our code only; `--tidy` runs clang-tidy, which the CI
-workflow shards four ways; the workflow is switched off in the repository
-settings for now, so the same commands run locally (see `CONTRIBUTING.md`).
+workflow shards four ways; the same commands run locally (see
+`CONTRIBUTING.md`).
 
 ## 14. Latency budget
 

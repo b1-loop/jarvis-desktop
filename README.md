@@ -143,7 +143,7 @@ Measured end to end by [`scripts/benchmark_latency.py`](scripts/benchmark_latenc
 on 2026-10-22, without a human: fixed prompts, synthesised once with
 edge-tts, are replayed into the real C++ audio engine in place of the
 microphone (real Silero VAD, segmenter, wake-word model and native
-barge-in), then go through the real STT, the agent with all 62 tools,
+barge-in), then go through the real STT, the agent with all its tools (62 then),
 memory and TTS. Median / p90 in milliseconds, 3 runs per prompt after one
 warm-up (3 English prompts, 2 Swedish, 3 scripted barge-ins):
 
@@ -213,8 +213,8 @@ turns, `main` before the change against this change:
 | **End of speech -> first audio** | **4057 / 4763** | **3772 / 4528** | **2727 / 3592** |
 | Last word -> first audio (700 ms hangover) | 4791 / 5489 | 4510 / 5252 | 3465 / 4330 |
 
-With `JARVIS_VAD_SILENCE_END_MS=500` the last row drops by another 200 ms
-(3022 / 3504 with Piper). edge-tts is a network service and its first
+With `JARVIS_VAD_SILENCE_END_MS=500` (a 200 ms shorter hangover) the last
+row drops further, to 3022 / 3504 with Piper. edge-tts is a network service and its first
 byte alone took 641 ms at the median and 1.8 s at p90 that day; Piper's
 first chunk takes about 0.1 s on the CPU. What the table cannot show,
 because its warm-up turn and closely spaced turns hide it: the first
@@ -280,8 +280,10 @@ copy .env.example .env                          # no key needed for the Ollama d
 uv run jarvis
 ```
 
-The first voice start downloads the faster-whisper `small` model (about
-500 MB). Without the NVIDIA CUDA libraries (cuBLAS, cuDNN) speech
+The first voice start downloads a faster-whisper model: `large-v3-turbo`
+on an NVIDIA GPU (`JARVIS_STT_MODEL_GPU`; `uv sync --all-extras` installs
+the cuBLAS/cuDNN wheels), otherwise `small` on the CPU
+(`JARVIS_STT_MODEL_CPU`, about 500 MB). If CUDA cannot load, speech
 recognition falls back to the CPU with one warning; set
 `JARVIS_STT_DEVICE=cpu` to skip the attempt.
 
@@ -649,10 +651,10 @@ shortcut to `uvw` rather than a frozen `.exe`.
   speakers, not only headphones (ADR-0019).
 - **A Swedish wake word**: openWakeWord needs a trained classifier per
   phrase; today only "Hey Jarvis" ships.
-- **GPU speech recognition out of the box**: faster-whisper runs on CUDA
-  when cuBLAS/cuDNN are installed; bundling or detecting them targets the
-  largest stage in the table above (2-4.5 s on this CPU; the GPU figure
-  has not been measured yet).
+- **GPU speech recognition without the `gpu` extra**: faster-whisper
+  runs on CUDA through the cuBLAS/cuDNN wheels of the `gpu` extra
+  (about 0.5 s per utterance against 2-4.5 s on the CPU, ADR-0030);
+  detecting a system CUDA install would spare the download.
 - **Constrained decoding for small models**: grammar-constrained JSON for
   llama.cpp tool calls instead of parsing free text (considered in ADR-0013).
 
@@ -689,7 +691,8 @@ shortcut to `uvw` rather than a frozen `.exe`.
   errors: a `jarvis_audio.AudioDeviceError` surfaced as
   `jarvis_overlay.NativeError` and the voice front end's `except` missed
   it, depending on import order. Registering them module-locally fixed it.
-- **Tool overload in 7B models.** With all 62 tool schemas in the prompt,
+- **Tool overload in 7B models.** With all 62 tool schemas (the count at
+  the time) in the prompt,
   `qwen2.5:7b` answered "what time is it?" by running `date` in the shell,
   and once claimed a declined command had printed output. Per-turn tool
   selection (at most 12 tools ranked by relevance plus a core set) and a
@@ -710,7 +713,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). The GitHub Actions workflow
 (`.github/workflows/ci.yml`) documents the full pipeline (lint, types,
 Python tests on Linux, the Windows native build with Catch2 and
 native-marked tests, sharded clang-tidy, a secrets scan) and runs on every
-push and pull request. The same checks run locally through the pre-commit
+push to `main` and every pull request. The same checks run locally through the pre-commit
 hooks and these commands:
 
 ```powershell

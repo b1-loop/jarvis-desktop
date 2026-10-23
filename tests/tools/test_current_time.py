@@ -5,7 +5,8 @@ import pytest
 
 from jarvis.agent.registry import ToolRegistry
 from jarvis.config import Settings
-from jarvis.tools.current_time import CurrentTimeTool, spoken_time
+from jarvis.tools._integration_support import twelve_hour
+from jarvis.tools.current_time import CurrentTimeTool
 from tests.agent.fakes import make_context
 from tests.fakes import FakeClock
 
@@ -33,7 +34,7 @@ def test_is_discovered() -> None:
     ],
 )
 def test_spoken_time_uses_a_twelve_hour_clock(hour: int, minute: int, expected: str) -> None:
-    assert spoken_time(datetime(2026, 1, 1, hour, minute, tzinfo=UTC)) == expected
+    assert twelve_hour(datetime(2026, 1, 1, hour, minute, tzinfo=UTC)) == expected
 
 
 async def test_reports_local_time_from_the_injected_clock(settings: Settings) -> None:

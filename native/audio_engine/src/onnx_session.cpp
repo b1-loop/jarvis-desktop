@@ -134,10 +134,6 @@ std::size_t OnnxSession::inputCount() const noexcept {
     return impl_->inputNames.size();
 }
 
-std::size_t OnnxSession::outputCount() const noexcept {
-    return impl_->outputNames.size();
-}
-
 std::size_t OnnxSession::inputIndex(std::string_view name) const {
     return indexOf(impl_->inputNames, name, "input", impl_->modelName);
 }

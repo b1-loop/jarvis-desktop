@@ -29,8 +29,8 @@ provider ABCs per account-backed service, the `WebSearchProvider` and
 reads, and the session's `EmailDraftBook`. The composition root builds it
 in one call, `build_integration_services(settings, http)`, which reuses one
 `IntegrationFactory` (so Google and Microsoft sign-ins stay shared) and
-picks Brave or DuckDuckGo search from settings. `IntegrationProviders` is
-kept as an alias of the class for the agent-loop's bootstrap code.
+picks Brave or DuckDuckGo search from settings. (An `IntegrationProviders`
+alias kept for the old bootstrap code was removed once nothing used it.)
 
 **Missing means "not configured", never a crash.** `None` and an empty
 bundle are treated alike: every integration tool returns `ok=False` with a
