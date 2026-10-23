@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Final, Protocol
 from urllib.parse import parse_qs, urlsplit
 
+from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.utils.errors import JarvisError
 from jarvis.utils.logging import get_logger
 
@@ -125,9 +126,14 @@ class YouTubeTranscriptApiFetcher:
     usable, without the extra installed.
     """
 
+    def __init__(self, user_agent: str = DEFAULT_USER_AGENT) -> None:
+        """Remember the User-Agent; the library would otherwise send python-requests'."""
+        self._user_agent = user_agent
+
     def fetch(self, video_id: str, languages: Sequence[str]) -> FetchedCaptions:
         """Fetch through the library and translate its exceptions."""
         # Lazy: the library is in the optional ``documents`` extra.
+        from requests import Session
         from youtube_transcript_api import (
             CouldNotRetrieveTranscript,
             NoTranscriptFound,
@@ -137,7 +143,10 @@ class YouTubeTranscriptApiFetcher:
         )
 
         try:
-            fetched = YouTubeTranscriptApi().fetch(video_id, languages=list(languages))
+            with Session() as session:
+                session.headers["User-Agent"] = self._user_agent
+                api = YouTubeTranscriptApi(http_client=session)
+                fetched = api.fetch(video_id, languages=list(languages))
         except TranscriptsDisabled as error:
             raise TranscriptUnavailableError(video_id, "disabled") from error
         except NoTranscriptFound as error:
@@ -239,3 +248,7 @@ def _normalise(segment: TranscriptSegment) -> TranscriptSegment:
 # - No API key: the captions endpoint is the same one the YouTube player
 #   uses. It is unofficial, so a breakage shows up as retrieval_failed with
 #   the library's exception name attached for diagnosis.
+# - The fetcher sends JARVIS_WEB_USER_AGENT like the httpx web client, so
+#   every web-facing request identifies Jarvis the same way. A fresh
+#   requests session per fetch keeps the worker-thread call free of shared
+#   mutable state; transcript fetches are rare enough that pooling is moot.

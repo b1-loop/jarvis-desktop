@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import requests
+import youtube_transcript_api
 from structlog.testing import CapturingLogger
 
 from jarvis.agent.registry import ToolRegistry
@@ -29,6 +31,7 @@ from jarvis.core.bootstrap import (
 from jarvis.core.events import EventBus
 from jarvis.integrations.base import ConsentRequiredError
 from jarvis.integrations.stubs import StubCalendarProvider, StubEmailProvider
+from jarvis.integrations.youtube import TranscriptUnavailableError
 from jarvis.llm.ollama_client import OllamaClient
 from jarvis.memory import InMemoryVectorStore
 from jarvis.memory.errors import MemoryStoreError
@@ -249,6 +252,31 @@ async def test_integrations_are_empty_without_accounts(
 
     assert providers.email == providers.calendar == ()
     assert providers.music == providers.chat == providers.smart_home == ()
+
+
+async def test_integrations_identify_with_the_configured_user_agent(
+    make_settings: MakeSettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handed: list[str] = []
+
+    class FakeApi:
+        def __init__(self, http_client: requests.Session) -> None:
+            handed.append(str(http_client.headers["User-Agent"]))
+
+        def fetch(self, video_id: str, languages: list[str]) -> object:
+            raise youtube_transcript_api.TranscriptsDisabled(video_id)
+
+    monkeypatch.setattr(youtube_transcript_api, "YouTubeTranscriptApi", FakeApi)
+    settings = make_settings(data_dir=tmp_path, web_user_agent="TestAgent/9.9")
+    async with AsyncExitStack() as stack:
+        services = build_integrations(settings, stack)
+
+    assert services.web_client is not None
+    assert services.web_client.headers["User-Agent"] == "TestAgent/9.9"
+    assert services.transcript_fetcher is not None
+    with pytest.raises(TranscriptUnavailableError):
+        services.transcript_fetcher.fetch("dQw4w9WgXcQ", ["en"])
+    assert handed == ["TestAgent/9.9"]
 
 
 async def test_voice_and_background_sign_in_is_non_interactive_and_notifies_once(
