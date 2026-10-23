@@ -62,6 +62,7 @@ from jarvis.core.ui_wiring import AppControls, MicrophoneSwitch, build_dashboard
 from jarvis.integrations.base import ConsentRequiredError
 from jarvis.integrations.consent import ConsentNotifier
 from jarvis.integrations.services import IntegrationServices, build_integration_services
+from jarvis.integrations.web import create_web_client
 from jarvis.llm.base import LLMClient
 from jarvis.llm.ollama_embeddings import OllamaEmbedder
 from jarvis.memory import ChromaVectorStore, InMemoryVectorStore, MemoryManager, SqliteStore
@@ -445,7 +446,7 @@ def build_integrations(
     "run connect_accounts.py" instead of opening a flow, and the first such
     error per account is shown as a notification on ``platform``.
     """
-    http = httpx.AsyncClient(timeout=INTEGRATIONS_TIMEOUT)
+    http = create_web_client(settings.web_user_agent, INTEGRATIONS_TIMEOUT)
     stack.push_async_callback(http.aclose)
     notifier = None
     if not interactive_sign_in and platform is not None:

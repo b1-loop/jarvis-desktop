@@ -18,7 +18,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
@@ -212,25 +213,42 @@ class LocalLlamaClient(LLMClient):
 
     def _start(self, llama: NativeLlama, prompt: str) -> NativeGenerationStream:
         options = self._sampling
-        return llama.generate_from_prompt(
-            prompt,
-            max_tokens=options.max_tokens,
-            temperature=options.temperature,
-            top_p=options.top_p,
-            top_k=options.top_k,
-        )
+        with _native_errors_as_llm_error("could not start local generation"):
+            return llama.generate_from_prompt(
+                prompt,
+                max_tokens=options.max_tokens,
+                temperature=options.temperature,
+                top_p=options.top_p,
+                top_k=options.top_k,
+            )
+
+
+@contextmanager
+def _native_errors_as_llm_error(what: str) -> Iterator[None]:
+    """Re-raise anything the native module throws as :class:`LLMError`.
+
+    ``jarvis_inference`` raises ``ModelError`` / ``NativeError`` (both
+    ``RuntimeError`` subclasses) and pybind11 raises a bare ``RuntimeError``
+    when an argument cannot be converted. The agent loop only degrades
+    gracefully on ``LLMError``, so every native call goes through this.
+    """
+    try:
+        yield
+    except JarvisError:
+        raise
+    except Exception as error:
+        raise LLMError(f"{what}: {error}") from error
 
 
 async def _next_piece(native: NativeGenerationStream) -> str | None:
-    try:
+    with _native_errors_as_llm_error("local generation failed"):
         return await asyncio.to_thread(native.next_token)
-    except Exception as error:
-        raise LLMError(f"local generation failed: {error}") from error
 
 
 def _render_prompt(llama: NativeLlama, messages: list[ChatMessage]) -> tuple[str, int]:
-    prompt = llama.format_prompt(messages)
-    tokens = llama.count_tokens(prompt)
+    with _native_errors_as_llm_error("could not render the prompt for the local model"):
+        prompt = llama.format_prompt(messages)
+        tokens = llama.count_tokens(prompt)
     if tokens >= llama.context_size():
         raise LLMError(
             f"the conversation ({tokens} tokens) does not fit the local model's context of "
@@ -316,7 +334,22 @@ def to_chat_messages(
     ]
     if system_parts:
         converted.insert(0, {"role": "system", "content": "\n\n".join(system_parts)})
-    return converted
+    return [{"role": m["role"], "content": _utf8_safe(m["content"])} for m in converted]
+
+
+def _utf8_safe(text: str) -> str:
+    r"""``text`` with every lone UTF-16 surrogate replaced by U+FFFD.
+
+    A small model that writes ``"\ud83d"`` in its tool JSON gets a lone
+    surrogate back from ``json.loads``. Python strings may hold one, UTF-8
+    cannot, so the native binding would refuse the whole history. A valid
+    pair that arrived as two code points is joined into its character.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return text
 
 
 def _to_chat_message(message: Message) -> ChatMessage:
@@ -377,5 +410,10 @@ def native_llama_factory(model_path: Path, *, context_size: int, threads: int) -
 # - Images are replaced by a placeholder rather than rejected: a history
 #   that contains an earlier screenshot must stay usable after switching to
 #   LOCAL mode, and the model is told what it is missing.
+# - Two layers protect the turn from native failures. Every chat message is
+#   made valid UTF-8 before it crosses into C++ (a lone surrogate in a past
+#   tool call once crashed LOCAL mode with a pybind11 cast error), and every
+#   native call maps its exceptions to LLMError, so whatever slips through
+#   becomes a spoken apology instead of a crash.
 # - No Python lock around generation: LlamaGenerator serialises generate()
 #   with its own mutex, so a second concurrent stream waits natively.
