@@ -23,6 +23,20 @@ std::chrono::nanoseconds ticksToNanoseconds(long long ticks, long long frequency
                                     ((remainder * kNanosPerSecond) / frequency)};
 }
 
+/// The nominal refresh period (rateRefresh) when DWM reports one: the
+/// measured qpcRefreshPeriod wanders by a millisecond or more on panels
+/// with a variable or dynamic refresh rate, and a wandering period puts
+/// slots off the real grid.
+std::chrono::nanoseconds refreshPeriod(const DWM_TIMING_INFO& timing,
+                                       const LARGE_INTEGER& frequency) noexcept {
+    constexpr long long kNanosPerSecond = 1'000'000'000;
+    const UNSIGNED_RATIO& rate = timing.rateRefresh;
+    if (rate.uiNumerator != 0 && rate.uiDenominator != 0) {
+        return std::chrono::nanoseconds{(kNanosPerSecond * rate.uiDenominator) / rate.uiNumerator};
+    }
+    return ticksToNanoseconds(static_cast<long long>(timing.qpcRefreshPeriod), frequency.QuadPart);
+}
+
 }  // namespace
 
 std::optional<VBlankGrid> compositionGrid() noexcept {
@@ -42,9 +56,7 @@ std::optional<VBlankGrid> compositionGrid() noexcept {
         now.QuadPart - static_cast<long long>(timing.qpcVBlank);  // may be negative (next vblank)
     const auto offset = std::chrono::duration_cast<Clock::duration>(
         ticksToNanoseconds(sinceVblank, frequency.QuadPart));
-    return VBlankGrid{.vblank = clockNow - offset,
-                      .period = ticksToNanoseconds(static_cast<long long>(timing.qpcRefreshPeriod),
-                                                   frequency.QuadPart)};
+    return VBlankGrid{.vblank = clockNow - offset, .period = refreshPeriod(timing, frequency)};
 }
 
 }  // namespace jarvis::overlay

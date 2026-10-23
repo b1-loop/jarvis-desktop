@@ -60,11 +60,15 @@ void LevelRing::clear() noexcept {
 
 std::vector<float> LevelRing::ordered() const {
     std::vector<float> out;
-    out.reserve(levels_.size());
-    const auto split = std::next(levels_.begin(), static_cast<std::ptrdiff_t>(next_));
-    out.insert(out.end(), split, levels_.end());
-    out.insert(out.end(), levels_.begin(), split);
+    orderedInto(out);
     return out;
+}
+
+void LevelRing::orderedInto(std::vector<float>& out) const {
+    out.resize(levels_.size());
+    const auto split = std::next(levels_.begin(), static_cast<std::ptrdiff_t>(next_));
+    const auto tail = std::copy(split, levels_.end(), out.begin());
+    std::copy(levels_.begin(), split, tail);
 }
 
 float LevelRing::latest() const noexcept {
@@ -177,19 +181,23 @@ bool OverlayModel::skipBoot(Clock::time_point now) {
 }
 
 OverlaySnapshot OverlayModel::snapshot(Clock::time_point now) const {
+    OverlaySnapshot out;
+    snapshotInto(out, now);
+    return out;
+}
+
+void OverlayModel::snapshotInto(OverlaySnapshot& out, Clock::time_point now) const {
     const std::scoped_lock lock(mutex_);
-    return OverlaySnapshot{
-        .state = state_,
-        .levels = levels_.ordered(),
-        .transcript = transcript_,
-        .response = response_,
-        .visible = visible_,
-        .wakeFlash = wakeFlashAt(now),
-        .bootStartedAt = bootStartedAt_,
-        .bootSkippedAt = bootSkippedAt_,
-        .bootReadout = bootReadout_,
-        .revision = revision_.load(std::memory_order_relaxed),
-    };
+    out.state = state_;
+    levels_.orderedInto(out.levels);
+    out.transcript.assign(transcript_);  // assign keeps the capacity
+    out.response.assign(response_);
+    out.visible = visible_;
+    out.wakeFlash = wakeFlashAt(now);
+    out.bootStartedAt = bootStartedAt_;
+    out.bootSkippedAt = bootSkippedAt_;
+    out.bootReadout = bootReadout_;
+    out.revision = revision_.load(std::memory_order_relaxed);
 }
 
 AssistantState OverlayModel::state() const {

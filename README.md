@@ -498,7 +498,10 @@ uv run jarvis --background     # desktop app: no console, tray icon only, one in
   microphone and the voice; `JARVIS_OVERLAY_SIZE` and
   `JARVIS_OVERLAY_INTENSITY` tune it, ADR-0023); the tray menu shows the
   dashboard, toggles the overlay, minimizes or restores the HUD and mutes
-  the microphone.
+  the microphone. Frames are paced on the display's vblanks and every
+  transition, snap and glide is a critically damped spring, so motion is
+  even at 60, 144 or 240 Hz (ADR-0031: no hitches in any measured phase,
+  boot worst frame 130 ms → 34 ms, idle at 30 fps for about 1 % of a core).
 - **The HUD is interactive** (ADR-0024). Its transparent parts stay
   click-through; its own shapes are not:
   - **Hover controls** fade in over the HUD: keyboard (type a request),

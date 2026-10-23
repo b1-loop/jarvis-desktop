@@ -23,7 +23,8 @@ dark backdrop window behind the transparent overlay).
 | Header | Type | Role |
 | --- | --- | --- |
 | `model.hpp` | `AssistantState`, `LevelRing`, `OverlayModel`, `OverlaySnapshot`, `BootReadout` | thread-safe state: setters from Python, one `snapshot()` per frame; boot request, skip and readout |
-| `animation.hpp` | `BootTimeline` (four acts), `StateBlend`, `LevelSmoother`, `ParticleField`, easing, keyframes, `FrameStats` | every boot and state number as a pure function of elapsed time |
+| `animation.hpp` | `BootTimeline` (four acts), `StateBlend`, `Spring`, `LevelSmoother`, `followLevels`, `ParticleField`, easing, keyframes, `FrameStats` | every boot and state number as a pure function of elapsed time; springs, envelopes, frame statistics with percentiles |
+| `pacing.hpp` | `refreshesPerFrame`, `nextSlot`, `wakeTime` | when the next frame wakes on the vblank grid ([ADR-0031](../../docs/adr/0031-hud-motion-and-frame-pacing.md)) |
 | `animator.hpp` | `OverlayAnimator`, `AnimationFrame`, `bloomStrength`, `fieldForces`, `transcriptWanted` | combines everything per frame; the only state carried between frames |
 | `scene.hpp` | `Camera`, `Projector`, `project`, `buildGlobe`, `lineReveal`, `Orbit`, `RingLayer`, `Rotor`, `parallax` | 3D geometry: perspective camera, globe wireframe, satellites, ring layout, eased rotors |
 | `particles.hpp` | `curlNoise`, `ParticleSystem` | seeded fixed-step particle simulation (breathe, pull, burst, swirl) |
@@ -35,6 +36,7 @@ dark backdrop window behind the transparent overlay).
 | `window.hpp` | `OverlayConfig`, `OverlayWindow` | the UI thread: window, device, surface, post-processing, render loop (pimpl) |
 | `errors.hpp` | `OverlayError` | raised when the window or the device cannot be created |
 | `src/surface.hpp` | `RenderSurface` | private: DirectComposition swap chain, or the layered fallback |
+| `src/frame_clock.hpp` | `VBlankGrid`, `compositionGrid` | private: DWM's vblank grid on the steady clock |
 | `src/postfx.hpp` | `PostProcessor`, `GpuTimer` | private: light layer, dual-Kawase bloom, composite; timestamp queries |
 | `src/hud_draw.hpp` | glow strokes, ellipses, radial glows, `BlendModes` | private: ImDrawList primitives and the light-section callbacks |
 | `src/hud.hpp` | `HudRenderer` | private: one frame; split over `hud.cpp` (order, state layers), `hud_scene.cpp` (globe, rings, satellites, particles), `hud_boot.cpp` (boot acts), `hud_panel.cpp` (corner HUD) |
@@ -189,12 +191,26 @@ when there is text and stay up for 8 s after Jarvis returns to Idle.
 | UI thread (`OverlayWindow::Impl`) | message loop, one `snapshot()` per frame, animation, ImGui + D3D rendering, GPU timing | model mutex (read), stats mutex (write) |
 | Caller threads (Python) | setters, `playBoot`, `skipBoot` | model mutex (write, sub-microsecond) |
 
-Frames are paced by a high-resolution waitable timer inside
-`MsgWaitForMultipleObjectsEx`: 60 fps while booting, cross-fading,
-sounding, sliding text or not Idle; 15 fps while idle. Everything moves by
-elapsed time (rotors integrate eased speeds in closed form, the particle
-field runs a fixed 60 Hz step counted from total elapsed time), so the
-15 fps idle shows the same motion as 60 fps, just sampled less often.
+Frames are paced on DWM's vblank grid ([ADR-0031](../../docs/adr/0031-hud-motion-and-frame-pacing.md),
+`pacing.hpp`, `src/frame_clock.*`): 60 fps while booting, cross-fading,
+sounding, sliding text, interacting or not Idle; 30 fps while idle. Each
+frame gets a whole number of refreshes (4 at 240 Hz, 2 at 144 Hz, 1 at
+60 Hz) and the loop wakes on a high-resolution waitable timer inside
+`MsgWaitForMultipleObjectsEx` just after the slot's vblank, so frames reach
+the screen at an even cadence. Messages never draw a frame of their own;
+a change from Python signals an event that brings the next frame forward
+to the next slot. Everything moves by elapsed time (rotors integrate eased
+speeds in closed form, the particle field runs a fixed 60 Hz step counted
+from total elapsed time and is drawn interpolated between steps), and
+integrated state advances by at most 0.1 s per frame, so a stall resumes
+the motion instead of leaping it ahead.
+
+Motion with a destination uses closed-form critically damped springs
+(`anim::Spring`): the state cross-fade (re-targeted mid-fade it keeps its
+velocity), snapping while dragging, the landing after a drag and a
+double-click reset (`SnapGlide`: the placement is exact, only the drawing
+glides). The drawn level history follows the pushed one with an
+attack/release envelope, and a changed intensity ramps the bloom.
 
 ## Budgets (measured)
 
@@ -234,12 +250,19 @@ frame (about 3.1-3.6 ms, of which about 1 ms is the fixed `Present` cost)
 is over its 2 ms budget, and the last frames of the hand-off spike once
 while the window shrinks. ADR-0023 has the analysis and the next steps.
 Measure yourself with `uv run python scripts/demo_overlay.py`, which prints
-CPU and GPU time per phase.
+CPU and GPU time per phase (average and p99), the frame interval's
+p50/p95/p99/max, hitches and refreshes off cadence, and the process CPU
+share of the settled idle phases; `--stats-json` saves them. The idle rate
+went from 15 to 30 fps in ADR-0031 (idle frame times and the before/after
+smoothness numbers are there).
 
 ## Tests
 
 `native/tests/overlay/`: `animation_test.cpp` (easing, keyframes, boot
-keyframes, cross-fade, smoothing, frame-rate independence), `boot_test.cpp`
+keyframes, spring cross-fade, springs, clamped deltas, level envelopes,
+smoothing, frame-rate independence, frame-time percentiles and cadence),
+`pacing_test.cpp` (refreshes per frame, slots on a drifting grid, stall
+resynchronisation, interpolated particles), `boot_test.cpp`
 (act boundaries, ring fly-in, readout typing, glitch spikes, whip, skip,
 transcript reveal), `scene_test.cpp` (projection of known points, projector
 equivalence, globe line counts, line-by-line reveal, rotors, parallax),

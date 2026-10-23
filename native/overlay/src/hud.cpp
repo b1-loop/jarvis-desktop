@@ -186,7 +186,7 @@ void HudRenderer::drawListening(ImDrawList& draw, const HudScene& scene) {
         return;
     }
     const std::span<float> spokes{spokeScratch_.data(), kSpokes};
-    anim::radialWaveform(scene.snapshot.levels, scene.frame.level, scene.frame.time, kWaveFloor,
+    anim::radialWaveform(scene.frame.levels, scene.frame.level, scene.frame.time, kWaveFloor,
                          spokes);
     const ImVec2 centre = centreOf(scene);
     const float radius = scene.geometry.radius;
@@ -249,7 +249,7 @@ void HudRenderer::drawSpeaking(ImDrawList& draw, const HudScene& scene) {
     for (const auto& [phase, reach, alpha] :
          {std::array<float, 3>{0.0F, kSpeakReach, 1.0F},
           std::array<float, 3>{2.1F, kSpeakReach * 0.6F, 0.4F}}) {
-        anim::radialWaveform(scene.snapshot.levels, scene.frame.level,
+        anim::radialWaveform(scene.frame.levels, scene.frame.level,
                              (scene.frame.time * 1.3F) + phase, kWaveFloor, wave);
         pointScratch_.clear();
         for (const float amplitude : wave) {

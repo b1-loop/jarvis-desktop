@@ -235,7 +235,7 @@ void HudRenderer::drawTelemetry(ImDrawList& draw, const HudScene& scene) const {
     // A strip of level bars along the bottom of the column: the live audio
     // while listening or speaking, a slow shimmer while idle.
     const RectF& column = scene.panelText;
-    const std::vector<float> bars = waveformBars(scene.snapshot.levels, kTelemetryBars, 0.0F);
+    const std::vector<float> bars = waveformBars(scene.frame.levels, kTelemetryBars, 0.0F);
     const float height = textSize(scene, kTelemetryHeight);
     const float slot = column.width / static_cast<float>(kTelemetryBars);
     const float base = column.bottom();

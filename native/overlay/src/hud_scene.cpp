@@ -369,8 +369,9 @@ void HudRenderer::drawField(ImDrawList& draw, const HudScene& scene) const {
     int used = 0;
     for (const anim::SimParticle& p : particles.first(count)) {
         const anim::Parallax shift = anim::parallax(scene.frame.camera, p.depth);
-        const ImVec2 at{centre.x + ((p.x + shift.x) * radius),
-                        centre.y + ((p.y + shift.y) * radius)};
+        const anim::Vec2f drawn = field.position(p);
+        const ImVec2 at{centre.x + ((drawn.x + shift.x) * radius),
+                        centre.y + ((drawn.y + shift.y) * radius)};
         const float clear = 1.0F - (panel * anim::smoothstep(fadeFrom, fadeTo, at.x));
         const float alpha = field.alpha(p) * strength * clear;
         if (alpha < kMinDotAlpha) {

@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace jarvis::overlay {
@@ -131,9 +133,10 @@ float OverlayWindow::Impl::expandEased() const noexcept {
 }
 
 FrameLayout OverlayWindow::Impl::layoutFor(const anim::AnimationFrame& frame) const {
-    const RectF panel = toRectF(cornerPanel);
+    const PanelRects drawn = shownPanels();
+    const RectF panel = toRectF(drawn.corner);
     const HudGeometry panelHud = panelGeometry(panel, kPanelPadding * metrics.textScale * dpiScale);
-    FrameLayout layout{.window = cornerPanel,
+    FrameLayout layout{.window = drawn.corner,
                        .geometry = panelHud,
                        .panel = panel,
                        .panelText = panelHud.text,
@@ -142,11 +145,11 @@ FrameLayout OverlayWindow::Impl::layoutFor(const anim::AnimationFrame& frame) co
     if (frame.boot.has_value()) {
         placeBoot(layout, *frame.boot, panelHud);
     } else if (orbLinear > 0.0F) {
-        placeOrb(layout, panelHud);
+        placeOrb(layout, panelHud, drawn);
     } else if (expandLinear > 0.0F) {
-        placeExpanded(layout, panelHud);
+        placeExpanded(layout, panelHud, drawn);
     } else if (transparent.load()) {
-        layout.window = inflated(cornerPanel, scaled(kBleed, dpiScale));
+        layout.window = inflated(drawn.corner, scaled(kBleed, dpiScale));
     }
     const auto dx = static_cast<float>(-layout.window.x);
     const auto dy = static_cast<float>(-layout.window.y);
@@ -156,7 +159,7 @@ FrameLayout OverlayWindow::Impl::layoutFor(const anim::AnimationFrame& frame) co
     layout.canvas = translated(layout.canvas, dx, dy);
     layout.frame = translated(layout.frame, dx, dy);
     layout.collapsed = collapsedLayout(layout.panelText, dpiScale, metrics.textScale);
-    layout.expanded = expandedLayout(translated(toRectF(expandedPanel), dx, dy), dpiScale);
+    layout.expanded = expandedLayout(translated(toRectF(drawn.expanded), dx, dy), dpiScale);
     return layout;
 }
 
@@ -183,9 +186,10 @@ void OverlayWindow::Impl::placeBoot(FrameLayout& layout, const anim::BootFrame& 
                                        : enclosingPlacement(layout.canvas);
 }
 
-void OverlayWindow::Impl::placeExpanded(FrameLayout& layout, const HudGeometry& panelHud) const {
+void OverlayWindow::Impl::placeExpanded(FrameLayout& layout, const HudGeometry& panelHud,
+                                        const PanelRects& drawn) const {
     const float eased = expandEased();
-    const RectF target = toRectF(expandedPanel);
+    const RectF target = toRectF(drawn.expanded);
     HudGeometry ring = expandedLayout(target, dpiScale).ring;
     ring.text = panelHud.text;
     layout.expand = expandLinear >= 1.0F ? 1.0F : eased;
@@ -194,20 +198,21 @@ void OverlayWindow::Impl::placeExpanded(FrameLayout& layout, const HudGeometry& 
     layout.frame = lerpRect(panelHud.text, target, eased);
     if (transparent.load()) {
         const int bleed = scaled(kBleed, dpiScale);
-        const Placement expanded = inflated(expandedPanel, bleed);
+        const Placement expanded = inflated(drawn.expanded, bleed);
         // Both rectangles for the whole morph: drawing, not resizing.
         layout.window =
-            expandLinear >= 1.0F ? expanded : unionOf(inflated(cornerPanel, bleed), expanded);
+            expandLinear >= 1.0F ? expanded : unionOf(inflated(drawn.corner, bleed), expanded);
     } else {
         layout.window = expandLinear >= 1.0F
-                            ? expandedPanel
+                            ? drawn.expanded
                             : enclosingPlacement(lerpRect(layout.panel, target, eased));
     }
 }
 
-void OverlayWindow::Impl::placeOrb(FrameLayout& layout, const HudGeometry& panelHud) const {
+void OverlayWindow::Impl::placeOrb(FrameLayout& layout, const HudGeometry& panelHud,
+                                   const PanelRects& drawn) const {
     const OrbMorph morph = orbMorphAt(orbLinear);
-    const RectF orb = toRectF(orbPanel);
+    const RectF orb = toRectF(drawn.orb);
     const HudGeometry orbRing{.centreX = orb.x + (orb.width * 0.5F),
                               .centreY = orb.y + (orb.height * 0.5F),
                               .radius = orb.width * 0.5F,
@@ -215,17 +220,17 @@ void OverlayWindow::Impl::placeOrb(FrameLayout& layout, const HudGeometry& panel
     layout.orb = orbLinear;
     layout.geometry = lerpGeometry(panelHud, orbRing, morph.travel);
     if (transparent.load()) {
-        const Placement orbWindow = inflated(orbPanel, scaled(kOrbBleed, dpiScale));
+        const Placement orbWindow = inflated(drawn.orb, scaled(kOrbBleed, dpiScale));
         // Both rectangles for the whole morph, like the expand morph.
         layout.window = orbLinear >= 1.0F
                             ? orbWindow
-                            : unionOf(inflated(cornerPanel, scaled(kBleed, dpiScale)), orbWindow);
+                            : unionOf(inflated(drawn.corner, scaled(kBleed, dpiScale)), orbWindow);
         return;
     }
     // The opaque fallback has no invisible pixels: the window is the
     // shrinking ring's square, cut to a circle (syncWindowRegion).
     const int side =
-        std::max(static_cast<int>(std::lround(layout.geometry.radius * 2.0F)), orbPanel.width);
+        std::max(static_cast<int>(std::lround(layout.geometry.radius * 2.0F)), drawn.orb.width);
     layout.window = squareAt(layout.geometry.centreX, layout.geometry.centreY, side);
 }
 
@@ -241,6 +246,15 @@ void OverlayWindow::Impl::applyPlacement(const Placement& target) {
 }
 
 void OverlayWindow::Impl::resetPlacement(bool expanded) {
+    // Glide home from where the panel is drawn now, once the default
+    // placement has been resolved (startResetGlide).
+    const HudPanel panel = expanded ? HudPanel::Expanded : HudPanel::Corner;
+    const Placement from = shownRect(panel);
+    pendingResetGlide = SnapGlide{.panel = panel,
+                                  .fromX = static_cast<float>(from.x),
+                                  .fromY = static_cast<float>(from.y),
+                                  .dx = anim::Spring{kResetGlideSeconds},
+                                  .dy = anim::Spring{kResetGlideSeconds}};
     if (expanded) {
         expandedSaved.reset();
     } else {
@@ -283,6 +297,54 @@ void OverlayWindow::Impl::forgetOrbPlacement() {
     events.push(PlacementChanged{.expanded = false, .custom = false, .orb = true});
 }
 
+const Placement& OverlayWindow::Impl::panelRect(HudPanel panel) const noexcept {
+    switch (panel) {
+        case HudPanel::Expanded:
+            return expandedPanel;
+        case HudPanel::Orb:
+            return orbPanel;
+        case HudPanel::Corner:
+            break;
+    }
+    return cornerPanel;
+}
+
+Placement OverlayWindow::Impl::shownRect(HudPanel panel) const {
+    Placement rect = panelRect(panel);
+    if (glide.has_value() && glide->panel == panel) {
+        rect.x = static_cast<int>(std::lround(glide->fromX + glide->dx.value()));
+        rect.y = static_cast<int>(std::lround(glide->fromY + glide->dy.value()));
+    }
+    return rect;
+}
+
+PanelRects OverlayWindow::Impl::shownPanels() const {
+    return PanelRects{.corner = shownRect(HudPanel::Corner),
+                      .expanded = shownRect(HudPanel::Expanded),
+                      .orb = shownRect(HudPanel::Orb)};
+}
+
+void OverlayWindow::Impl::advanceGlide(float dt) {
+    if (!glide.has_value()) {
+        return;
+    }
+    const Placement& rect = panelRect(glide->panel);
+    const float targetX = static_cast<float>(rect.x) - glide->fromX;
+    const float targetY = static_cast<float>(rect.y) - glide->fromY;
+    glide->dx.advance(targetX, dt);
+    glide->dy.advance(targetY, dt);
+    const bool dragging = drag.mode == DragMode::Move && drag.panel == glide->panel;
+    if (!dragging && glide->dx.restingAt(targetX) && glide->dy.restingAt(targetY)) {
+        glide.reset();
+    }
+}
+
+void OverlayWindow::Impl::startResetGlide() {
+    if (pendingResetGlide.has_value()) {
+        glide = std::exchange(pendingResetGlide, std::nullopt);
+    }
+}
+
 Placement& OverlayWindow::Impl::panelRect(HudPanel panel) noexcept {
     switch (panel) {
         case HudPanel::Expanded:
@@ -317,6 +379,9 @@ HudPanel OverlayWindow::Impl::activePanel() const noexcept {
 //   orb itself, it docks next to wherever the HUD is (orb.hpp); dragging
 //   the HUD forgets a dragged orb, so the two never end up on opposite
 //   sides of the desktop by accident.
+// - Snapping and resets glide (SnapGlide): the placement jumps, as it must
+//   for clamping and for what Python remembers, but the drawing follows it
+//   on a critically damped spring, so nothing on screen ever teleports.
 // - The default expanded panel is aligned with the corner the HUD sits in,
 //   so expanding from the bottom-right corner grows up and to the left and
 //   the ring's flight into the header stays short.

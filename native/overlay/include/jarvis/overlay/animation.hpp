@@ -60,6 +60,62 @@ enum class Easing : std::uint8_t { Linear, InCubic, OutCubic, InOutCubic, OutExp
 /// Dispatch on @p easing.
 [[nodiscard]] float ease(Easing easing, float t) noexcept;
 
+// --- frame time and springs ------------------------------------------------------
+
+/// Longest frame step that integrated state (springs, smoothers, rotors,
+/// the particle field) advances by. A longer gap - a hidden spell, a locked
+/// desktop, a stall in the driver - resumes the motion where it was instead
+/// of leaping a whole stall ahead in one frame.
+inline constexpr float kMaxFrameDelta = 0.1F;
+
+/// @p dtSeconds clamped to [0, kMaxFrameDelta].
+[[nodiscard]] float clampFrameDelta(float dtSeconds) noexcept;
+
+/// A spring this close to its target (and this slow, per unit of omega)
+/// is at rest and snaps onto it, so "finished" is an exact comparison.
+inline constexpr float kSpringRest = 5e-4F;
+
+/// Position and velocity of a critically damped spring.
+struct SpringState {
+    float value{0.0F};
+    float velocity{0.0F};
+};
+
+/// Angular frequency (rad/s) at which a critically damped spring released
+/// from rest covers 99 % of the way to its target in @p settleSeconds.
+[[nodiscard]] float springOmega(float settleSeconds) noexcept;
+
+/// @p state after @p dtSeconds of a critically damped spring pulled towards
+/// @p target at @p omega. Integrated in closed form, so a frame of 1/240 s
+/// and a frame of 1/15 s land on the same curve; a re-targeted spring keeps
+/// its velocity, so a change of mind mid-motion bends the path instead of
+/// kinking it.
+[[nodiscard]] SpringState springStep(SpringState state, float target, float omega,
+                                     float dtSeconds) noexcept;
+
+/// A critically damped spring that comes to rest exactly on its target.
+///
+/// Used for every motion with a destination (morphs, snapping, glides):
+/// it starts without a jolt, never overshoots from rest and lands softly,
+/// and unlike a fixed-duration ease it can be re-targeted at any instant.
+class Spring {
+public:
+    explicit Spring(float settleSeconds = 0.3F, float value = 0.0F) noexcept;
+
+    /// Follow @p target for @p dtSeconds; returns the new value.
+    float advance(float target, float dtSeconds) noexcept;
+    /// Jump to @p value at rest (no motion).
+    void snap(float value) noexcept;
+    [[nodiscard]] float value() const noexcept { return state_.value; }
+    [[nodiscard]] float velocity() const noexcept { return state_.velocity; }
+    /// Exactly on @p target and not moving.
+    [[nodiscard]] bool restingAt(float target) const noexcept;
+
+private:
+    float omega_;
+    SpringState state_;
+};
+
 // --- keyframe tracks ---------------------------------------------------------------
 
 /// A value at a point in time. @c easing shapes the segment that *ends* at
@@ -310,11 +366,17 @@ using StateWeights = std::array<float, 4>;
 
 /// Cross-fade between assistant states.
 ///
-/// A transition blends from whatever was on screen at that instant (which
-/// may itself be mid-fade) to the new state, so rapid changes never jump.
+/// Each weight is a critically damped spring towards 1 (the target state)
+/// or 0, evaluated in closed form from the last re-targeting, so weights
+/// depend on time only. A transition starts from whatever is on screen at
+/// that instant - value *and* velocity - so a state that changes again
+/// mid-fade bends smoothly towards the new one instead of jumping or
+/// stopping dead. The weights always sum to 1 (the springs are linear and
+/// their targets sum to 1).
 class StateBlend {
 public:
-    explicit StateBlend(float durationSeconds = 0.2F,
+    /// @p settleSeconds: how long a fade from rest takes to cover 99 %.
+    explicit StateBlend(float settleSeconds = 0.35F,
                         AssistantState initial = AssistantState::Idle) noexcept;
 
     /// Start fading to @p state at @p now (seconds). Re-targeting the
@@ -322,12 +384,17 @@ public:
     void setTarget(AssistantState state, float now) noexcept;
 
     [[nodiscard]] StateWeights weights(float now) const noexcept;
+    /// Still visibly moving: some weight is more than kSpringRest from its target.
     [[nodiscard]] bool transitioning(float now) const noexcept;
     [[nodiscard]] AssistantState target() const noexcept { return target_; }
 
 private:
-    float duration_;
+    /// Weight @p index and its velocity at @p now.
+    [[nodiscard]] SpringState sample(std::size_t index, float now) const noexcept;
+
+    float omega_;
     StateWeights from_{};
+    StateWeights velocity_{};
     AssistantState target_;
     float since_{0.0F};
 };
@@ -351,6 +418,17 @@ private:
     float value_{0.0F};
 };
 
+/// Move every value of @p shown towards the same index of @p target with
+/// separate attack and release time constants (effects.hpp approach()).
+///
+/// The level history shifts by one sample each time Python pushes a level
+/// (20 to 100 times a second), so drawn as-is every bar and spoke jumps in
+/// steps. Following it per index with a quick attack and a slower release
+/// turns those steps into motion: speech still punches up at once and
+/// decays smoothly. Only the common length is followed.
+void followLevels(std::span<float> shown, std::span<const float> target, float dtSeconds,
+                  float attackSeconds, float releaseSeconds) noexcept;
+
 /// Calm idle "breathing" in [0, 1]: 0.5 - 0.5 cos(2 pi t / period).
 [[nodiscard]] float breathing(float time, float periodSeconds) noexcept;
 
@@ -367,8 +445,9 @@ struct Ripple {
 /// Amplitudes in [0, 1] for @p out.size() spokes around a ring.
 ///
 /// The level history (oldest first) is mirrored around the ring with the
-/// newest sample at the top, scaled by the smoothed @p energy and given a
-/// slow time-based shimmer so a steady tone still looks alive. Silence is
+/// newest sample at the top, interpolated between samples so neighbouring
+/// spokes never step, scaled by the smoothed @p energy and given a slow
+/// time-based shimmer so a steady tone still looks alive. Silence is
 /// @p floor everywhere. Spoke i and spoke n - i are always equal.
 void radialWaveform(std::span<const float> levels, float energy, float time, float floor,
                     std::span<float> out) noexcept;

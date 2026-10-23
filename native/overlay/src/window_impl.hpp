@@ -17,10 +17,12 @@
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/minimize_policy.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/pacing.hpp"
 #include "jarvis/overlay/placement.hpp"
 #include "jarvis/overlay/ui_events.hpp"
 #include "jarvis/overlay/window.hpp"
 
+#include "frame_clock.hpp"
 #include "hud.hpp"
 #include "hud_interact.hpp"
 #include "postfx.hpp"
@@ -101,6 +103,36 @@ struct DragState {
     bool moved{true};
 };
 
+/// Seconds a dragged panel takes to ease onto the edge it snaps to (99 %).
+inline constexpr float kSnapGlideSeconds = 0.2F;
+/// Seconds a reset (double-click on the ring) takes to glide home (99 %).
+inline constexpr float kResetGlideSeconds = 0.45F;
+
+/// A panel easing from where it is drawn onto its real placement.
+///
+/// The placement itself is always exact (snapped, clamped, reported to
+/// Python); only the drawing glides. While dragging, the drawn position is
+/// the cursor's unsnapped position plus an offset that springs towards the
+/// snap, so the panel eases onto an edge instead of jumping 16 px, and
+/// eases off it again; after the release, or after a reset, it springs the
+/// rest of the way.
+struct SnapGlide {
+    HudPanel panel{HudPanel::Corner};
+    /// The unsnapped position the offset is measured from, screen pixels.
+    float fromX{0.0F};
+    float fromY{0.0F};
+    /// Offset from (fromX, fromY) towards the placement.
+    anim::Spring dx;
+    anim::Spring dy;
+};
+
+/// The three panels where they are drawn this frame.
+struct PanelRects {
+    Placement corner;
+    Placement expanded;
+    Placement orb;
+};
+
 /// UTF-8 to UTF-16 for Win32 calls.
 [[nodiscard]] std::wstring toWide(std::string_view utf8);
 /// UTF-16 from Win32 to UTF-8.
@@ -143,6 +175,12 @@ struct OverlayWindow::Impl {
     mutable std::mutex demoMutex;
     DemoOverrides demo;  // guarded by demoMutex
     std::atomic<std::uint64_t> demoRevision{0};
+    /// Signalled by the facade after every mutation, so a change made while
+    /// the loop sleeps out an idle frame is drawn on the next vblank slot.
+    UniqueHandle wakeEvent;
+
+    /// Wake the UI thread (any thread).
+    void wake() const noexcept;
 
     std::promise<void> ready;
     std::jthread uiThread;
@@ -177,6 +215,10 @@ struct OverlayWindow::Impl {
     std::uint64_t lastHudRevision{0};
     Clock::time_point lastChange{Clock::now()};
     Clock::time_point nextFrame{Clock::now()};
+    /// The vblank slot (seconds after epoch) of the frame just scheduled.
+    std::optional<double> lastSlot;
+    /// The model's state for this frame; reused so a frame allocates nothing.
+    OverlaySnapshot frameSnapshot;
     std::optional<Clock::time_point> lastFrameStart;
     /// The period the frame being drawn was scheduled with, ms (hitch detection).
     double scheduledMs{0.0};
@@ -205,6 +247,9 @@ struct OverlayWindow::Impl {
     bool keyboardFocus{false};
     HWND previousForeground{nullptr};
     DragState drag;
+    std::optional<SnapGlide> glide;
+    /// A reset's glide, started once the new placement is resolved.
+    std::optional<SnapGlide> pendingResetGlide;
     float hover{0.0F};
     float expandLinear{0.0F};
     Clock::time_point hoverSeen{};
@@ -241,7 +286,15 @@ private:
     void initImGui();
     void messageLoop();
     void pumpMessages();
-    void waitUntil(Clock::time_point deadline) const;
+    void runFrame();
+    /// Sleep until the next frame is due, a change arrives or a message does.
+    void waitForFrame();
+    /// Plan the next frame at @p fps: on the vblank grid when visible.
+    void scheduleNext(int fps, bool visible);
+    /// Bring the next frame forward to the next slot (after a change).
+    void wakeSoon();
+    [[nodiscard]] double secondsSinceEpoch(Clock::time_point at) const noexcept;
+    [[nodiscard]] pacing::Grid gridSince(const VBlankGrid& grid) const noexcept;
     void updateVisibility(bool visible);
     void renderFrame(const OverlaySnapshot& snapshot, const HudData& data, Clock::time_point now);
     void drawFrame(const OverlaySnapshot& snapshot, const anim::AnimationFrame& frame,
@@ -270,8 +323,8 @@ private:
     void retirePostProcessing();
     [[nodiscard]] PostSettings postSettings(const anim::AnimationFrame& frame,
                                             const FrameLayout& layout) const noexcept;
-    [[nodiscard]] std::chrono::microseconds framePeriodFor(const OverlaySnapshot& snapshot,
-                                                           bool visible);
+    /// The frame rate this frame calls for: active while anything moves.
+    [[nodiscard]] int targetFps(const OverlaySnapshot& snapshot, const HudData& data, bool visible);
     void shutdown();
 
     // window_place.cpp: monitors, placement, layout.
@@ -283,8 +336,15 @@ private:
     [[nodiscard]] FrameLayout layoutFor(const anim::AnimationFrame& frame) const;
     void placeBoot(FrameLayout& layout, const anim::BootFrame& boot,
                    const HudGeometry& panelHud) const;
-    void placeExpanded(FrameLayout& layout, const HudGeometry& panelHud) const;
-    void placeOrb(FrameLayout& layout, const HudGeometry& panelHud) const;
+    void placeExpanded(FrameLayout& layout, const HudGeometry& panelHud,
+                       const PanelRects& drawn) const;
+    void placeOrb(FrameLayout& layout, const HudGeometry& panelHud, const PanelRects& drawn) const;
+    /// Where @p panel is drawn: its placement, offset while it glides.
+    [[nodiscard]] Placement shownRect(HudPanel panel) const;
+    [[nodiscard]] PanelRects shownPanels() const;
+    /// Spring the glide's offset on by @p dt; drop it once it has landed.
+    void advanceGlide(float dt);
+    void startResetGlide();
     void applyPlacement(const Placement& target);
     void resetPlacement(bool expanded);
     void reportPlacement(HudPanel panel);
@@ -292,6 +352,7 @@ private:
     [[nodiscard]] const MonitorArea& monitorOf(const Placement& rect) const;
     /// The placement of @p panel (cornerPanel, expandedPanel or orbPanel).
     [[nodiscard]] Placement& panelRect(HudPanel panel) noexcept;
+    [[nodiscard]] const Placement& panelRect(HudPanel panel) const noexcept;
     /// Which panel is fully on screen (mid-morph: the one it comes from).
     [[nodiscard]] HudPanel activePanel() const noexcept;
 
@@ -309,6 +370,10 @@ private:
     /// The cursor moved beyond the system's drag threshold since the press.
     [[nodiscard]] bool leftDragRectangle(POINT cursor) const noexcept;
     void continueDrag();
+    /// The drag put @p panel at @p free before snapping: glide towards the snap.
+    void followSnap(HudPanel panel, const Placement& free);
+    /// Grabbing a gliding panel: make where it is drawn its placement.
+    void settleGlide(HudPanel panel);
     /// @p released: the button went up (a click on the orb restores);
     /// false when the capture was taken away.
     void endDrag(bool released);

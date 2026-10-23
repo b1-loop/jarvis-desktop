@@ -229,11 +229,18 @@ TEST_CASE("the transcript slides in with text and out after going idle", "[overl
     snapshot.transcript = "open the terminal";
     animator.advance(snapshot, at(1.05));
     REQUIRE(animator.frame().transcript > 0.2F);
-    REQUIRE(animator.advance(snapshot, at(2.0)).transcript > 0.99F);
+    // Frames of 50 ms: one long leap would be clamped as a stall.
+    const auto runTo = [&](double from, double to) {
+        for (double t = from; t < to; t += 0.05) {
+            animator.advance(snapshot, at(t));
+        }
+        return animator.advance(snapshot, at(to)).transcript;
+    };
+    REQUIRE(runTo(1.05, 2.0) > 0.99F);
     snapshot.state = AssistantState::Idle;
     animator.advance(snapshot, at(2.1));
-    REQUIRE(animator.advance(snapshot, at(2.0 + anim::kTranscriptLinger - 0.5)).transcript > 0.99F);
-    animator.advance(snapshot, at(2.2 + anim::kTranscriptLinger));
+    REQUIRE(runTo(2.1, 2.0 + anim::kTranscriptLinger - 0.5) > 0.99F);
+    runTo(2.0 + anim::kTranscriptLinger - 0.5, 2.2 + anim::kTranscriptLinger);
     REQUIRE(animator.pace(snapshot) == anim::Pace::Active);  // still fading out
-    REQUIRE(animator.advance(snapshot, at(5.0 + anim::kTranscriptLinger)).transcript < 0.01F);
+    REQUIRE(runTo(2.2 + anim::kTranscriptLinger, 5.0 + anim::kTranscriptLinger) < 0.01F);
 }

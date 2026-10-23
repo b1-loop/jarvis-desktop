@@ -312,7 +312,7 @@ def test_config_defaults_are_the_documented_ones() -> None:
     assert config.bloom
     assert config.click_through
     assert config.opacity == 235
-    assert (config.active_fps, config.idle_fps) == (60, 15)
+    assert (config.active_fps, config.idle_fps) == (60, 30)
     assert (config.level_history, config.max_text_chars) == (64, 240)
     assert config.transparent
     assert config.theme is OverlayTheme.CYAN

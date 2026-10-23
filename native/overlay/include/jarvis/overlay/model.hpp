@@ -45,6 +45,8 @@ public:
 
     /// Samples in chronological order, oldest first; always capacity() long.
     [[nodiscard]] std::vector<float> ordered() const;
+    /// The same into @p out, reusing its storage (no allocation once sized).
+    void orderedInto(std::vector<float>& out) const;
 
     [[nodiscard]] std::size_t capacity() const noexcept { return levels_.size(); }
     [[nodiscard]] float latest() const noexcept;
@@ -152,6 +154,10 @@ public:
     bool skipBoot(Clock::time_point now = Clock::now());
 
     [[nodiscard]] OverlaySnapshot snapshot(Clock::time_point now = Clock::now()) const;
+    /// The same into @p out, reusing its vector and string storage: the UI
+    /// thread calls this every frame and allocates nothing once the text
+    /// has reached its (bounded) size.
+    void snapshotInto(OverlaySnapshot& out, Clock::time_point now = Clock::now()) const;
     [[nodiscard]] AssistantState state() const;
     [[nodiscard]] bool visible() const;
 

@@ -40,8 +40,10 @@ struct OverlayConfig {
     int opacity = 235;
     /// Frame rate while something animates (boot, cross-fade, not Idle).
     int activeFps = 60;
-    /// Frame rate while the idle ring only breathes.
-    int idleFps = 15;
+    /// Frame rate while the idle ring only breathes. 30, not 15: the idle
+    /// HUD still turns its rings and drifts its particles, and at 15 fps
+    /// that motion reads as stepping (ADR-0031 has the measured cost).
+    int idleFps = 30;
     /// Prefer per-pixel transparency (DirectComposition); false forces the
     /// whole-window-alpha fallback, which is also used when composition fails.
     bool transparent = true;
