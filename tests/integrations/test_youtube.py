@@ -1,8 +1,10 @@
 from typing import ClassVar
 
 import pytest
+import requests
 import youtube_transcript_api
 
+from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.integrations.youtube import (
     FetchedCaptions,
     InvalidVideoError,
@@ -140,8 +142,14 @@ class _Fetched:
 
 def _patch_api(
     monkeypatch: pytest.MonkeyPatch, *, result: object = None, error: Exception | None = None
-) -> None:
+) -> list[str]:
+    """Replace the library's client; returns the User-Agents it was handed."""
+    user_agents: list[str] = []
+
     class FakeApi:
+        def __init__(self, http_client: requests.Session) -> None:
+            user_agents.append(str(http_client.headers["User-Agent"]))
+
         def fetch(self, video_id: str, languages: list[str]) -> object:
             assert video_id == VIDEO_ID
             assert languages == ["en"]
@@ -150,6 +158,7 @@ def _patch_api(
             return result
 
     monkeypatch.setattr(youtube_transcript_api, "YouTubeTranscriptApi", FakeApi)
+    return user_agents
 
 
 def test_real_fetcher_maps_library_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,6 +171,15 @@ def test_real_fetcher_maps_library_output(monkeypatch: pytest.MonkeyPatch) -> No
         TranscriptSegment("one", 0.0, 1.0),
         TranscriptSegment("two", 1.0, 1.0),
     )
+
+
+def test_real_fetcher_identifies_as_jarvis(monkeypatch: pytest.MonkeyPatch) -> None:
+    user_agents = _patch_api(monkeypatch, result=_Fetched())
+
+    YouTubeTranscriptApiFetcher().fetch(VIDEO_ID, ["en"])
+    YouTubeTranscriptApiFetcher(user_agent="TestAgent/9.9").fetch(VIDEO_ID, ["en"])
+
+    assert user_agents == [DEFAULT_USER_AGENT, "TestAgent/9.9"]
 
 
 @pytest.mark.parametrize(

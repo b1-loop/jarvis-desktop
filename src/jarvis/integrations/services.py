@@ -186,7 +186,8 @@ def build_integration_services(
             so it carries the honest User-Agent and timeouts.
         token_store: OAuth persistence; defaults to ``data_dir / "tokens"``.
         transcript_fetcher: Caption source; defaults to the real
-            ``youtube-transcript-api`` fetcher (imported lazily on first use).
+            ``youtube-transcript-api`` fetcher (imported lazily on first use)
+            sending ``settings.web_user_agent``, like ``http``.
         interactive_sign_in: Allow browser / device-code consent (a terminal
             session only); see :class:`IntegrationFactory`.
         consent_notifier: Shown the first consent error of each sign-in.
@@ -205,7 +206,8 @@ def build_integration_services(
         chat=_frozen(factory.chat()),
         smart_home=_frozen(factory.smart_home()),
         web_search=build_web_search_provider(settings, http),
-        transcript_fetcher=transcript_fetcher or YouTubeTranscriptApiFetcher(),
+        transcript_fetcher=transcript_fetcher
+        or YouTubeTranscriptApiFetcher(user_agent=settings.web_user_agent),
         web_client=http,
     )
 
