@@ -14,6 +14,7 @@
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
+#include "frame_clock.hpp"
 #include "hud.hpp"
 #include "hud_interact.hpp"
 #include "postfx.hpp"
@@ -27,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -65,6 +67,7 @@ constexpr std::array<D3D_FEATURE_LEVEL, 2> kFeatureLevels{D3D_FEATURE_LEVEL_11_0
                                                           D3D_FEATURE_LEVEL_10_0};
 /// Waitable timers count in 100 ns units; negative means relative.
 constexpr long long kTimerTicksPerMicrosecond = 10;
+constexpr double kMillisPerSecond = 1000.0;
 /// Longest frame step the interaction fades integrate (after a hidden spell).
 constexpr float kMaxInteractionStep = 0.1F;
 
@@ -406,7 +409,9 @@ void OverlayWindow::Impl::messageLoop() {
         if (visible) {
             renderFrame(snapshot, data, now);
         }
-        nextFrame = std::max(nextFrame + framePeriodFor(snapshot, visible), Clock::now());
+        const std::chrono::microseconds period = framePeriodFor(snapshot, visible);
+        scheduledMs = std::chrono::duration<double, std::milli>(period).count();
+        nextFrame = std::max(nextFrame + period, Clock::now());
         waitUntil(nextFrame);
     }
 }
@@ -470,6 +475,7 @@ void OverlayWindow::Impl::renderFrame(const OverlaySnapshot& snapshot, const Hud
     drawFrame(snapshot, frame, layout, data);
     recordFrame(now, Clock::now());
     collectGpuTime();
+    collectPresentation(presentedAt);
 }
 
 void OverlayWindow::Impl::applyHudData(const HudData& data) {
@@ -602,6 +608,7 @@ void OverlayWindow::Impl::submitFrame() {
     }
 
     const HRESULT presented = surface->present();
+    presentedAt = Clock::now();
     if (presented == DXGI_ERROR_DEVICE_REMOVED || presented == DXGI_ERROR_DEVICE_RESET) {
         // The GPU went away (driver update, remote session change). Rather
         // than recreate everything mid-conversation the window retires and
@@ -652,12 +659,38 @@ void OverlayWindow::Impl::collectGpuTime() {
     }
 }
 
+void OverlayWindow::Impl::collectPresentation(Clock::time_point presented) {
+    const std::optional<VBlankGrid> grid = compositionGrid();
+    if (!grid.has_value() || grid->period.count() <= 0) {
+        lastVblank.reset();
+        return;
+    }
+    // DWM composes a frame on the first vblank after it was presented.
+    // Landing times, not vblank indices: the period DWM reports is a
+    // measurement and a dynamic refresh rate changes it, so only the gap
+    // between two consecutive frames is counted in refreshes.
+    const double period = std::chrono::duration<double>(grid->period).count();
+    const double since = std::chrono::duration<double>(presented - grid->vblank).count();
+    const double landing = std::chrono::duration<double>(grid->vblank - epoch).count() +
+                           (std::ceil(since / period) * period);
+    const std::optional<double> previous = std::exchange(lastVblank, landing);
+    if (!previous.has_value() || landing <= *previous) {
+        return;
+    }
+    const double refreshMs = period * kMillisPerSecond;
+    const auto perFrame =
+        static_cast<std::uint32_t>(std::max(std::lround(scheduledMs / refreshMs), 1L));
+    const auto refreshes = static_cast<std::uint32_t>(std::lround((landing - *previous) / period));
+    const std::scoped_lock lock(statsMutex);
+    stats.recordPresentation(1, refreshes, perFrame, 1.0 / period);
+}
+
 void OverlayWindow::Impl::recordFrame(Clock::time_point start, Clock::time_point end) {
     const double interval =
         lastFrameStart.has_value() ? millisecondsBetween(*lastFrameStart, start) : 0.0;
     lastFrameStart = start;
     const std::scoped_lock lock(statsMutex);
-    stats.record(millisecondsBetween(start, end), interval);
+    stats.record(millisecondsBetween(start, end), interval, scheduledMs);
 }
 
 std::chrono::microseconds OverlayWindow::Impl::framePeriodFor(const OverlaySnapshot& snapshot,

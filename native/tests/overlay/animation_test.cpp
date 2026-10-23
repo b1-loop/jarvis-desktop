@@ -505,3 +505,44 @@ TEST_CASE("frame statistics average render time and frame interval", "[overlay][
     accumulator.reset();
     REQUIRE(accumulator.stats().frames == 0);
 }
+
+TEST_CASE("frame statistics report interval percentiles and count hitches", "[overlay][anim]") {
+    anim::FrameStatsAccumulator accumulator;
+    accumulator.record(1.0, 0.0, 16.7);  // the first frame has no interval
+    for (int i = 0; i < 98; ++i) {
+        accumulator.record(1.0, 16.7, 16.7);
+    }
+    accumulator.record(9.0, 40.0, 16.7);  // one missed refresh and a slow frame
+    accumulator.record(1.0, 20.0, 16.7);  // late, but under 1.5x: not a hitch
+    const anim::FrameStats stats = accumulator.stats();
+    REQUIRE(stats.frames == 101);
+    REQUIRE(stats.intervalP50Ms == 16.7);
+    REQUIRE(stats.intervalP99Ms == 20.0);
+    REQUIRE(stats.intervalMaxMs == 40.0);
+    REQUIRE(stats.renderP99Ms == 1.0);
+    REQUIRE(stats.hitches == 1);
+
+    accumulator.reset();
+    REQUIRE(accumulator.stats().intervalMaxMs == 0.0);
+    REQUIRE(accumulator.stats().hitches == 0);
+}
+
+TEST_CASE("frame statistics count refreshes off the frame cadence", "[overlay][anim]") {
+    anim::FrameStatsAccumulator accumulator;
+    accumulator.recordPresentation(1, 4, 4, 240.0);  // on cadence
+    accumulator.recordPresentation(1, 5, 4, 240.0);  // held one refresh too long
+    accumulator.recordPresentation(1, 3, 4, 240.0);  // and one too short
+    accumulator.recordPresentation(2, 2, 1, 60.0);   // two frames, one refresh each
+    const anim::FrameStats stats = accumulator.stats();
+    REQUIRE(stats.presentedFrames == 5);
+    REQUIRE(stats.offCadenceRefreshes == 2);
+    REQUIRE(stats.refreshHz == 60.0);
+}
+
+TEST_CASE("percentiles use the nearest rank of the values", "[overlay][anim]") {
+    std::array<double, 5> values{5.0, 1.0, 4.0, 2.0, 3.0};
+    REQUIRE(anim::percentile(values, 0.5) == 3.0);
+    REQUIRE(anim::percentile(values, 1.0) == 5.0);
+    REQUIRE(anim::percentile(values, 0.0) == 1.0);
+    REQUIRE(anim::percentile(std::span<double>{}, 0.5) == 0.0);
+}

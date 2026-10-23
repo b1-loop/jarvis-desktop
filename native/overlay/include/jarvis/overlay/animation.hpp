@@ -375,8 +375,16 @@ void radialWaveform(std::span<const float> levels, float energy, float time, flo
 
 // --- frame statistics -------------------------------------------------------------------------
 
-/// Exponential moving averages of how long frames take and how far apart
-/// they are, so the demo and tests can report real numbers.
+/// Frames the percentiles of FrameStats are taken over (the most recent).
+inline constexpr std::size_t kStatsWindow = 1024;
+
+/// A frame interval longer than this multiple of its scheduled period is a
+/// hitch: at least one refresh (or timer tick) was missed.
+inline constexpr double kHitchFactor = 1.5;
+
+/// Frame timings: exponential moving averages for a live readout plus
+/// percentiles of the recent window, because an average hides exactly the
+/// occasional long frame that reads as a stutter.
 struct FrameStats {
     std::uint64_t frames{0};
     /// CPU time spent building and submitting one frame, milliseconds.
@@ -388,24 +396,60 @@ struct FrameStats {
     double gpuMs{0.0};
     /// Frames for which a GPU time was recorded.
     std::uint64_t gpuFrames{0};
+    /// Frame interval percentiles over the last kStatsWindow frames, ms.
+    double intervalP50Ms{0.0};
+    double intervalP95Ms{0.0};
+    double intervalP99Ms{0.0};
+    double intervalMaxMs{0.0};
+    /// 99th percentile of the CPU time per frame, ms.
+    double renderP99Ms{0.0};
+    /// Frames that started more than kHitchFactor x their scheduled period
+    /// after the previous one.
+    std::uint64_t hitches{0};
+    /// Frames handed to the compositor while its vblank grid was known.
+    std::uint64_t presentedFrames{0};
+    /// Refreshes by which those frames missed their cadence: a frame meant
+    /// to stay N refreshes that stayed N + 1 (a visible repeat) or N - 1
+    /// counts 1. Zero is perfectly even motion.
+    std::uint64_t offCadenceRefreshes{0};
+    /// The compositor's refresh rate, Hz (0 until known).
+    double refreshHz{0.0};
 };
 
-/// Folds frame timings into FrameStats with a fixed smoothing factor.
+/// Folds frame timings into FrameStats.
+///
+/// record() only writes into fixed rings (no allocation on the UI thread);
+/// stats() sorts copies of them, which only the demo and tests call.
 class FrameStatsAccumulator {
 public:
     explicit FrameStatsAccumulator(double smoothing = 0.1) noexcept : smoothing_(smoothing) {}
 
     /// Record one frame that took @p renderMs and started @p intervalMs
-    /// after the previous one (ignored for the very first frame).
-    void record(double renderMs, double intervalMs) noexcept;
+    /// after the previous one (ignored for the very first frame), which was
+    /// scheduled @p expectedMs after it (0: unknown, never a hitch).
+    void record(double renderMs, double intervalMs, double expectedMs = 0.0) noexcept;
     /// Record the GPU time of a (past) frame.
     void recordGpu(double gpuMs) noexcept;
-    void reset() noexcept { stats_ = {}; }
-    [[nodiscard]] const FrameStats& stats() const noexcept { return stats_; }
+    /// Record that @p presents frames reached the screen over @p refreshes
+    /// vertical blanks at @p refreshHz while each was meant to stay
+    /// @p refreshesPerFrame (at least 1).
+    void recordPresentation(std::uint32_t presents, std::uint32_t refreshes,
+                            std::uint32_t refreshesPerFrame, double refreshHz) noexcept;
+    void reset() noexcept;
+    /// The averages plus the percentiles of the recent window.
+    [[nodiscard]] FrameStats stats() const;
 
 private:
     double smoothing_;
     FrameStats stats_;
+    std::array<double, kStatsWindow> intervals_{};
+    std::array<double, kStatsWindow> renders_{};
+    std::size_t intervalCount_{0};
+    std::size_t renderCount_{0};
 };
+
+/// Nearest-rank percentile @p share (0-1) of @p values, which it sorts; 0
+/// for an empty span.
+[[nodiscard]] double percentile(std::span<double> values, double share) noexcept;
 
 }  // namespace jarvis::overlay::anim

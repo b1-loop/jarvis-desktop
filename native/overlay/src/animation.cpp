@@ -85,6 +85,11 @@ constexpr float kEnergyShare = 0.45F;
 constexpr float kShimmerTurns = 1.5F;
 constexpr float kShimmerSpeed = 2.3F;
 
+// Frame statistics percentiles.
+constexpr double kMedian = 0.50;
+constexpr double kP95 = 0.95;
+constexpr double kP99 = 0.99;
+
 StateWeights oneHot(AssistantState state) noexcept {
     StateWeights weights{};
     weights.at(stateIndex(state)) = 1.0F;
@@ -479,17 +484,62 @@ void radialWaveform(std::span<const float> levels, float energy, float time, flo
 
 // --- frame statistics -------------------------------------------------------------------------
 
-void FrameStatsAccumulator::record(double renderMs, double intervalMs) noexcept {
+void FrameStatsAccumulator::record(double renderMs, double intervalMs, double expectedMs) noexcept {
     ++stats_.frames;
+    renders_.at(renderCount_++ % kStatsWindow) = renderMs;
     if (stats_.frames == 1) {
         stats_.renderMs = renderMs;
         return;
+    }
+    intervals_.at(intervalCount_++ % kStatsWindow) = intervalMs;
+    if (expectedMs > 0.0 && intervalMs > expectedMs * kHitchFactor) {
+        ++stats_.hitches;
     }
     stats_.renderMs += (renderMs - stats_.renderMs) * smoothing_;
     // The first interval is the first sample, not a blend with zero.
     stats_.intervalMs = stats_.frames == 2
                             ? intervalMs
                             : stats_.intervalMs + ((intervalMs - stats_.intervalMs) * smoothing_);
+}
+
+void FrameStatsAccumulator::recordPresentation(std::uint32_t presents, std::uint32_t refreshes,
+                                               std::uint32_t refreshesPerFrame,
+                                               double refreshHz) noexcept {
+    const std::int64_t expected =
+        static_cast<std::int64_t>(presents) * std::max<std::int64_t>(refreshesPerFrame, 1);
+    stats_.presentedFrames += presents;
+    stats_.offCadenceRefreshes +=
+        static_cast<std::uint64_t>(std::abs(static_cast<std::int64_t>(refreshes) - expected));
+    stats_.refreshHz = refreshHz;
+}
+
+void FrameStatsAccumulator::reset() noexcept {
+    stats_ = {};
+    intervalCount_ = 0;
+    renderCount_ = 0;
+}
+
+FrameStats FrameStatsAccumulator::stats() const {
+    FrameStats out = stats_;
+    std::array<double, kStatsWindow> scratch = intervals_;
+    const std::span<double> intervals{scratch.data(), std::min(intervalCount_, kStatsWindow)};
+    out.intervalP50Ms = percentile(intervals, kMedian);
+    out.intervalP95Ms = percentile(intervals, kP95);
+    out.intervalP99Ms = percentile(intervals, kP99);
+    out.intervalMaxMs = percentile(intervals, 1.0);
+    scratch = renders_;
+    out.renderP99Ms = percentile({scratch.data(), std::min(renderCount_, kStatsWindow)}, kP99);
+    return out;
+}
+
+double percentile(std::span<double> values, double share) noexcept {
+    if (values.empty()) {
+        return 0.0;
+    }
+    std::ranges::sort(values);
+    const double rank = std::ceil(std::clamp(share, 0.0, 1.0) * static_cast<double>(values.size()));
+    const auto index = static_cast<std::size_t>(std::max(rank, 1.0)) - 1;
+    return values[index];
 }
 
 void FrameStatsAccumulator::recordGpu(double gpuMs) noexcept {

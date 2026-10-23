@@ -178,6 +178,14 @@ struct OverlayWindow::Impl {
     Clock::time_point lastChange{Clock::now()};
     Clock::time_point nextFrame{Clock::now()};
     std::optional<Clock::time_point> lastFrameStart;
+    /// The period the frame being drawn was scheduled with, ms (hitch detection).
+    double scheduledMs{0.0};
+    /// When the window was created; vblanks are counted from here.
+    Clock::time_point epoch{Clock::now()};
+    /// When the last frame was handed to DWM, and when (seconds after
+    /// epoch) the vblank it landed on was.
+    Clock::time_point presentedAt{};
+    std::optional<double> lastVblank;
 
     // Interaction (ADR-0024).
     Appearance appearance;
@@ -256,6 +264,9 @@ private:
     [[nodiscard]] bool orbMorphing() const noexcept;
     void recordFrame(Clock::time_point start, Clock::time_point end);
     void collectGpuTime();
+    /// Fold the vblank the frame presented at @p presented lands on into
+    /// the cadence statistics (frame_clock.hpp).
+    void collectPresentation(Clock::time_point presented);
     void retirePostProcessing();
     [[nodiscard]] PostSettings postSettings(const anim::AnimationFrame& frame,
                                             const FrameLayout& layout) const noexcept;
