@@ -1,4 +1,3 @@
-from collections.abc import Sequence
 from typing import ClassVar
 
 import pytest
@@ -14,23 +13,9 @@ from jarvis.integrations.youtube import (
     fetch_transcript,
     parse_video_id,
 )
+from tests.fakes import FakeTranscriptFetcher
 
 VIDEO_ID = "dQw4w9WgXcQ"
-
-
-class FakeFetcher:
-    """Records calls and returns canned captions, or raises what it is told to."""
-
-    def __init__(self, captions: FetchedCaptions | None = None, error: Exception | None = None):
-        self.captions = captions or FetchedCaptions("en", ())
-        self.error = error
-        self.calls: list[tuple[str, tuple[str, ...]]] = []
-
-    def fetch(self, video_id: str, languages: Sequence[str]) -> FetchedCaptions:
-        self.calls.append((video_id, tuple(languages)))
-        if self.error is not None:
-            raise self.error
-        return self.captions
 
 
 @pytest.mark.parametrize(
@@ -80,7 +65,7 @@ def test_parse_video_id_rejects_everything_else(url: str) -> None:
 
 
 async def test_fetch_transcript_normalises_segments_and_joins_text() -> None:
-    fetcher = FakeFetcher(
+    fetcher = FakeTranscriptFetcher(
         FetchedCaptions(
             "en-GB",
             (
@@ -107,7 +92,7 @@ async def test_fetch_transcript_normalises_segments_and_joins_text() -> None:
 
 
 async def test_fetch_transcript_defaults_to_english() -> None:
-    fetcher = FakeFetcher()
+    fetcher = FakeTranscriptFetcher()
 
     await fetch_transcript(fetcher, VIDEO_ID)
 
@@ -115,7 +100,7 @@ async def test_fetch_transcript_defaults_to_english() -> None:
 
 
 async def test_fetch_transcript_rejects_bad_input_before_fetching() -> None:
-    fetcher = FakeFetcher()
+    fetcher = FakeTranscriptFetcher()
 
     with pytest.raises(InvalidVideoError):
         await fetch_transcript(fetcher, "https://vimeo.com/1")
@@ -124,7 +109,7 @@ async def test_fetch_transcript_rejects_bad_input_before_fetching() -> None:
 
 async def test_fetch_transcript_propagates_unavailable_errors() -> None:
     error = TranscriptUnavailableError(VIDEO_ID, "disabled")
-    fetcher = FakeFetcher(error=error)
+    fetcher = FakeTranscriptFetcher(error=error)
 
     with pytest.raises(TranscriptUnavailableError, match="disabled") as info:
         await fetch_transcript(fetcher, VIDEO_ID)
