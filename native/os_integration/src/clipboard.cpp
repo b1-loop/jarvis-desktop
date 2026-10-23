@@ -30,12 +30,19 @@ public:
         constexpr int kAttempts = 8;
         constexpr auto kFirstDelay = std::chrono::milliseconds(8);
         auto delay = kFirstDelay;
-        for (int attempt = 0; attempt < kAttempts; ++attempt) {
+        for (int attempt = 1; attempt < kAttempts; ++attempt) {
             if (OpenClipboard(nullptr) != FALSE) {
                 return;
             }
             std::this_thread::sleep_for(delay);
             delay *= 2;
+        }
+        if (OpenClipboard(nullptr) != FALSE) {
+            return;
+        }
+        if (GetLastError() == ERROR_ACCESS_DENIED) {
+            throw ClipboardBusyError(
+                "OpenClipboard failed: another application kept the clipboard open");
         }
         win32::throwLastError("OpenClipboard");
     }

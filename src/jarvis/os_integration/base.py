@@ -209,12 +209,21 @@ class Platform(ABC):
 
     @abstractmethod
     async def get_clipboard_text(self) -> str:
-        """Clipboard text, or an empty string when it holds none."""
+        """Clipboard text, or an empty string when it holds none.
+
+        Raises:
+            ClipboardBusyError: If another application keeps the clipboard
+                open for longer than a short retry window.
+        """
         ...
 
     @abstractmethod
     async def set_clipboard_text(self, text: str) -> None:
-        """Replace the clipboard contents with ``text``."""
+        """Replace the clipboard contents with ``text``.
+
+        Raises:
+            ClipboardBusyError: As for :meth:`get_clipboard_text`.
+        """
         ...
 
     # --- system controls -------------------------------------------------

@@ -31,6 +31,10 @@ class ProcessNotFoundError(OsError):
     pass
 
 
+class ClipboardBusyError(OsError):
+    pass
+
+
 @dataclass(frozen=True)
 class FakeHotkey:
     modifiers: int

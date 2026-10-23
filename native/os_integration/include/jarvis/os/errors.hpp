@@ -37,4 +37,11 @@ public:
     using OsError::OsError;
 };
 
+/// Another process kept the clipboard open (OpenClipboard denied access)
+/// for longer than the retry window. Transient: trying again later works.
+class ClipboardBusyError : public OsError {
+public:
+    using OsError::OsError;
+};
+
 }  // namespace jarvis::os

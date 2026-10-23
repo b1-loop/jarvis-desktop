@@ -19,6 +19,7 @@ from typing import Final, Protocol, cast
 from jarvis import _native
 from jarvis.os_integration.base import HotkeyEvent, Platform, WindowInfo
 from jarvis.os_integration.errors import (
+    ClipboardBusyError,
     InvalidHotkeyError,
     PlatformError,
     ProcessNotFoundError,
@@ -234,6 +235,7 @@ _NATIVE_ERROR_NAMES: Final[dict[str, type[PlatformError]]] = {
     "UnsupportedError": UnsupportedFeatureError,
     "WindowNotFoundError": WindowNotFoundError,
     "ProcessNotFoundError": ProcessNotFoundError,
+    "ClipboardBusyError": ClipboardBusyError,
 }
 """Native exception class names (pybind11 registers them as RuntimeError subclasses)."""
 

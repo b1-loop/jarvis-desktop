@@ -48,6 +48,7 @@ void defineExceptions(const py::module_& module) {
     py::register_local_exception<WindowNotFoundError>(module, "WindowNotFoundError", osError.ptr());
     py::register_local_exception<ProcessNotFoundError>(module, "ProcessNotFoundError",
                                                        osError.ptr());
+    py::register_local_exception<ClipboardBusyError>(module, "ClipboardBusyError", osError.ptr());
 }
 
 void defineHotkeys(py::module_& module) {
