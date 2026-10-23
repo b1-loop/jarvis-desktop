@@ -192,10 +192,15 @@ How to read it:
   recognition (no cuBLAS), Swedish in local mode (only an English Piper
   voice is downloaded), and Swedish barge-in.
 - One local-mode run crashed the application: after a `current_time` tool
-  round, the llama.cpp prompt rendering raised a pybind11 cast error that
-  is not translated into `LLMError`. The benchmark records the crash in the
-  JSON, restarts the assistant and continues; the fix belongs to the LLM
-  provider and is tracked separately.
+  round, the llama.cpp prompt rendering raised a pybind11 cast error. The
+  error text matches what the binding raises for a string that is not
+  valid UTF-8: a tool call whose JSON holds a `\ud83d` escape becomes a
+  lone surrogate after `json.loads`, and replaying it in the next round
+  reproduces the crash exactly. Fixed since: `LocalLlamaClient` makes
+  every message valid UTF-8 before it reaches C++ and maps any native
+  exception to `LLMError`, so a failure is spoken as an apology instead
+  of crashing. The benchmark still records a crash in the JSON, restarts
+  the assistant and continues, should one ever recur.
 
 ### Swedish on the GPU, after the latency work (ADR-0030)
 
