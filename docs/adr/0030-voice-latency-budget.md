@@ -48,7 +48,7 @@ passes, which also repairs the run.
 | Each sentence is synthesised in its own task, at most `lookahead + 1` in flight | edge-tts's first byte is a service round trip (median 641 ms, p90 1773 ms; TLS is only 76 ms of it). Three sentences were complete after 2.7 s one after another and after 0.9 s concurrently. |
 | `JARVIS_TTS_PROVIDER=piper` speaks with the local Piper voice in CLOUD mode; the Swedish voice `sv_SE-nst-medium` is in the manifest (`download_models.py --piper-sv`) | Piper's first chunk: median 97 ms, p90 118 ms (real-time factor 0.03, CPU), against edge-tts's 0.6 / 1.8 s. The voice loads (5 s) at startup now, not on the first answer. |
 | Piper calls restore `LC_CTYPE` afterwards | espeak-ng switches the process to `en_US.UTF-8`; Python then decoded the Windows time-zone name ("Västeuropa, sommartid") with lone surrogates and the next LLM request failed to encode. Jarvis stopped on its second turn after speaking with Piper. |
-| `JARVIS_VAD_SILENCE_END_MS` exposes the segmenter's hangover (default 700 ms) | 500 ms cut the wait after the last word by 200 ms in the benchmark (3022 vs 3465 ms median) with the same transcripts. |
+| `JARVIS_VAD_SILENCE_END_MS` exposes the segmenter's hangover (default 700 ms) | 500 ms cut the median wait after the last word from 3465 to 3022 ms in the benchmark (Piper) with the same transcripts. |
 
 Before and after, Swedish, cloud mode, null sink, median / p90 ms of six
 measured turns (two prompts, three runs each, after one warm-up), on

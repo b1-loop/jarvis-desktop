@@ -59,6 +59,14 @@ class FakeLlama:
 
     def format_prompt(self, messages: Sequence[Mapping[str, str]]) -> str:
         self.prompts.append([dict(message) for message in messages])
+        for message in messages:
+            try:
+                message["content"].encode("utf-8")
+            except UnicodeEncodeError as error:
+                # What pybind11 raises when a str cannot become std::string.
+                raise RuntimeError(
+                    "Unable to cast Python instance of type <class 'str'>"
+                ) from error
         return "|".join(f"{m['role']}:{m['content']}" for m in messages)
 
     def count_tokens(self, text: str) -> int:

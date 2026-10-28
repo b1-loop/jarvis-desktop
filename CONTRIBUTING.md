@@ -79,8 +79,8 @@ clear message when `native/third_party/` is empty.
    `feat(audio): add ring buffer`, `fix(agent): handle empty tool result`, `docs: add ADR-0003`.
 5. Push and open a pull request with the output of the checks above.
 
-**CI status.** `.github/workflows/ci.yml` runs on every push and pull
-request (the sections below describe its caches and clang-tidy shards). Run
+**CI status.** `.github/workflows/ci.yml` runs on every push to `main` and
+every pull request (the sections below describe its caches and clang-tidy shards). Run
 the pre-commit hooks and the commands in step 3 locally first, plus the
 native build when C++ changed; a pull request is merged once CI passes.
 
@@ -176,7 +176,8 @@ The full list lives in `CLAUDE.md`. The ones people trip on most:
 Create `src/jarvis/tools/<name>.py` with a class deriving from `jarvis.agent.tool.Tool`,
 define its pydantic input model, implement `async run()`, and add
 `tests/tools/test_<name>.py`. The registry discovers it automatically; there is
-nothing to register.
+nothing to register. Add a row to `docs/tools.md` and update the tool count
+in `README.md` and `ARCHITECTURE.md`.
 
 ## Adding a native component
 

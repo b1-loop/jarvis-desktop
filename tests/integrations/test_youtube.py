@@ -1,9 +1,10 @@
-from collections.abc import Sequence
 from typing import ClassVar
 
 import pytest
+import requests
 import youtube_transcript_api
 
+from jarvis.integrations.web import DEFAULT_USER_AGENT
 from jarvis.integrations.youtube import (
     FetchedCaptions,
     InvalidVideoError,
@@ -14,23 +15,9 @@ from jarvis.integrations.youtube import (
     fetch_transcript,
     parse_video_id,
 )
+from tests.fakes import FakeTranscriptFetcher
 
 VIDEO_ID = "dQw4w9WgXcQ"
-
-
-class FakeFetcher:
-    """Records calls and returns canned captions, or raises what it is told to."""
-
-    def __init__(self, captions: FetchedCaptions | None = None, error: Exception | None = None):
-        self.captions = captions or FetchedCaptions("en", ())
-        self.error = error
-        self.calls: list[tuple[str, tuple[str, ...]]] = []
-
-    def fetch(self, video_id: str, languages: Sequence[str]) -> FetchedCaptions:
-        self.calls.append((video_id, tuple(languages)))
-        if self.error is not None:
-            raise self.error
-        return self.captions
 
 
 @pytest.mark.parametrize(
@@ -80,7 +67,7 @@ def test_parse_video_id_rejects_everything_else(url: str) -> None:
 
 
 async def test_fetch_transcript_normalises_segments_and_joins_text() -> None:
-    fetcher = FakeFetcher(
+    fetcher = FakeTranscriptFetcher(
         FetchedCaptions(
             "en-GB",
             (
@@ -107,7 +94,7 @@ async def test_fetch_transcript_normalises_segments_and_joins_text() -> None:
 
 
 async def test_fetch_transcript_defaults_to_english() -> None:
-    fetcher = FakeFetcher()
+    fetcher = FakeTranscriptFetcher()
 
     await fetch_transcript(fetcher, VIDEO_ID)
 
@@ -115,7 +102,7 @@ async def test_fetch_transcript_defaults_to_english() -> None:
 
 
 async def test_fetch_transcript_rejects_bad_input_before_fetching() -> None:
-    fetcher = FakeFetcher()
+    fetcher = FakeTranscriptFetcher()
 
     with pytest.raises(InvalidVideoError):
         await fetch_transcript(fetcher, "https://vimeo.com/1")
@@ -124,7 +111,7 @@ async def test_fetch_transcript_rejects_bad_input_before_fetching() -> None:
 
 async def test_fetch_transcript_propagates_unavailable_errors() -> None:
     error = TranscriptUnavailableError(VIDEO_ID, "disabled")
-    fetcher = FakeFetcher(error=error)
+    fetcher = FakeTranscriptFetcher(error=error)
 
     with pytest.raises(TranscriptUnavailableError, match="disabled") as info:
         await fetch_transcript(fetcher, VIDEO_ID)
@@ -155,8 +142,14 @@ class _Fetched:
 
 def _patch_api(
     monkeypatch: pytest.MonkeyPatch, *, result: object = None, error: Exception | None = None
-) -> None:
+) -> list[str]:
+    """Replace the library's client; returns the User-Agents it was handed."""
+    user_agents: list[str] = []
+
     class FakeApi:
+        def __init__(self, http_client: requests.Session) -> None:
+            user_agents.append(str(http_client.headers["User-Agent"]))
+
         def fetch(self, video_id: str, languages: list[str]) -> object:
             assert video_id == VIDEO_ID
             assert languages == ["en"]
@@ -165,6 +158,7 @@ def _patch_api(
             return result
 
     monkeypatch.setattr(youtube_transcript_api, "YouTubeTranscriptApi", FakeApi)
+    return user_agents
 
 
 def test_real_fetcher_maps_library_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,6 +171,15 @@ def test_real_fetcher_maps_library_output(monkeypatch: pytest.MonkeyPatch) -> No
         TranscriptSegment("one", 0.0, 1.0),
         TranscriptSegment("two", 1.0, 1.0),
     )
+
+
+def test_real_fetcher_identifies_as_jarvis(monkeypatch: pytest.MonkeyPatch) -> None:
+    user_agents = _patch_api(monkeypatch, result=_Fetched())
+
+    YouTubeTranscriptApiFetcher().fetch(VIDEO_ID, ["en"])
+    YouTubeTranscriptApiFetcher(user_agent="TestAgent/9.9").fetch(VIDEO_ID, ["en"])
+
+    assert user_agents == [DEFAULT_USER_AGENT, "TestAgent/9.9"]
 
 
 @pytest.mark.parametrize(

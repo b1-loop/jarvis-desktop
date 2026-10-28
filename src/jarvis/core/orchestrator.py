@@ -79,7 +79,8 @@ class TurnRunner(Protocol):
         """Answer one request, streaming sentences into ``sink``."""
 
 
-def _stdout_write(text: str) -> None:
+def stdout_write(text: str) -> None:
+    """Write and flush at once, so a streamed answer appears token by token."""
     sys.stdout.write(text)
     sys.stdout.flush()
 
@@ -101,7 +102,7 @@ class TerminalInput:
         # Bound now, not per call: the reader must keep reading the stream
         # that was stdin when the session started.
         self._readline = readline or sys.stdin.readline
-        self._write = write or _stdout_write
+        self._write = write or stdout_write
         self._lines: asyncio.Queue[str | None] = asyncio.Queue()
         self._thread: threading.Thread | None = None
 
@@ -145,7 +146,7 @@ class TerminalOutput:
 
     def __init__(self, speaker: str, *, write: Writer | None = None) -> None:
         self._speaker = speaker
-        self._write = write or _stdout_write
+        self._write = write or stdout_write
 
     async def say(self, sentence: str) -> None:
         """Print one sentence of the answer."""

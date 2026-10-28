@@ -370,18 +370,28 @@ def _cap_text(paragraphs: tuple[str, ...], max_chars: int) -> tuple[str, bool]:
 
 
 def create_web_client(
-    user_agent: str = DEFAULT_USER_AGENT, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+    user_agent: str = DEFAULT_USER_AGENT,
+    timeout: httpx.Timeout | float = DEFAULT_TIMEOUT_SECONDS,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> httpx.AsyncClient:
     """Build the HTTP client the web helpers expect in production.
 
     Identifies Jarvis honestly in the User-Agent (sites can block it if they
     wish), bounds every phase of a request with a timeout and follows
     redirects, since search engines hand out redirect links.
+
+    Args:
+        user_agent: Sent on every request; ``JARVIS_WEB_USER_AGENT`` in config.
+        timeout: Seconds for every phase, or a full ``httpx.Timeout``.
+        transport: Tests pass ``httpx.MockTransport``; production leaves it
+            ``None`` for the real network.
     """
     return httpx.AsyncClient(
         headers={"User-Agent": user_agent, "Accept-Language": "en"},
-        timeout=httpx.Timeout(timeout_seconds),
+        timeout=httpx.Timeout(timeout),
         follow_redirects=True,
+        transport=transport,
     )
 
 

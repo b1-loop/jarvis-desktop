@@ -274,3 +274,27 @@ async def test_create_web_client_sets_polite_defaults() -> None:
         assert client.headers["User-Agent"] == DEFAULT_USER_AGENT
         assert client.follow_redirects
         assert client.timeout.read is not None
+
+
+async def test_web_client_sends_the_configured_headers_on_every_web_request() -> None:
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        if request.url.host == "html.duckduckgo.com":
+            return httpx.Response(200, text=DDG_HTML)
+        return httpx.Response(200, text=ARTICLE_HTML, headers={"content-type": "text/html"})
+
+    transport = httpx.MockTransport(handler)
+    async with create_web_client("TestAgent/9.9", transport=transport) as client:
+        await DuckDuckGoSearchProvider(client).search("pybind11")
+        await fetch_article(client, "https://blog.test/audio-callback")
+
+    assert [headers["User-Agent"] for headers in seen] == ["TestAgent/9.9"] * 2
+    assert all(headers["Accept-Language"] == "en" for headers in seen)
+
+
+async def test_create_web_client_accepts_a_full_timeout() -> None:
+    async with create_web_client(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+        assert client.timeout.connect == 10.0
+        assert client.timeout.read == 30.0

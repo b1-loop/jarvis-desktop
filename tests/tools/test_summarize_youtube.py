@@ -1,4 +1,4 @@
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import pytest
 
@@ -11,24 +11,10 @@ from jarvis.integrations.youtube import (
     TranscriptUnavailableError,
 )
 from jarvis.tools.summarize_youtube import SummarizeYoutubeTool, fit_transcript
+from tests.fakes import FakeTranscriptFetcher
 from tests.tools.integration_helpers import integration_context
 
 VIDEO_ID = "dQw4w9WgXcQ"
-
-
-class FakeFetcher:
-    """Canned captions, or a raised error; records every request."""
-
-    def __init__(self, captions: FetchedCaptions | None = None, error: Exception | None = None):
-        self.captions = captions or FetchedCaptions("en", ())
-        self.error = error
-        self.calls: list[tuple[str, tuple[str, ...]]] = []
-
-    def fetch(self, video_id: str, languages: Sequence[str]) -> FetchedCaptions:
-        self.calls.append((video_id, tuple(languages)))
-        if self.error is not None:
-            raise self.error
-        return self.captions
 
 
 def captions(count: int, words_each: int = 10) -> FetchedCaptions:
@@ -52,7 +38,7 @@ def test_is_discovered_and_read_only() -> None:
 
 
 async def test_short_transcript_is_returned_whole(settings: Settings) -> None:
-    fetcher = FakeFetcher(captions(20))
+    fetcher = FakeTranscriptFetcher(captions(20))
     context = integration_context(settings, IntegrationServices(transcript_fetcher=fetcher))
 
     result = await SummarizeYoutubeTool().call(
@@ -69,7 +55,7 @@ async def test_short_transcript_is_returned_whole(settings: Settings) -> None:
 
 
 async def test_long_transcript_is_sampled_across_the_video(settings: Settings) -> None:
-    fetcher = FakeFetcher(captions(600))  # an hour, ~16k characters
+    fetcher = FakeTranscriptFetcher(captions(600))  # an hour, ~16k characters
     context = integration_context(settings, IntegrationServices(transcript_fetcher=fetcher))
 
     result = await SummarizeYoutubeTool().call({"video": VIDEO_ID, "max_chars": 2000}, context)
@@ -100,7 +86,7 @@ def test_fit_transcript_leaves_short_text_alone() -> None:
 async def test_unavailable_transcripts_are_explained(
     settings: Settings, reason: str, spoken: str
 ) -> None:
-    fetcher = FakeFetcher(error=TranscriptUnavailableError(VIDEO_ID, reason))
+    fetcher = FakeTranscriptFetcher(error=TranscriptUnavailableError(VIDEO_ID, reason))
     context = integration_context(settings, IntegrationServices(transcript_fetcher=fetcher))
 
     result = await SummarizeYoutubeTool().call({"video": VIDEO_ID}, context)
@@ -111,7 +97,7 @@ async def test_unavailable_transcripts_are_explained(
 
 
 async def test_not_a_youtube_link(settings: Settings) -> None:
-    fetcher = FakeFetcher()
+    fetcher = FakeTranscriptFetcher()
     context = integration_context(settings, IntegrationServices(transcript_fetcher=fetcher))
 
     result = await SummarizeYoutubeTool().call({"video": "https://vimeo.com/123456789"}, context)
@@ -122,7 +108,9 @@ async def test_not_a_youtube_link(settings: Settings) -> None:
 
 
 async def test_language_codes_are_validated(settings: Settings) -> None:
-    context = integration_context(settings, IntegrationServices(transcript_fetcher=FakeFetcher()))
+    context = integration_context(
+        settings, IntegrationServices(transcript_fetcher=FakeTranscriptFetcher())
+    )
 
     result = await SummarizeYoutubeTool().call(
         {"video": VIDEO_ID, "languages": ["english!"]}, context

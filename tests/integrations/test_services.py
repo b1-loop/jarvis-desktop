@@ -5,7 +5,6 @@ from pathlib import Path
 import httpx
 import pytest
 
-from jarvis.agent.tool import IntegrationProviders
 from jarvis.config import Settings
 from jarvis.integrations.base import EmailDraft
 from jarvis.integrations.services import (
@@ -104,10 +103,9 @@ async def test_brave_is_chosen_when_its_key_is_set(make_settings: Callable[..., 
     assert isinstance(provider, BraveSearchProvider)
 
 
-def test_bootstrap_alias_builds_the_same_bundle() -> None:
-    bundle = IntegrationProviders(email=(StubEmailProvider(),), chat=(StubChatProvider(),))
+def test_a_bundle_without_web_search_leaves_it_unset() -> None:
+    bundle = IntegrationServices(email=(StubEmailProvider(),), chat=(StubChatProvider(),))
 
-    assert isinstance(bundle, IntegrationServices)
     assert bundle.web_search is None  # web tools then answer "not configured"
 
 

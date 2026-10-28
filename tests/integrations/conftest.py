@@ -48,9 +48,6 @@ class Router:
 
         self._routes[(method.upper(), path)] = respond
 
-    def add_dynamic(self, method: str, path: str, respond: Responder) -> None:
-        self._routes[(method.upper(), path)] = respond
-
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         responder = self._routes.get((request.method, request.url.path))
