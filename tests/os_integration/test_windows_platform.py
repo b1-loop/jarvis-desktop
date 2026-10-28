@@ -4,6 +4,7 @@ import pytest
 
 from jarvis import _native
 from jarvis.os_integration import (
+    ClipboardBusyError,
     InvalidHotkeyError,
     PlatformError,
     ProcessNotFoundError,
@@ -248,6 +249,7 @@ def test_native_errors_translate_by_class_name() -> None:
     assert isinstance(translate_native_error(fakes.WindowNotFoundError("x")), WindowNotFoundError)
     assert isinstance(translate_native_error(fakes.ProcessNotFoundError("x")), ProcessNotFoundError)
     assert isinstance(translate_native_error(fakes.UnsupportedError("x")), UnsupportedFeatureError)
+    assert isinstance(translate_native_error(fakes.ClipboardBusyError("x")), ClipboardBusyError)
     assert translate_native_error(RuntimeError("not ours")) is None
 
 

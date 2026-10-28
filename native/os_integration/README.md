@@ -15,9 +15,9 @@ as `jarvis_os` and wrapped by `jarvis.os_integration.WindowsPlatform`.
 | `notifier.hpp` | `Notifier`, `BalloonNotifier` | toast notifications through a tray icon | `Shell_NotifyIconW` + `NIF_INFO` |
 | `system_controls.hpp` | `SystemControls`, `Win32SystemControls` | master volume and mute, panel brightness, lock screen | `IAudioEndpointVolume`, WMI `WmiMonitorBrightnessMethods`, `LockWorkStation` |
 | `screenshot.hpp` | `Screenshotter`, `GdiScreenshotter` | primary monitor, virtual desktop or one window as PNG bytes | `BitBlt` + `CreateDIBSection`, WIC PNG encoder |
-| `clipboard.hpp` | `Clipboard`, `Win32Clipboard` | get/set plain text | `OpenClipboard`, `CF_UNICODETEXT` |
+| `clipboard.hpp` | `Clipboard`, `Win32Clipboard` | get/set plain text; retries a held clipboard for about 1 s, then raises `ClipboardBusyError` | `OpenClipboard`, `CF_UNICODETEXT` |
 | `text_encoding.hpp` | `utf8ToWide`, `wideToUtf8` | the single UTF-8/UTF-16 boundary; invalid input throws | `MultiByteToWideChar` |
-| `errors.hpp` | `OsError`, `UnsupportedError`, `WindowNotFoundError`, `ProcessNotFoundError` | hierarchy under `jarvis::NativeError`, mapped 1:1 onto Python classes | - |
+| `errors.hpp` | `OsError`, `UnsupportedError`, `WindowNotFoundError`, `ProcessNotFoundError`, `ClipboardBusyError` | hierarchy under `jarvis::NativeError`, mapped 1:1 onto Python classes | - |
 
 Private helpers under `src/` (never included by a public header):
 `win32_util.hpp` (RAII handle, COM apartment scope, DPI-awareness scope,

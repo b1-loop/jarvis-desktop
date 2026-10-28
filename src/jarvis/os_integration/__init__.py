@@ -8,6 +8,7 @@ backend; ``StubPlatform`` records calls for text-only mode and tests.
 
 from jarvis.os_integration.base import HotkeyEvent, Platform, WindowInfo
 from jarvis.os_integration.errors import (
+    ClipboardBusyError,
     InvalidHotkeyError,
     PlatformError,
     ProcessNotFoundError,
@@ -18,6 +19,7 @@ from jarvis.os_integration.stub import StubPlatform
 from jarvis.os_integration.windows import WindowsPlatform, create_windows_platform
 
 __all__ = [
+    "ClipboardBusyError",
     "HotkeyEvent",
     "InvalidHotkeyError",
     "Platform",

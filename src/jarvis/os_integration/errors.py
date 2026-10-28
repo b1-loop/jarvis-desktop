@@ -31,6 +31,14 @@ class UnsupportedFeatureError(PlatformError):
     """
 
 
+class ClipboardBusyError(PlatformError):
+    """Another application kept the clipboard open past the retry window.
+
+    Transient, unlike a plain :class:`PlatformError`: asking again in a
+    moment usually works, so a tool can say so instead of "it failed".
+    """
+
+
 class InvalidHotkeyError(PlatformError):
     """A hotkey specification such as ``"ctrl+alt+j"`` could not be parsed."""
 

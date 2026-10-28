@@ -35,6 +35,7 @@ def test_exceptions_form_a_hierarchy(jarvis_os: ModuleType) -> None:
     assert issubclass(jarvis_os.UnsupportedError, jarvis_os.OsError)
     assert issubclass(jarvis_os.WindowNotFoundError, jarvis_os.OsError)
     assert issubclass(jarvis_os.ProcessNotFoundError, jarvis_os.OsError)
+    assert issubclass(jarvis_os.ClipboardBusyError, jarvis_os.OsError)
     assert issubclass(jarvis_os.NativeError, RuntimeError)
 
 
