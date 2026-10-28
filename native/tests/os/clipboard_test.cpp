@@ -8,56 +8,18 @@
 #include <windows.h>
 
 #include <chrono>
-#include <semaphore>
 #include <string>
-#include <thread>
 
 using jarvis::os::ClipboardBusyError;
+using jarvis::os::ClipboardOpenPolicy;
+using jarvis::os::OsError;
 using jarvis::os::Win32Clipboard;
 using jarvis::os::testing::requireDesktop;
 using jarvis::os::testing::requireStateChangesAllowed;
 
 namespace {
 
-/// Keeps the clipboard open on a second thread, the way a clipboard manager
-/// or a remote-desktop client does while it copies.
-class ClipboardHolder {
-public:
-    ClipboardHolder()
-        : thread_([this] {
-              opened_ = OpenClipboard(nullptr) != FALSE;
-              ready_.release();
-              release_.acquire();
-              if (opened_) {
-                  CloseClipboard();
-              }
-          }) {
-        ready_.acquire();
-    }
-    ~ClipboardHolder() { release(); }
-
-    ClipboardHolder(const ClipboardHolder&) = delete;
-    ClipboardHolder& operator=(const ClipboardHolder&) = delete;
-    ClipboardHolder(ClipboardHolder&&) = delete;
-    ClipboardHolder& operator=(ClipboardHolder&&) = delete;
-
-    /// True when this holder got the clipboard (nobody else had it open).
-    [[nodiscard]] bool opened() const noexcept { return opened_; }
-
-    /// Close the clipboard and join; call from one thread only.
-    void release() {
-        if (thread_.joinable()) {
-            release_.release();
-            thread_.join();
-        }
-    }
-
-private:
-    std::binary_semaphore ready_{0};
-    std::binary_semaphore release_{0};
-    bool opened_ = false;
-    std::jthread thread_;
-};
+constexpr int kTestAttempts = 3;
 
 /// The clipboard text, or SKIP when another application keeps the clipboard
 /// open. Any other failure still fails the test.
@@ -70,10 +32,20 @@ std::string textOrSkip(const Win32Clipboard& clipboard) {
     return {};
 }
 
-void holdOrSkip(const ClipboardHolder& holder) {
-    if (!holder.opened()) {
-        SKIP("another application holds the clipboard, so this test cannot");
-    }
+/// A policy whose first @p failures attempts fail with @p error and whose
+/// later attempts open the real clipboard. Counts attempts in @p calls.
+ClipboardOpenPolicy failing(int failures, DWORD error, int& calls) {
+    return ClipboardOpenPolicy{.open =
+                                   [failures, error, &calls] {
+                                       ++calls;
+                                       if (calls <= failures) {
+                                           SetLastError(error);
+                                           return false;
+                                       }
+                                       return OpenClipboard(nullptr) != FALSE;
+                                   },
+                               .attempts = kTestAttempts,
+                               .firstDelay = std::chrono::milliseconds(1)};
 }
 
 }  // namespace
@@ -85,27 +57,38 @@ TEST_CASE("reading the clipboard never throws on a desktop", "[os][clipboard]") 
     static_cast<void>(textOrSkip(clipboard));
 }
 
-TEST_CASE("a clipboard held by another thread is reported as busy", "[os][clipboard]") {
-    requireDesktop();
-    const ClipboardHolder holder;
-    holdOrSkip(holder);
-    const Win32Clipboard clipboard;
+TEST_CASE("a clipboard that stays denied is reported as busy", "[os][clipboard]") {
+    int calls = 0;
+    const Win32Clipboard clipboard{failing(kTestAttempts, ERROR_ACCESS_DENIED, calls)};
 
     REQUIRE_THROWS_AS(clipboard.text(), ClipboardBusyError);
+    REQUIRE(calls == kTestAttempts);
 }
 
-TEST_CASE("a briefly held clipboard is read after retrying", "[os][clipboard]") {
-    requireDesktop();
-    ClipboardHolder holder;
-    holdOrSkip(holder);
-    constexpr auto kHold = std::chrono::milliseconds(50);
-    const std::jthread releaser([&holder, kHold] {
-        std::this_thread::sleep_for(kHold);
-        holder.release();
-    });
-    const Win32Clipboard clipboard;
+TEST_CASE("other open failures stay generic OS errors", "[os][clipboard]") {
+    int calls = 0;
+    const Win32Clipboard clipboard{failing(kTestAttempts, ERROR_NOT_ENOUGH_MEMORY, calls)};
 
-    REQUIRE_NOTHROW(clipboard.text());
+    bool busy = false;
+    bool generic = false;
+    try {
+        static_cast<void>(clipboard.text());
+    } catch (const ClipboardBusyError&) {
+        busy = true;
+    } catch (const OsError&) {
+        generic = true;
+    }
+    REQUIRE_FALSE(busy);
+    REQUIRE(generic);
+}
+
+TEST_CASE("a briefly denied clipboard is read after retrying", "[os][clipboard]") {
+    requireDesktop();
+    int calls = 0;
+    const Win32Clipboard clipboard{failing(kTestAttempts - 1, ERROR_ACCESS_DENIED, calls)};
+
+    static_cast<void>(textOrSkip(clipboard));
+    REQUIRE(calls == kTestAttempts);
 }
 
 TEST_CASE("text survives a set/get round trip", "[os][clipboard][state]") {
@@ -136,9 +119,8 @@ TEST_CASE("an empty string clears the text", "[os][clipboard][state]") {
 // - Only ClipboardBusyError skips: it is the one failure caused by another
 //   process, after the product's own retries. A generic OsError (or any
 //   other exception) is a real bug and still fails the test.
-// - The holder opens the clipboard on its own thread because OpenClipboard
-//   denies access to every thread except the one that holds it, which is
-//   exactly what another application looks like to Win32Clipboard.
-// - In the "briefly held" test the releaser is declared after the holder,
-//   so it is joined (and has released the clipboard) before the holder is
-//   destroyed.
+// - A busy clipboard is simulated through ClipboardOpenPolicy rather than
+//   by holding it open: OpenClipboard(nullptr) on a second thread of the
+//   same process does not lock out the first, so a real holder would need
+//   a second process, and the injected opener is deterministic and runs
+//   without a desktop (CI included).

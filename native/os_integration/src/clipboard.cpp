@@ -18,28 +18,28 @@ namespace jarvis::os {
 
 namespace {
 
+bool openForThisThread() {
+    return OpenClipboard(nullptr) != FALSE;
+}
+
 /// Another application may hold the clipboard open for a few milliseconds;
 /// retrying briefly is what every well-behaved clipboard client does.
 class ClipboardScope {
 public:
-    ClipboardScope() {
-        // Another process (a clipboard manager, a remote-desktop client, a
-        // second app copying) may hold the clipboard for a few hundred ms.
-        // Exponential backoff waits about one second in total before giving
-        // up, still well below what a spoken request notices.
-        constexpr int kAttempts = 8;
-        constexpr auto kFirstDelay = std::chrono::milliseconds(8);
-        auto delay = kFirstDelay;
-        for (int attempt = 1; attempt < kAttempts; ++attempt) {
-            if (OpenClipboard(nullptr) != FALSE) {
+    explicit ClipboardScope(const ClipboardOpenPolicy& policy) {
+        const auto& open = policy.open ? policy.open : openForThisThread;
+        auto delay = policy.firstDelay;
+        for (int attempt = 1; attempt < policy.attempts; ++attempt) {
+            if (open()) {
                 return;
             }
             std::this_thread::sleep_for(delay);
             delay *= 2;
         }
-        if (OpenClipboard(nullptr) != FALSE) {
+        if (open()) {
             return;
         }
+        // Read before anything else can overwrite the thread's last error.
         if (GetLastError() == ERROR_ACCESS_DENIED) {
             throw ClipboardBusyError(
                 "OpenClipboard failed: another application kept the clipboard open");
@@ -79,7 +79,7 @@ private:
 }  // namespace
 
 std::string Win32Clipboard::text() const {
-    const ClipboardScope clipboard;
+    const ClipboardScope clipboard{policy_};
     if (IsClipboardFormatAvailable(CF_UNICODETEXT) == FALSE) {
         return {};
     }
@@ -111,7 +111,7 @@ void Win32Clipboard::setText(std::string_view utf8) {
         std::ranges::copy(wide, destination.begin());
         destination.back() = L'\0';
     }
-    const ClipboardScope clipboard;
+    const ClipboardScope clipboard{policy_};
     EmptyClipboard();
     if (SetClipboardData(CF_UNICODETEXT, block) == nullptr) {
         GlobalFree(block);  // still ours; the clipboard only takes it on success
