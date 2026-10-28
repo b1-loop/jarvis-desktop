@@ -381,7 +381,8 @@ TEST_CASE("a spring covers 99 percent of the way in its settle time", "[overlay]
 
 TEST_CASE("spring steps do not depend on the frame rate", "[overlay][anim][spring]") {
     const float omega = anim::springOmega(0.25F);
-    anim::SpringState once = anim::springStep({.value = 0.2F, .velocity = 3.0F}, 1.0F, omega, 0.1F);
+    const anim::SpringState once =
+        anim::springStep({.value = 0.2F, .velocity = 3.0F}, 1.0F, omega, 0.1F);
     anim::SpringState stepped{.value = 0.2F, .velocity = 3.0F};
     for (int frame = 0; frame < 24; ++frame) {
         stepped = anim::springStep(stepped, 1.0F, omega, 0.1F / 24.0F);
@@ -599,22 +600,35 @@ TEST_CASE("frame statistics average render time and frame interval", "[overlay][
     REQUIRE(accumulator.stats().frames == 0);
 }
 
-TEST_CASE("frame statistics report interval percentiles and count hitches", "[overlay][anim]") {
+namespace {
+
+/// 100 intervals: 98 on time, one missed refresh (40 ms, a slow frame)
+/// and one late one under 1.5x the period (20 ms, not a hitch).
+anim::FrameStatsAccumulator mostlySmoothFrames() {
     anim::FrameStatsAccumulator accumulator;
     accumulator.record(1.0, 0.0, 16.7);  // the first frame has no interval
     for (int i = 0; i < 98; ++i) {
         accumulator.record(1.0, 16.7, 16.7);
     }
-    accumulator.record(9.0, 40.0, 16.7);  // one missed refresh and a slow frame
-    accumulator.record(1.0, 20.0, 16.7);  // late, but under 1.5x: not a hitch
-    const anim::FrameStats stats = accumulator.stats();
+    accumulator.record(9.0, 40.0, 16.7);
+    accumulator.record(1.0, 20.0, 16.7);
+    return accumulator;
+}
+
+}  // namespace
+
+TEST_CASE("frame statistics report interval percentiles", "[overlay][anim]") {
+    const anim::FrameStats stats = mostlySmoothFrames().stats();
     REQUIRE(stats.frames == 101);
     REQUIRE(stats.intervalP50Ms == 16.7);
     REQUIRE(stats.intervalP99Ms == 20.0);
     REQUIRE(stats.intervalMaxMs == 40.0);
     REQUIRE(stats.renderP99Ms == 1.0);
-    REQUIRE(stats.hitches == 1);
+}
 
+TEST_CASE("frame statistics count hitches until reset", "[overlay][anim]") {
+    anim::FrameStatsAccumulator accumulator = mostlySmoothFrames();
+    REQUIRE(accumulator.stats().hitches == 1);
     accumulator.reset();
     REQUIRE(accumulator.stats().intervalMaxMs == 0.0);
     REQUIRE(accumulator.stats().hitches == 0);

@@ -222,7 +222,9 @@ void defineSnapshot(const py::module_& module) {
                                    return lines;
                                })
         .def_readonly("revision", &OverlaySnapshot::revision);
+}
 
+void defineFrameStats(const py::module_& module) {
     py::class_<anim::FrameStats>(module, "FrameStats",
                                  "Smoothed frame timings measured on the UI thread.")
         .def_readonly("frames", &anim::FrameStats::frames)
@@ -602,5 +604,6 @@ PYBIND11_MODULE(jarvis_overlay, module) {
     definePlacement(module);
     defineConfig(module);
     defineSnapshot(module);
+    defineFrameStats(module);
     defineWindow(module);
 }

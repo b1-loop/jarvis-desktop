@@ -518,9 +518,9 @@ float LevelSmoother::update(float target, float dtSeconds) noexcept {
 
 void followLevels(std::span<float> shown, std::span<const float> target, float dtSeconds,
                   float attackSeconds, float releaseSeconds) noexcept {
-    const std::size_t common = std::min(shown.size(), target.size());
-    for (std::size_t i = 0; i < common; ++i) {
-        shown[i] = approach(shown[i], target[i], dtSeconds, attackSeconds, releaseSeconds);
+    auto goal = target.begin();
+    for (float& value : shown.first(std::min(shown.size(), target.size()))) {
+        value = approach(value, *goal++, dtSeconds, attackSeconds, releaseSeconds);
     }
 }
 
@@ -556,8 +556,11 @@ void radialWaveform(std::span<const float> levels, float energy, float time, flo
             const float age = distance * static_cast<float>(levels.size() - 1);
             const auto older = static_cast<std::size_t>(age);
             const std::size_t newer = levels.size() - 1;
-            const float a = levels[newer - older];
-            const float b = levels[newer - std::min(older + 1, newer)];
+            const auto sample = [&levels](std::size_t index) {
+                return *std::next(levels.begin(), static_cast<std::ptrdiff_t>(index));
+            };
+            const float a = sample(newer - older);
+            const float b = sample(newer - std::min(older + 1, newer));
             history = perceptualLevel(lerp(a, b, age - static_cast<float>(older)));
         }
         const float shimmer =
@@ -623,8 +626,8 @@ double percentile(std::span<double> values, double share) noexcept {
     }
     std::ranges::sort(values);
     const double rank = std::ceil(std::clamp(share, 0.0, 1.0) * static_cast<double>(values.size()));
-    const auto index = static_cast<std::size_t>(std::max(rank, 1.0)) - 1;
-    return values[index];
+    const auto index = static_cast<std::ptrdiff_t>(std::max(rank, 1.0)) - 1;
+    return *std::next(values.begin(), index);
 }
 
 void FrameStatsAccumulator::recordGpu(double gpuMs) noexcept {

@@ -44,7 +44,7 @@ TEST_CASE("slots follow the previous one by whole refreshes", "[overlay][pacing]
     // Wake a little after the vblank, never before it.
     const double wake = pacing::wakeTime(grid, slot);
     REQUIRE(wake > slot);
-    REQUIRE(wake < slot + kRefresh240 * 0.5);
+    REQUIRE(wake < slot + (kRefresh240 * 0.5));
 }
 
 TEST_CASE("slots are re-snapped onto a grid that drifted", "[overlay][pacing]") {

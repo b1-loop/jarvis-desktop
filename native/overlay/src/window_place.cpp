@@ -328,13 +328,14 @@ void OverlayWindow::Impl::advanceGlide(float dt) {
     if (!glide.has_value()) {
         return;
     }
-    const Placement& rect = panelRect(glide->panel);
-    const float targetX = static_cast<float>(rect.x) - glide->fromX;
-    const float targetY = static_cast<float>(rect.y) - glide->fromY;
-    glide->dx.advance(targetX, dt);
-    glide->dy.advance(targetY, dt);
-    const bool dragging = drag.mode == DragMode::Move && drag.panel == glide->panel;
-    if (!dragging && glide->dx.restingAt(targetX) && glide->dy.restingAt(targetY)) {
+    SnapGlide& active = glide.value();
+    const Placement& rect = panelRect(active.panel);
+    const float targetX = static_cast<float>(rect.x) - active.fromX;
+    const float targetY = static_cast<float>(rect.y) - active.fromY;
+    active.dx.advance(targetX, dt);
+    active.dy.advance(targetY, dt);
+    const bool dragging = drag.mode == DragMode::Move && drag.panel == active.panel;
+    if (!dragging && active.dx.restingAt(targetX) && active.dy.restingAt(targetY)) {
         glide.reset();
     }
 }
