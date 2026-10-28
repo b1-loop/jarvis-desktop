@@ -73,6 +73,7 @@ add_library(jarvis_overlay_ui STATIC
     src/animation.cpp
     src/animator.cpp
     src/effects.cpp
+    src/frame_clock.cpp
     src/hud.cpp
     src/hud_boot.cpp
     src/hud_data.cpp
@@ -90,6 +91,7 @@ add_library(jarvis_overlay_ui STATIC
     src/minimize_policy.cpp
     src/model.cpp
     src/orb.cpp
+    src/pacing.cpp
     src/palette.cpp
     src/particles.cpp
     src/placement.cpp
@@ -116,7 +118,7 @@ target_include_directories(jarvis_overlay_ui
 # the boot readout's microphone name.
 target_link_libraries(jarvis_overlay_ui
     PUBLIC jarvis::common
-    PRIVATE jarvis_imgui dcomp d3dcompiler ole32 propsys shcore)
+    PRIVATE jarvis_imgui dcomp d3dcompiler dwmapi ole32 propsys shcore)
 # Keep <windows.h> from defining min/max macros and from dragging in the
 # legacy APIs; this only affects our translation units, not ImGui's.
 target_compile_definitions(jarvis_overlay_ui PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

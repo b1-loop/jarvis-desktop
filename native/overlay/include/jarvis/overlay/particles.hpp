@@ -52,6 +52,9 @@ struct SimParticle {
     /// Curl-noise force last sampled for this particle (refreshed every
     /// few steps, see ParticleSimConfig::noiseEvery).
     Vec2f eddy;
+    /// Position one fixed step earlier, for drawing between steps.
+    float prevX{0.0F};
+    float prevY{0.0F};
 };
 
 /// What pushes the particles this frame; each field is in [0, 1] and is
@@ -114,6 +117,16 @@ public:
                  std::size_t active = static_cast<std::size_t>(-1));
 
     [[nodiscard]] std::span<const SimParticle> particles() const noexcept { return particles_; }
+
+    /// How far the requested time is past the last fixed step, in steps
+    /// ([0, 1]): the share to draw between a particle's previous and
+    /// current position. Without it a 60 Hz simulation drawn at 72 or 144
+    /// fps (or at 60 fps with jitter) runs 0, 1 or 2 steps per frame and
+    /// visibly judders.
+    [[nodiscard]] float blend() const noexcept;
+
+    /// Where to draw @p particle: between its last two steps by blend().
+    [[nodiscard]] Vec2f position(const SimParticle& particle) const noexcept;
 
     /// Opacity of @p particle in [0, 1]: fades in after a respawn, out at
     /// the end of its life and near the edge of the field.

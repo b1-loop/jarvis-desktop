@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace jarvis::overlay::anim {
 
@@ -29,7 +30,8 @@ inline constexpr std::size_t kSatelliteCount = 4;
 
 /// Tunables of the state animations.
 struct AnimatorConfig {
-    float crossFadeSeconds = 0.2F;
+    /// Settle time (99 %) of the state cross-fade spring.
+    float crossFadeSeconds = 0.35F;
     float attackSeconds = 0.05F;
     float releaseSeconds = 0.30F;
     float breathingPeriod = 5.5F;
@@ -49,6 +51,10 @@ struct AnimationFrame {
     StateWeights weights{1.0F, 0.0F, 0.0F, 0.0F};
     /// Smoothed perceptual level of whichever source the state is showing.
     float level{0.0F};
+    /// The level history (oldest first) followed per sample with an
+    /// attack/release envelope: what the waveforms and telemetry draw, so
+    /// they move every frame instead of stepping with each pushed level.
+    std::vector<float> levels;
     /// Level, peak and onset of that source (AudioReactor).
     AudioEnergy energy;
     float breathing{0.0F};
@@ -110,8 +116,8 @@ public:
     /// Advance to @p now for @p snapshot and return the frame to draw.
     const AnimationFrame& advance(const OverlaySnapshot& snapshot, Clock::time_point now);
 
-    /// Active while booting, cross-fading, rippling, sounding or not idle;
-    /// Idle lets the window drop to its low frame rate.
+    /// Active while booting, cross-fading, rippling, sounding, ramping
+    /// the bloom or not idle; Idle lets the window drop to its low rate.
     [[nodiscard]] Pace pace(const OverlaySnapshot& snapshot) const noexcept;
 
     [[nodiscard]] const AnimationFrame& frame() const noexcept { return frame_; }
@@ -132,6 +138,7 @@ private:
     void advanceRotors(float dt);
     void advanceEffects(const OverlaySnapshot& snapshot, float dt);
     void advanceTranscript(const OverlaySnapshot& snapshot, float dt);
+    void advanceLevels(const OverlaySnapshot& snapshot, float dt);
 
     Clock::time_point epoch_;
     AnimatorConfig config_;
@@ -150,6 +157,9 @@ private:
     float idleSince_{0.0F};
     bool wasIdle_{true};
     bool transcriptWanted_{false};
+    /// The intensity's bloom multiplier as shown: ramps to scale_.bloom
+    /// instead of stepping when the preset changes.
+    float bloomGain_{1.0F};
     AnimationFrame frame_;
 };
 

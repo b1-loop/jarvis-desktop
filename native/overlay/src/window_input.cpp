@@ -210,6 +210,7 @@ bool OverlayWindow::Impl::beginDrag(POINT client, bool doubleClick) {
     }
     POINT screen = client;
     ClientToScreen(hwnd.load(), &screen);
+    settleGlide(panel);
     drag = DragState{.mode = kind == HitKind::Resize ? DragMode::Resize : DragMode::Move,
                      .panel = panel,
                      .anchor = {},
@@ -246,6 +247,7 @@ void OverlayWindow::Impl::continueDrag() {
             altHeld() ? moved
                       : snapToEdges(moved, monitor.work, scaled(kSnapDistance, monitor.scale));
         rect = clampInto(snapped, monitor.work);
+        followSnap(drag.panel, clampInto(moved, monitor.work));
         return;
     }
     const MonitorArea& monitor = monitorOf(drag.startRect);
@@ -255,6 +257,25 @@ void OverlayWindow::Impl::continueDrag() {
     grown.width = std::min(grown.width, monitor.work.right - grown.x);
     grown.height = std::min(grown.height, monitor.work.bottom - grown.y);
     rect = grown;
+}
+
+void OverlayWindow::Impl::followSnap(HudPanel panel, const Placement& free) {
+    if (!glide.has_value() || glide->panel != panel) {
+        glide = SnapGlide{.panel = panel,
+                          .dx = anim::Spring{kSnapGlideSeconds},
+                          .dy = anim::Spring{kSnapGlideSeconds}};
+    }
+    // The cursor is followed one to one; only the offset towards the snap
+    // (or back from it) springs.
+    glide->fromX = static_cast<float>(free.x);
+    glide->fromY = static_cast<float>(free.y);
+}
+
+void OverlayWindow::Impl::settleGlide(HudPanel panel) {
+    if (glide.has_value() && glide->panel == panel) {
+        panelRect(panel) = shownRect(panel);
+        glide.reset();
+    }
 }
 
 void OverlayWindow::Impl::endDrag(bool released) {
@@ -455,4 +476,5 @@ LRESULT OverlayWindow::Impl::handleMessage(HWND window, UINT message, WPARAM wPa
 //   window it took it from and gives it back on submit or Escape.
 // - Snapping uses the monitor under most of the panel, with its own DPI,
 //   then clamps onto that monitor; crossing to the next monitor therefore
-//   happens once most of the panel is over it.
+//   happens once most of the panel is over it. The snap itself is drawn as
+//   a short spring (SnapGlide), never as a jump.

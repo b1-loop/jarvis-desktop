@@ -85,6 +85,15 @@ constexpr float kEnergyShare = 0.45F;
 constexpr float kShimmerTurns = 1.5F;
 constexpr float kShimmerSpeed = 2.3F;
 
+/// omega x t at which a critically damped spring from rest is 99 % there:
+/// the root of (1 + x) e^-x = 0.01.
+constexpr float kSpringSettle = 6.6384F;
+
+// Frame statistics percentiles.
+constexpr double kMedian = 0.50;
+constexpr double kP95 = 0.95;
+constexpr double kP99 = 0.99;
+
 StateWeights oneHot(AssistantState state) noexcept {
     StateWeights weights{};
     weights.at(stateIndex(state)) = 1.0F;
@@ -185,6 +194,50 @@ float ease(Easing easing, float t) noexcept {
             break;
     }
     return clamp01(t);
+}
+
+// --- frame time and springs ------------------------------------------------------
+
+float clampFrameDelta(float dtSeconds) noexcept {
+    return std::clamp(dtSeconds, 0.0F, kMaxFrameDelta);
+}
+
+float springOmega(float settleSeconds) noexcept {
+    // A zero settle time is an (almost) instant spring, never a division by zero.
+    constexpr float kShortest = 1e-3F;
+    return kSpringSettle / std::max(settleSeconds, kShortest);
+}
+
+SpringState springStep(SpringState state, float target, float omega, float dtSeconds) noexcept {
+    if (dtSeconds <= 0.0F || omega <= 0.0F) {
+        return state;
+    }
+    // x(t) = target + (c1 + c2 t) e^(-omega t), the critically damped solution.
+    const float c1 = state.value - target;
+    const float c2 = state.velocity + (omega * c1);
+    const float decay = std::exp(-omega * dtSeconds);
+    const float offset = (c1 + (c2 * dtSeconds)) * decay;
+    return SpringState{.value = target + offset, .velocity = (c2 * decay) - (omega * offset)};
+}
+
+Spring::Spring(float settleSeconds, float value) noexcept
+    : omega_(springOmega(settleSeconds)), state_{.value = value, .velocity = 0.0F} {}
+
+float Spring::advance(float target, float dtSeconds) noexcept {
+    state_ = springStep(state_, target, omega_, dtSeconds);
+    if (std::abs(state_.value - target) <= kSpringRest &&
+        std::abs(state_.velocity) <= kSpringRest * omega_) {
+        state_ = SpringState{.value = target, .velocity = 0.0F};
+    }
+    return state_.value;
+}
+
+void Spring::snap(float value) noexcept {
+    state_ = SpringState{.value = value, .velocity = 0.0F};
+}
+
+bool Spring::restingAt(float target) const noexcept {
+    return state_.value == target && state_.velocity == 0.0F;
 }
 
 // --- keyframe tracks ---------------------------------------------------------------
@@ -401,34 +454,58 @@ std::size_t stateIndex(AssistantState state) noexcept {
     return static_cast<std::size_t>(state) % kStateCount;
 }
 
-StateBlend::StateBlend(float durationSeconds, AssistantState initial) noexcept
-    : duration_(std::max(durationSeconds, 0.0F)),
-      from_(oneHot(initial)),
-      target_(initial),
-      since_(-duration_) {}
+StateBlend::StateBlend(float settleSeconds, AssistantState initial) noexcept
+    : omega_(springOmega(settleSeconds)), from_(oneHot(initial)), target_(initial) {}
+
+SpringState StateBlend::sample(std::size_t index, float now) const noexcept {
+    const float goal = index == stateIndex(target_) ? 1.0F : 0.0F;
+    const SpringState start{.value = from_.at(index), .velocity = velocity_.at(index)};
+    return springStep(start, goal, omega_, std::max(now - since_, 0.0F));
+}
 
 void StateBlend::setTarget(AssistantState state, float now) noexcept {
     if (state == target_) {
         return;
     }
-    from_ = weights(now);
+    // Value and velocity of every weight at this instant, so the new fade
+    // continues the motion on screen instead of restarting from rest.
+    StateWeights value{};
+    StateWeights velocity{};
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        const SpringState current = sample(i, now);
+        value.at(i) = current.value;
+        velocity.at(i) = current.velocity;
+    }
+    from_ = value;
+    velocity_ = velocity;
     target_ = state;
     since_ = now;
 }
 
 StateWeights StateBlend::weights(float now) const noexcept {
-    const float p = easeInOutCubic(progress(now, since_, duration_));
     StateWeights out{};
-    const std::size_t target = stateIndex(target_);
+    float total = 0.0F;
     for (std::size_t i = 0; i < out.size(); ++i) {
-        const float goal = i == target ? 1.0F : 0.0F;
-        out.at(i) = lerp(from_.at(i), goal, p);
+        out.at(i) = clamp01(sample(i, now).value);
+        total += out.at(i);
+    }
+    // The springs keep the sum at 1; the clamp can only nudge it by a
+    // rounding error, which this removes.
+    for (float& weight : out) {
+        weight /= std::max(total, kSpringRest);
     }
     return out;
 }
 
 bool StateBlend::transitioning(float now) const noexcept {
-    return now < since_ + duration_;
+    const std::size_t target = stateIndex(target_);
+    for (std::size_t i = 0; i < from_.size(); ++i) {
+        const float goal = i == target ? 1.0F : 0.0F;
+        if (std::abs(sample(i, now).value - goal) > kSpringRest) {
+            return true;
+        }
+    }
+    return false;
 }
 
 LevelSmoother::LevelSmoother(float attackSeconds, float releaseSeconds) noexcept
@@ -437,6 +514,14 @@ LevelSmoother::LevelSmoother(float attackSeconds, float releaseSeconds) noexcept
 float LevelSmoother::update(float target, float dtSeconds) noexcept {
     value_ = approach(value_, target, dtSeconds, attack_, release_);
     return value_;
+}
+
+void followLevels(std::span<float> shown, std::span<const float> target, float dtSeconds,
+                  float attackSeconds, float releaseSeconds) noexcept {
+    auto goal = target.begin();
+    for (float& value : shown.first(std::min(shown.size(), target.size()))) {
+        value = approach(value, *goal++, dtSeconds, attackSeconds, releaseSeconds);
+    }
 }
 
 float breathing(float time, float periodSeconds) noexcept {
@@ -467,8 +552,16 @@ void radialWaveform(std::span<const float> levels, float energy, float time, flo
         ++i;
         float history = 0.0F;
         if (!levels.empty()) {
-            const auto age = std::lround(distance * static_cast<float>(levels.size() - 1));
-            history = perceptualLevel(*std::next(levels.rbegin(), age));
+            // Fractional age between two samples, newest first.
+            const float age = distance * static_cast<float>(levels.size() - 1);
+            const auto older = static_cast<std::size_t>(age);
+            const std::size_t newer = levels.size() - 1;
+            const auto sample = [&levels](std::size_t index) {
+                return *std::next(levels.begin(), static_cast<std::ptrdiff_t>(index));
+            };
+            const float a = sample(newer - older);
+            const float b = sample(newer - std::min(older + 1, newer));
+            history = perceptualLevel(lerp(a, b, age - static_cast<float>(older)));
         }
         const float shimmer =
             kHalf + (kHalf * std::sin((distance * kTau * kShimmerTurns) + (time * kShimmerSpeed)));
@@ -479,17 +572,62 @@ void radialWaveform(std::span<const float> levels, float energy, float time, flo
 
 // --- frame statistics -------------------------------------------------------------------------
 
-void FrameStatsAccumulator::record(double renderMs, double intervalMs) noexcept {
+void FrameStatsAccumulator::record(double renderMs, double intervalMs, double expectedMs) noexcept {
     ++stats_.frames;
+    renders_.at(renderCount_++ % kStatsWindow) = renderMs;
     if (stats_.frames == 1) {
         stats_.renderMs = renderMs;
         return;
+    }
+    intervals_.at(intervalCount_++ % kStatsWindow) = intervalMs;
+    if (expectedMs > 0.0 && intervalMs > expectedMs * kHitchFactor) {
+        ++stats_.hitches;
     }
     stats_.renderMs += (renderMs - stats_.renderMs) * smoothing_;
     // The first interval is the first sample, not a blend with zero.
     stats_.intervalMs = stats_.frames == 2
                             ? intervalMs
                             : stats_.intervalMs + ((intervalMs - stats_.intervalMs) * smoothing_);
+}
+
+void FrameStatsAccumulator::recordPresentation(std::uint32_t presents, std::uint32_t refreshes,
+                                               std::uint32_t refreshesPerFrame,
+                                               double refreshHz) noexcept {
+    const std::int64_t expected =
+        static_cast<std::int64_t>(presents) * std::max<std::int64_t>(refreshesPerFrame, 1);
+    stats_.presentedFrames += presents;
+    stats_.offCadenceRefreshes +=
+        static_cast<std::uint64_t>(std::abs(static_cast<std::int64_t>(refreshes) - expected));
+    stats_.refreshHz = refreshHz;
+}
+
+void FrameStatsAccumulator::reset() noexcept {
+    stats_ = {};
+    intervalCount_ = 0;
+    renderCount_ = 0;
+}
+
+FrameStats FrameStatsAccumulator::stats() const {
+    FrameStats out = stats_;
+    std::array<double, kStatsWindow> scratch = intervals_;
+    const std::span<double> intervals{scratch.data(), std::min(intervalCount_, kStatsWindow)};
+    out.intervalP50Ms = percentile(intervals, kMedian);
+    out.intervalP95Ms = percentile(intervals, kP95);
+    out.intervalP99Ms = percentile(intervals, kP99);
+    out.intervalMaxMs = percentile(intervals, 1.0);
+    scratch = renders_;
+    out.renderP99Ms = percentile({scratch.data(), std::min(renderCount_, kStatsWindow)}, kP99);
+    return out;
+}
+
+double percentile(std::span<double> values, double share) noexcept {
+    if (values.empty()) {
+        return 0.0;
+    }
+    std::ranges::sort(values);
+    const double rank = std::ceil(std::clamp(share, 0.0, 1.0) * static_cast<double>(values.size()));
+    const auto index = static_cast<std::ptrdiff_t>(std::max(rank, 1.0)) - 1;
+    return *std::next(values.begin(), index);
 }
 
 void FrameStatsAccumulator::recordGpu(double gpuMs) noexcept {

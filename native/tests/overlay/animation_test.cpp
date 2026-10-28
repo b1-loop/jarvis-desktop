@@ -317,25 +317,116 @@ TEST_CASE("a state cross-fade sums to one and lands on the target", "[overlay][a
 
     blend.setTarget(AssistantState::Listening, 1.0F);
     REQUIRE(blend.transitioning(1.05F));
-    REQUIRE(sumsToOne(blend, 1.0F, 0.3F));
-    const anim::StateWeights middle = blend.weights(1.1F);
-    REQUIRE_THAT(middle.at(0), WithinAbs(0.5, kTolerance));
-    REQUIRE_THAT(middle.at(1), WithinAbs(0.5, kTolerance));
-    requireWeights(blend.weights(1.25F), {0.0F, 1.0F, 0.0F, 0.0F});
-    REQUIRE_FALSE(blend.transitioning(1.25F));
+    REQUIRE(sumsToOne(blend, 1.0F, 0.6F));
+    // A spring from rest: 99 % of the way at the settle time, at rest soon after.
+    REQUIRE(blend.weights(1.21F).at(1) >= 0.99F);
+    requireWeights(blend.weights(1.6F), {0.0F, 1.0F, 0.0F, 0.0F});
+    REQUIRE_FALSE(blend.transitioning(1.6F));
+}
+
+TEST_CASE("a state cross-fade eases in and out without a jolt", "[overlay][anim][state]") {
+    anim::StateBlend blend{0.3F};
+    blend.setTarget(AssistantState::Speaking, 0.0F);
+    // Starts from rest (the first millisecond barely moves), never overshoots.
+    REQUIRE(blend.weights(0.001F).at(3) < 0.001F);
+    float previous = 0.0F;
+    for (int step = 1; step <= 100; ++step) {
+        const float weight = blend.weights(static_cast<float>(step) * 0.006F).at(3);
+        REQUIRE(weight >= previous);
+        REQUIRE(weight <= 1.0F);
+        previous = weight;
+    }
 }
 
 TEST_CASE("re-targeting mid-fade starts from what is on screen", "[overlay][anim][state]") {
     anim::StateBlend blend{0.2F};
     blend.setTarget(AssistantState::Listening, 0.0F);
-    const anim::StateWeights before = blend.weights(0.1F);
-    blend.setTarget(AssistantState::Thinking, 0.1F);
-    REQUIRE(blend.weights(0.1F) == before);  // no jump
+    const anim::StateWeights before = blend.weights(0.05F);
+    blend.setTarget(AssistantState::Thinking, 0.05F);
+    REQUIRE(blend.weights(0.05F) == before);  // no jump
+    // The listening weight keeps the momentum it had (it still rises for an
+    // instant) instead of reversing on the spot: no kink in the motion.
+    REQUIRE(blend.weights(0.055F).at(1) > before.at(1));
     REQUIRE_THAT(sum(blend.weights(0.2F)), WithinAbs(1.0, kTolerance));
-    requireWeights(blend.weights(0.35F), {0.0F, 0.0F, 1.0F, 0.0F});
+    requireWeights(blend.weights(0.7F), {0.0F, 0.0F, 1.0F, 0.0F});
 
-    blend.setTarget(AssistantState::Thinking, 0.5F);  // same target: no restart
-    REQUIRE_FALSE(blend.transitioning(0.5F));
+    blend.setTarget(AssistantState::Thinking, 0.8F);  // same target: no restart
+    REQUIRE_FALSE(blend.transitioning(0.8F));
+}
+
+// --- springs and frame time -------------------------------------------------------
+
+TEST_CASE("a critically damped spring lands on its target without overshooting",
+          "[overlay][anim][spring]") {
+    anim::Spring spring{0.3F};
+    float previous = 0.0F;
+    for (int frame = 0; frame < 60; ++frame) {
+        const float value = spring.advance(1.0F, 1.0F / 60.0F);
+        REQUIRE(value >= previous);
+        REQUIRE(value <= 1.0F);
+        previous = value;
+    }
+    REQUIRE(spring.restingAt(1.0F));  // snapped exactly, so "done" is an equality
+    REQUIRE(spring.velocity() == 0.0F);
+}
+
+TEST_CASE("a spring covers 99 percent of the way in its settle time", "[overlay][anim][spring]") {
+    const float omega = anim::springOmega(0.4F);
+    const anim::SpringState settled = anim::springStep({}, 1.0F, omega, 0.4F);
+    REQUIRE_THAT(settled.value, WithinAbs(0.99, 1e-4));
+    const anim::SpringState half = anim::springStep({}, 1.0F, omega, 0.1F);
+    REQUIRE(half.value > 0.4F);  // fast start...
+    REQUIRE(half.velocity > 0.0F);
+}
+
+TEST_CASE("spring steps do not depend on the frame rate", "[overlay][anim][spring]") {
+    const float omega = anim::springOmega(0.25F);
+    const anim::SpringState once =
+        anim::springStep({.value = 0.2F, .velocity = 3.0F}, 1.0F, omega, 0.1F);
+    anim::SpringState stepped{.value = 0.2F, .velocity = 3.0F};
+    for (int frame = 0; frame < 24; ++frame) {
+        stepped = anim::springStep(stepped, 1.0F, omega, 0.1F / 24.0F);
+    }
+    REQUIRE_THAT(stepped.value, WithinAbs(once.value, 1e-5));
+    REQUIRE_THAT(stepped.velocity, WithinAbs(once.velocity, 1e-3));
+    // Zero time changes nothing.
+    const anim::SpringState still = anim::springStep(once, 0.0F, omega, 0.0F);
+    REQUIRE(still.value == once.value);
+}
+
+TEST_CASE("a re-targeted spring keeps its velocity", "[overlay][anim][spring]") {
+    anim::Spring spring{0.3F};
+    spring.advance(1.0F, 0.05F);
+    const float velocity = spring.velocity();
+    REQUIRE(velocity > 0.0F);
+    spring.advance(0.0F, 1e-4F);  // turned around: the motion bends, it does not flip
+    REQUIRE(spring.velocity() > 0.0F);
+    REQUIRE_THAT(spring.velocity(), WithinAbs(velocity, velocity * 0.1F));
+    spring.snap(0.5F);
+    REQUIRE(spring.restingAt(0.5F));
+}
+
+TEST_CASE("frame deltas are clamped after a stall", "[overlay][anim]") {
+    REQUIRE(anim::clampFrameDelta(0.016F) == 0.016F);
+    REQUIRE(anim::clampFrameDelta(3.0F) == anim::kMaxFrameDelta);
+    REQUIRE(anim::clampFrameDelta(-1.0F) == 0.0F);
+}
+
+TEST_CASE("a level history is followed with a fast attack and a slow release",
+          "[overlay][anim][level]") {
+    std::array<float, 3> shown{0.0F, 1.0F, 0.5F};
+    const std::array<float, 3> target{1.0F, 0.0F, 0.5F};
+    anim::followLevels(shown, target, 0.02F, 0.03F, 0.15F);
+    const float rise = shown.at(0);
+    const float fall = 1.0F - shown.at(1);
+    REQUIRE(rise > 0.4F);
+    REQUIRE(fall < 0.15F);
+    REQUIRE(rise > fall);
+    REQUIRE(shown.at(2) == 0.5F);
+    // Only the common length is followed.
+    std::array<float, 1> shorter{0.0F};
+    anim::followLevels(shorter, target, 1.0F, 0.03F, 0.15F);
+    REQUIRE(shorter.at(0) > 0.99F);
 }
 
 // --- level smoothing and periodic motion
@@ -482,7 +573,10 @@ TEST_CASE("the animator stays active while a state fades or a level decays", "[o
     snapshot.levels.assign(8, 0.0F);
     animator.advance(snapshot, at(0.55));
     REQUIRE(animator.pace(snapshot) == anim::Pace::Active);  // cross-fade and release
-    animator.advance(snapshot, at(5.0));
+    // Frames, not one leap: a single 4.5 s step is a stall and is clamped.
+    for (int frame = 1; frame <= 45; ++frame) {
+        animator.advance(snapshot, at(0.55 + (frame * 0.1)));
+    }
     REQUIRE(animator.pace(snapshot) == anim::Pace::Idle);
     requireWeights(animator.frame().weights, {1.0F, 0.0F, 0.0F, 0.0F});
 }
@@ -504,4 +598,58 @@ TEST_CASE("frame statistics average render time and frame interval", "[overlay][
 
     accumulator.reset();
     REQUIRE(accumulator.stats().frames == 0);
+}
+
+namespace {
+
+/// 100 intervals: 98 on time, one missed refresh (40 ms, a slow frame)
+/// and one late one under 1.5x the period (20 ms, not a hitch).
+anim::FrameStatsAccumulator mostlySmoothFrames() {
+    anim::FrameStatsAccumulator accumulator;
+    accumulator.record(1.0, 0.0, 16.7);  // the first frame has no interval
+    for (int i = 0; i < 98; ++i) {
+        accumulator.record(1.0, 16.7, 16.7);
+    }
+    accumulator.record(9.0, 40.0, 16.7);
+    accumulator.record(1.0, 20.0, 16.7);
+    return accumulator;
+}
+
+}  // namespace
+
+TEST_CASE("frame statistics report interval percentiles", "[overlay][anim]") {
+    const anim::FrameStats stats = mostlySmoothFrames().stats();
+    REQUIRE(stats.frames == 101);
+    REQUIRE(stats.intervalP50Ms == 16.7);
+    REQUIRE(stats.intervalP99Ms == 20.0);
+    REQUIRE(stats.intervalMaxMs == 40.0);
+    REQUIRE(stats.renderP99Ms == 1.0);
+}
+
+TEST_CASE("frame statistics count hitches until reset", "[overlay][anim]") {
+    anim::FrameStatsAccumulator accumulator = mostlySmoothFrames();
+    REQUIRE(accumulator.stats().hitches == 1);
+    accumulator.reset();
+    REQUIRE(accumulator.stats().intervalMaxMs == 0.0);
+    REQUIRE(accumulator.stats().hitches == 0);
+}
+
+TEST_CASE("frame statistics count refreshes off the frame cadence", "[overlay][anim]") {
+    anim::FrameStatsAccumulator accumulator;
+    accumulator.recordPresentation(1, 4, 4, 240.0);  // on cadence
+    accumulator.recordPresentation(1, 5, 4, 240.0);  // held one refresh too long
+    accumulator.recordPresentation(1, 3, 4, 240.0);  // and one too short
+    accumulator.recordPresentation(2, 2, 1, 60.0);   // two frames, one refresh each
+    const anim::FrameStats stats = accumulator.stats();
+    REQUIRE(stats.presentedFrames == 5);
+    REQUIRE(stats.offCadenceRefreshes == 2);
+    REQUIRE(stats.refreshHz == 60.0);
+}
+
+TEST_CASE("percentiles use the nearest rank of the values", "[overlay][anim]") {
+    std::array<double, 5> values{5.0, 1.0, 4.0, 2.0, 3.0};
+    REQUIRE(anim::percentile(values, 0.5) == 3.0);
+    REQUIRE(anim::percentile(values, 1.0) == 5.0);
+    REQUIRE(anim::percentile(values, 0.0) == 1.0);
+    REQUIRE(anim::percentile(std::span<double>{}, 0.5) == 0.0);
 }

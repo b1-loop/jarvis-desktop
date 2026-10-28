@@ -71,6 +71,7 @@ if(JARVIS_BUILD_OVERLAY)
         overlay/minimize_policy_test.cpp
         overlay/minimize_window_test.cpp
         overlay/model_test.cpp
+        overlay/pacing_test.cpp
         overlay/orb_test.cpp
         overlay/palette_test.cpp
         overlay/particles_test.cpp

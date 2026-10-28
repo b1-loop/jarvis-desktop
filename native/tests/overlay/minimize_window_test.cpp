@@ -107,6 +107,11 @@ TEST_CASE("auto-minimize shrinks when quiet and pops back for a turn", "[overlay
     config.autoMinimizeSeconds = 0.3F;
     const auto window = openOrSkip(config);
     std::this_thread::sleep_for(kMorph);
+    POINT cursor{};
+    const RECT hud = windowRect();
+    if (!window->minimized() && GetCursorPos(&cursor) != 0 && PtInRect(&hud, cursor) != 0) {
+        SKIP("the cursor rests on the HUD, which counts as the user engaging with it");
+    }
     REQUIRE(window->minimized());
     REQUIRE(contains<Minimized>(window->pollUiEvents(), true));
 
@@ -135,8 +140,12 @@ TEST_CASE("the idle orb drops to the idle frame rate", "[overlay][orb][window]")
     std::this_thread::sleep_for(std::chrono::milliseconds(1500));
     const auto stats = window->frameStats();
     REQUIRE(stats.frames > 0);
-    // 15 fps is a 66.7 ms interval; allow for timer jitter.
-    REQUIRE(stats.intervalMs > 55.0);
+    // The idle rate (30 fps by default, ADR-0031), not the active one. Frames
+    // land on whole refreshes, so the interval is the idle period rounded
+    // to the display's refresh: allow a fifth either way.
+    const double idlePeriodMs = 1000.0 / static_cast<double>(config.idleFps);
+    REQUIRE(stats.intervalP50Ms > idlePeriodMs * 0.8);
+    REQUIRE(stats.intervalP50Ms > 1000.0 / static_cast<double>(config.activeFps) * 1.5);
 }
 
 TEST_CASE("minimize options can change while the HUD runs", "[overlay][orb][window]") {

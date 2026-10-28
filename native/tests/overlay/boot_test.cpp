@@ -220,6 +220,22 @@ TEST_CASE("transcript rows show while busy and linger briefly after", "[overlay]
     REQUIRE_FALSE(anim::transcriptWanted(true, AssistantState::Idle, anim::kTranscriptLinger));
 }
 
+namespace {
+
+/// Advance @p animator from @p from to @p to seconds in 50 ms frames (one
+/// long leap would be clamped as a stall); returns the transcript reveal.
+float advanceInFrames(anim::OverlayAnimator& animator, const OverlaySnapshot& snapshot, double from,
+                      double to) {
+    constexpr double kFrame = 0.05;
+    const auto frames = static_cast<int>((to - from) / kFrame);
+    for (int frame = 0; frame < frames; ++frame) {
+        animator.advance(snapshot, at(from + (frame * kFrame)));
+    }
+    return animator.advance(snapshot, at(to)).transcript;
+}
+
+}  // namespace
+
 TEST_CASE("the transcript slides in with text and out after going idle", "[overlay][anim]") {
     anim::OverlayAnimator animator{at(0.0)};
     OverlaySnapshot snapshot;
@@ -229,11 +245,14 @@ TEST_CASE("the transcript slides in with text and out after going idle", "[overl
     snapshot.transcript = "open the terminal";
     animator.advance(snapshot, at(1.05));
     REQUIRE(animator.frame().transcript > 0.2F);
-    REQUIRE(animator.advance(snapshot, at(2.0)).transcript > 0.99F);
+    const auto runTo = [&animator, &snapshot](double from, double to) {
+        return advanceInFrames(animator, snapshot, from, to);
+    };
+    REQUIRE(runTo(1.05, 2.0) > 0.99F);
     snapshot.state = AssistantState::Idle;
     animator.advance(snapshot, at(2.1));
-    REQUIRE(animator.advance(snapshot, at(2.0 + anim::kTranscriptLinger - 0.5)).transcript > 0.99F);
-    animator.advance(snapshot, at(2.2 + anim::kTranscriptLinger));
+    REQUIRE(runTo(2.1, 2.0 + anim::kTranscriptLinger - 0.5) > 0.99F);
+    runTo(2.0 + anim::kTranscriptLinger - 0.5, 2.2 + anim::kTranscriptLinger);
     REQUIRE(animator.pace(snapshot) == anim::Pace::Active);  // still fading out
-    REQUIRE(animator.advance(snapshot, at(5.0 + anim::kTranscriptLinger)).transcript < 0.01F);
+    REQUIRE(runTo(2.2 + anim::kTranscriptLinger, 5.0 + anim::kTranscriptLinger) < 0.01F);
 }

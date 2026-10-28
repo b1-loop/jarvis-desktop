@@ -222,7 +222,9 @@ void defineSnapshot(const py::module_& module) {
                                    return lines;
                                })
         .def_readonly("revision", &OverlaySnapshot::revision);
+}
 
+void defineFrameStats(const py::module_& module) {
     py::class_<anim::FrameStats>(module, "FrameStats",
                                  "Smoothed frame timings measured on the UI thread.")
         .def_readonly("frames", &anim::FrameStats::frames)
@@ -233,7 +235,25 @@ void defineSnapshot(const py::module_& module) {
         .def_readonly("gpu_ms", &anim::FrameStats::gpuMs,
                       "GPU time of one frame from timestamp queries, milliseconds.")
         .def_readonly("gpu_frames", &anim::FrameStats::gpuFrames,
-                      "Frames for which a GPU time was measured.");
+                      "Frames for which a GPU time was measured.")
+        .def_readonly("interval_p50_ms", &anim::FrameStats::intervalP50Ms,
+                      "Median frame interval over the recent window, milliseconds.")
+        .def_readonly("interval_p95_ms", &anim::FrameStats::intervalP95Ms,
+                      "95th percentile frame interval, milliseconds.")
+        .def_readonly("interval_p99_ms", &anim::FrameStats::intervalP99Ms,
+                      "99th percentile frame interval, milliseconds.")
+        .def_readonly("interval_max_ms", &anim::FrameStats::intervalMaxMs,
+                      "Longest frame interval in the recent window, milliseconds.")
+        .def_readonly("render_p99_ms", &anim::FrameStats::renderP99Ms,
+                      "99th percentile CPU time per frame, milliseconds.")
+        .def_readonly("hitches", &anim::FrameStats::hitches,
+                      "Frames that started more than 1.5x their scheduled period late.")
+        .def_readonly("presented_frames", &anim::FrameStats::presentedFrames,
+                      "Frames presented while the compositor's vblank grid was known.")
+        .def_readonly("off_cadence_refreshes", &anim::FrameStats::offCadenceRefreshes,
+                      "Refreshes by which presented frames missed their even cadence.")
+        .def_readonly("refresh_hz", &anim::FrameStats::refreshHz,
+                      "The compositor's refresh rate, Hz (0 until known).");
 }
 
 void setStateByName(OverlayWindow& window, std::string_view name) {
@@ -583,5 +603,6 @@ PYBIND11_MODULE(jarvis_overlay, module) {
     definePlacement(module);
     defineConfig(module);
     defineSnapshot(module);
+    defineFrameStats(module);
     defineWindow(module);
 }

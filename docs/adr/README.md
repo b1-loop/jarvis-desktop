@@ -36,3 +36,4 @@ here. New ADRs follow [`template.md`](template.md); superseded ones are kept and
 | [0028](0028-hud-colour-themes.md) | HUD colours: presets plus one accent, derived in OKLCH | Accepted |
 | [0029](0029-grounding-time-and-live-data.md) | Grounding small models: the clock, relative reminders, no tool answers in memory, the profile's name | Accepted |
 | [0030](0030-voice-latency-budget.md) | Voice latency: measure each part, keep models warm, synthesise in parallel | Accepted |
+| [0031](0031-hud-motion-and-frame-pacing.md) | HUD motion: vblank-aligned frame pacing, springs and envelopes | Accepted |

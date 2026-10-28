@@ -7,6 +7,7 @@
 #include "jarvis/overlay/hud_layout.hpp"
 #include "jarvis/overlay/layout.hpp"
 #include "jarvis/overlay/model.hpp"
+#include "jarvis/overlay/pacing.hpp"
 #include "jarvis/overlay/palette.hpp"
 #include "jarvis/overlay/ui_events.hpp"
 
@@ -14,6 +15,7 @@
 #include <imgui_impl_dx11.h>
 #include <imgui_impl_win32.h>
 
+#include "frame_clock.hpp"
 #include "hud.hpp"
 #include "hud_interact.hpp"
 #include "postfx.hpp"
@@ -27,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
@@ -65,8 +68,7 @@ constexpr std::array<D3D_FEATURE_LEVEL, 2> kFeatureLevels{D3D_FEATURE_LEVEL_11_0
                                                           D3D_FEATURE_LEVEL_10_0};
 /// Waitable timers count in 100 ns units; negative means relative.
 constexpr long long kTimerTicksPerMicrosecond = 10;
-/// Longest frame step the interaction fades integrate (after a hidden spell).
-constexpr float kMaxInteractionStep = 0.1F;
+constexpr double kMillisPerSecond = 1000.0;
 
 /// A font under %WINDIR% as UTF-8 for ImGui's loader; empty if it is missing.
 std::string systemFontPath(std::wstring_view relative) {
@@ -101,6 +103,11 @@ hud::HudFonts loadFonts() {
 std::chrono::microseconds framePeriod(int fps) noexcept {
     constexpr int kMicrosPerSecond = 1'000'000;
     return std::chrono::microseconds(kMicrosPerSecond / std::max(fps, 1));
+}
+
+OverlayModel::Clock::duration toClockDuration(double seconds) noexcept {
+    return std::chrono::duration_cast<OverlayModel::Clock::duration>(
+        std::chrono::duration<double>(seconds));
 }
 
 Appearance initialAppearance(const OverlayConfig& config) noexcept {
@@ -198,6 +205,10 @@ OverlayWindow::Impl::Impl(OverlayConfig initial)
       orbTarget(config.startMinimized),
       autoMinimizer(config.autoMinimizeSeconds) {
     minimizedNow.store(config.startMinimized);
+    wakeEvent.reset(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    if (wakeEvent == nullptr) {
+        throw OverlayError("overlay wake event creation failed: " + lastErrorText());
+    }
     hudData.setAutoMinimize(config.autoMinimizeSeconds);
     hudData.setHideInFullscreen(config.hideInFullscreen);
     std::future<void> started = ready.get_future();
@@ -226,6 +237,11 @@ void OverlayWindow::Impl::threadMain() {
     // Thread-scoped so the Python process (and any Tk or pystray window it
     // owns) keeps whatever DPI awareness it already has.
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    // A frame that starts late misses its vblank and shows as a stutter. The
+    // thread sleeps for over 90 % of every frame, so a slightly raised
+    // priority only means it is not queued behind background work when its
+    // timer fires; it cannot starve anything.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     try {
         registerClass();
         createDevice();
@@ -397,18 +413,73 @@ void OverlayWindow::Impl::messageLoop() {
         if (quit) {
             break;
         }
-        const Clock::time_point now = Clock::now();
-        const OverlaySnapshot snapshot = model.snapshot(now);
-        const HudData data = hudData.snapshot();
-        checkFullscreen(now, data.hideInFullscreen);
-        const bool visible = snapshot.visible && !fullscreenHidden;
-        updateVisibility(visible);
-        if (visible) {
-            renderFrame(snapshot, data, now);
+        // Messages (mouse moves during a drag, DPI, settings) are handled as
+        // they come but never draw a frame of their own: frames only come
+        // on their slot, so input cannot make the cadence uneven.
+        if (Clock::now() < nextFrame) {
+            waitForFrame();
+            continue;
         }
-        nextFrame = std::max(nextFrame + framePeriodFor(snapshot, visible), Clock::now());
-        waitUntil(nextFrame);
+        runFrame();
     }
+}
+
+void OverlayWindow::Impl::runFrame() {
+    const Clock::time_point now = Clock::now();
+    model.snapshotInto(frameSnapshot, now);
+    const HudData data = hudData.snapshot();
+    checkFullscreen(now, data.hideInFullscreen);
+    const bool visible = frameSnapshot.visible && !fullscreenHidden;
+    updateVisibility(visible);
+    if (visible) {
+        renderFrame(frameSnapshot, data, now);
+    }
+    scheduleNext(targetFps(frameSnapshot, data, visible), visible);
+}
+
+void OverlayWindow::Impl::scheduleNext(int fps, bool visible) {
+    const Clock::time_point now = Clock::now();
+    const std::optional<VBlankGrid> grid = visible ? compositionGrid() : std::nullopt;
+    if (!grid.has_value() || grid->period.count() <= 0) {
+        // Hidden, or no composition clock: a plain timer is all there is.
+        lastSlot.reset();
+        const std::chrono::microseconds period = framePeriod(fps);
+        scheduledMs = std::chrono::duration<double, std::milli>(period).count();
+        nextFrame = std::max(nextFrame + period, now);
+        return;
+    }
+    const pacing::Grid vblanks = gridSince(*grid);
+    const int refreshes = pacing::refreshesPerFrame(1.0 / vblanks.period, fps);
+    const double slot = pacing::nextSlot(vblanks, lastSlot, refreshes, secondsSinceEpoch(now));
+    lastSlot = slot;
+    scheduledMs = static_cast<double>(refreshes) * vblanks.period * kMillisPerSecond;
+    nextFrame = epoch + toClockDuration(pacing::wakeTime(vblanks, slot));
+}
+
+void OverlayWindow::Impl::wakeSoon() {
+    // Something changed while the loop slept out an idle frame: draw it on
+    // the next slot instead of up to a whole idle period later.
+    const std::optional<VBlankGrid> grid = shown ? compositionGrid() : std::nullopt;
+    if (!grid.has_value() || grid->period.count() <= 0) {
+        nextFrame = std::min(nextFrame, Clock::now());
+        return;
+    }
+    const pacing::Grid vblanks = gridSince(*grid);
+    const double slot = pacing::nextSlot(vblanks, std::nullopt, 1, secondsSinceEpoch(Clock::now()));
+    const Clock::time_point wake = epoch + toClockDuration(pacing::wakeTime(vblanks, slot));
+    if (wake < nextFrame) {
+        nextFrame = wake;
+        lastSlot = slot;
+    }
+}
+
+double OverlayWindow::Impl::secondsSinceEpoch(Clock::time_point at) const noexcept {
+    return std::chrono::duration<double>(at - epoch).count();
+}
+
+pacing::Grid OverlayWindow::Impl::gridSince(const VBlankGrid& grid) const noexcept {
+    return pacing::Grid{.vblank = secondsSinceEpoch(grid.vblank),
+                        .period = std::chrono::duration<double>(grid.period).count()};
 }
 
 void OverlayWindow::Impl::pumpMessages() {
@@ -423,19 +494,28 @@ void OverlayWindow::Impl::pumpMessages() {
     }
 }
 
-void OverlayWindow::Impl::waitUntil(Clock::time_point deadline) const {
+void OverlayWindow::Impl::waitForFrame() {
     const auto wait =
-        std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now());
+        std::chrono::duration_cast<std::chrono::microseconds>(nextFrame - Clock::now());
     if (wait.count() <= 0) {
         return;
     }
     LARGE_INTEGER due{};
     due.QuadPart = -(wait.count() * kTimerTicksPerMicrosecond);
-    HANDLE timer = frameTimer.get();
-    SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
-    // Wakes for the timer or for any message (close, DPI change, input),
-    // whichever comes first; no polling, no busy loop.
-    MsgWaitForMultipleObjectsEx(1, &timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    const std::array<HANDLE, 2> handles{frameTimer.get(), wakeEvent.get()};
+    SetWaitableTimer(handles.front(), &due, 0, nullptr, nullptr, FALSE);
+    // Wakes for the timer, a change from Python or any message (close, DPI
+    // change, input), whichever comes first; no polling, no busy loop.
+    const DWORD woke =
+        MsgWaitForMultipleObjectsEx(static_cast<DWORD>(handles.size()), handles.data(), INFINITE,
+                                    QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    if (woke == WAIT_OBJECT_0 + 1) {
+        wakeSoon();
+    }
+}
+
+void OverlayWindow::Impl::wake() const noexcept {
+    SetEvent(wakeEvent.get());
 }
 
 void OverlayWindow::Impl::updateVisibility(bool visible) {
@@ -461,6 +541,7 @@ void OverlayWindow::Impl::renderFrame(const OverlaySnapshot& snapshot, const Hud
     advanceInteraction(now, booting);
     if (placementDirty) {
         resolvePlacements();
+        startResetGlide();
     }
     const FrameLayout layout = layoutFor(frame);
     applyPlacement(layout.window);
@@ -470,6 +551,7 @@ void OverlayWindow::Impl::renderFrame(const OverlaySnapshot& snapshot, const Hud
     drawFrame(snapshot, frame, layout, data);
     recordFrame(now, Clock::now());
     collectGpuTime();
+    collectPresentation(presentedAt);
 }
 
 void OverlayWindow::Impl::applyHudData(const HudData& data) {
@@ -502,11 +584,12 @@ void OverlayWindow::Impl::applyDemo() {
 }
 
 void OverlayWindow::Impl::advanceInteraction(Clock::time_point now, bool booting) {
-    const float dt = lastAdvance.has_value()
-                         ? std::min(std::chrono::duration<float>(now - *lastAdvance).count(),
-                                    kMaxInteractionStep)
-                         : 0.0F;
+    const float dt =
+        lastAdvance.has_value()
+            ? anim::clampFrameDelta(std::chrono::duration<float>(now - *lastAdvance).count())
+            : 0.0F;
     lastAdvance = now;
+    advanceGlide(dt);
     const bool wanted = demoHover || hoverKind != HitKind::None || interaction.inputOpen() ||
                         interaction.confirming() || drag.mode != DragMode::None || keyboardFocus;
     if (wanted) {
@@ -602,6 +685,7 @@ void OverlayWindow::Impl::submitFrame() {
     }
 
     const HRESULT presented = surface->present();
+    presentedAt = Clock::now();
     if (presented == DXGI_ERROR_DEVICE_REMOVED || presented == DXGI_ERROR_DEVICE_RESET) {
         // The GPU went away (driver update, remote session change). Rather
         // than recreate everything mid-conversation the window retires and
@@ -652,21 +736,46 @@ void OverlayWindow::Impl::collectGpuTime() {
     }
 }
 
+void OverlayWindow::Impl::collectPresentation(Clock::time_point presented) {
+    const std::optional<VBlankGrid> grid = compositionGrid();
+    if (!grid.has_value() || grid->period.count() <= 0) {
+        lastVblank.reset();
+        return;
+    }
+    // DWM composes a frame on the first vblank after it was presented.
+    // Landing times, not vblank indices: the period DWM reports is a
+    // measurement and a dynamic refresh rate changes it, so only the gap
+    // between two consecutive frames is counted in refreshes.
+    const double period = std::chrono::duration<double>(grid->period).count();
+    const double since = std::chrono::duration<double>(presented - grid->vblank).count();
+    const double landing = std::chrono::duration<double>(grid->vblank - epoch).count() +
+                           (std::ceil(since / period) * period);
+    const std::optional<double> previous = std::exchange(lastVblank, landing);
+    if (!previous.has_value() || landing <= *previous) {
+        return;
+    }
+    const double refreshMs = period * kMillisPerSecond;
+    const auto perFrame =
+        static_cast<std::uint32_t>(std::max(std::lround(scheduledMs / refreshMs), 1L));
+    const auto refreshes = static_cast<std::uint32_t>(std::lround((landing - *previous) / period));
+    const std::scoped_lock lock(statsMutex);
+    stats.recordPresentation(1, refreshes, perFrame, 1.0 / period);
+}
+
 void OverlayWindow::Impl::recordFrame(Clock::time_point start, Clock::time_point end) {
     const double interval =
         lastFrameStart.has_value() ? millisecondsBetween(*lastFrameStart, start) : 0.0;
     lastFrameStart = start;
     const std::scoped_lock lock(statsMutex);
-    stats.record(millisecondsBetween(start, end), interval);
+    stats.record(millisecondsBetween(start, end), interval, scheduledMs);
 }
 
-std::chrono::microseconds OverlayWindow::Impl::framePeriodFor(const OverlaySnapshot& snapshot,
-                                                              bool visible) {
+int OverlayWindow::Impl::targetFps(const OverlaySnapshot& snapshot, const HudData& data,
+                                   bool visible) {
     const auto now = Clock::now();
-    const std::uint64_t hudRevision = hudData.snapshot().revision;
-    if (snapshot.revision != lastRevision || hudRevision != lastHudRevision) {
+    if (snapshot.revision != lastRevision || data.revision != lastHudRevision) {
         lastRevision = snapshot.revision;
-        lastHudRevision = hudRevision;
+        lastHudRevision = data.revision;
         lastChange = now;
     }
     // Hover and morph fades, a drag, typing or the cursor over the HUD all
@@ -675,11 +784,11 @@ std::chrono::microseconds OverlayWindow::Impl::framePeriodFor(const OverlaySnaps
     const bool fading = (hover > 0.0F && hover < 1.0F) ||
                         (expandLinear > 0.0F && expandLinear < 1.0F) ||
                         expandLinear != (interaction.expanded() ? 1.0F : 0.0F) || orbMorphing();
-    const bool interacting =
-        fading || drag.mode != DragMode::None || keyboardFocus || hoverKind != HitKind::None;
+    const bool interacting = fading || glide.has_value() || drag.mode != DragMode::None ||
+                             keyboardFocus || hoverKind != HitKind::None;
     const bool busy = animator.pace(snapshot) == anim::Pace::Active ||
                       (now - lastChange) < kActiveAfterChange || interacting;
-    return framePeriod(busy && visible ? config.activeFps : config.idleFps);
+    return busy && visible ? config.activeFps : config.idleFps;
 }
 
 void OverlayWindow::Impl::shutdown() {
@@ -717,6 +826,7 @@ OverlayWindow::~OverlayWindow() = default;
 
 void OverlayWindow::setState(AssistantState state) {
     impl_->model.setState(state);
+    impl_->wake();
 }
 
 void OverlayWindow::pushLevel(float level) {
@@ -725,30 +835,39 @@ void OverlayWindow::pushLevel(float level) {
 
 void OverlayWindow::setTranscript(std::string_view utf8) {
     impl_->model.setTranscript(utf8);
+    impl_->wake();
 }
 
 void OverlayWindow::setResponse(std::string_view utf8) {
     impl_->model.setResponse(utf8);
+    impl_->wake();
 }
 
 void OverlayWindow::setVisible(bool visible) {
     impl_->model.setVisible(visible);
+    impl_->wake();
 }
 
 void OverlayWindow::flashWakeWord() {
     impl_->model.flashWakeWord();
+    impl_->wake();
 }
 
 bool OverlayWindow::playBoot(BootReadout readout) {
-    return impl_->model.playBoot(std::move(readout));
+    const bool started = impl_->model.playBoot(std::move(readout));
+    impl_->wake();
+    return started;
 }
 
 void OverlayWindow::replayBoot(BootReadout readout) {
     impl_->model.replayBoot(std::move(readout));
+    impl_->wake();
 }
 
 bool OverlayWindow::skipBoot() {
-    return impl_->model.skipBoot();
+    const bool skipped = impl_->model.skipBoot();
+    impl_->wake();
+    return skipped;
 }
 
 bool OverlayWindow::visible() const {
@@ -808,27 +927,33 @@ void OverlayWindow::injectUiEvent(UiEvent event) {
 
 void OverlayWindow::setMuted(bool muted) {
     impl_->hudData.setMuted(muted);
+    impl_->wake();
 }
 
 void OverlayWindow::addHistory(HistoryEntry entry) {
     impl_->hudData.addHistory(std::move(entry));
+    impl_->wake();
 }
 
 void OverlayWindow::clearHistory() {
     impl_->hudData.clearHistory();
+    impl_->wake();
 }
 
 void OverlayWindow::setSettings(SettingsPage page) {
     impl_->hudData.setSettings(std::move(page));
+    impl_->wake();
 }
 
 void OverlayWindow::setAppearance(Appearance appearance) {
     impl_->hudData.setAppearance(appearance);
+    impl_->wake();
 }
 
 void OverlayWindow::setExpanded(bool expanded) {
     impl_->hudData.requestExpanded(expanded);
     impl_->expandedNow.store(expanded);
+    impl_->wake();
 }
 
 bool OverlayWindow::expanded() const noexcept {
@@ -842,6 +967,7 @@ HudData OverlayWindow::hudData() const {
 void OverlayWindow::setMinimized(bool minimized) {
     impl_->hudData.requestMinimized(minimized);
     impl_->minimizedNow.store(minimized);
+    impl_->wake();
 }
 
 bool OverlayWindow::minimized() const noexcept {
@@ -866,6 +992,7 @@ void OverlayWindow::setDemo(DemoOverrides demo) {
         impl_->demo = std::move(demo);
     }
     impl_->demoRevision.fetch_add(1);
+    impl_->wake();
 }
 
 void OverlayWindow::close() {
@@ -893,10 +1020,16 @@ const OverlayConfig& OverlayWindow::config() const noexcept {
 //   and the HUD carries on drawing its light without post-processing.
 // - GPU time comes from timestamp queries read back a few frames late
 //   without flushing, so measuring it never stalls the UI thread.
-// - Frames are paced by a high-resolution waitable timer, not by vsync:
-//   Present(0) never blocks, the flip-model swap chain is shown by DWM on
-//   the next vblank anyway, and a hidden or idle panel costs a few wakeups
-//   per second and nothing more.
+// - Frames are paced on DWM's vblank grid (pacing.hpp, ADR-0031): each
+//   frame gets a whole number of refreshes and the loop wakes on a
+//   high-resolution waitable timer just after a vblank, so the frame is
+//   presented well before the next one. Present(0) never blocks; DWM shows
+//   the frame on that vblank. No vsync wait, no spinning: a hidden or idle
+//   panel costs a few dozen wake-ups a second and nothing more.
+// - Only due frames are drawn. Messages are handled as they arrive but a
+//   mouse move no longer draws a frame of its own, and a change from Python
+//   signals an event so it shows on the next slot rather than after an
+//   idle period.
 // - The interactive layer (ADR-0024) only adds work while it is used: the
 //   idle corner HUD with the cursor elsewhere costs one GetCursorPos and a
 //   hit test of a dozen shapes per frame, and stays at the idle rate.

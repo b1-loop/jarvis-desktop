@@ -74,6 +74,15 @@ constexpr float kSettled = 0.01F;
 /// Smoothed levels below this count as silence for frame pacing.
 constexpr float kSilentLevel = 0.002F;
 
+/// The drawn level history: rises within a frame or two of a new sample,
+/// decays over a few, so speech is lively and a pause settles smoothly.
+constexpr float kLevelsAttack = 0.035F;
+constexpr float kLevelsRelease = 0.16F;
+/// A changed intensity's bloom eases in over about this long.
+constexpr float kBloomRamp = 0.3F;
+/// Bloom gain this close to its target counts as settled.
+constexpr float kBloomSettled = 0.002F;
+
 float secondsSince(OverlayModel::Clock::time_point then,
                    OverlayModel::Clock::time_point now) noexcept {
     return std::chrono::duration<float>(now - then).count();
@@ -141,7 +150,8 @@ OverlayAnimator::OverlayAnimator(Clock::time_point epoch, AnimatorConfig config,
              particleBudget(config.intensity, config.particleCount)),
       blend_(config.crossFadeSeconds),
       globe_(kRotorTau),
-      stream_(kRotorTau) {
+      stream_(kRotorTau),
+      bloomGain_(scale_.bloom) {
     // Start every layer at a different angle so nothing lines up at t = 0.
     SplitMix64 phases{config.particleSeed};
     for (Rotor& ring : rings_) {
@@ -174,7 +184,8 @@ std::optional<BootFrame> OverlayAnimator::bootFrame(const OverlaySnapshot& snaps
 const AnimationFrame& OverlayAnimator::advance(const OverlaySnapshot& snapshot,
                                                Clock::time_point now) {
     const float time = secondsSince(epoch_, now);
-    const float dt = lastTime_.has_value() ? std::max(time - *lastTime_, 0.0F) : 0.0F;
+    // Integrated state never leaps a stall ahead in one frame.
+    const float dt = lastTime_.has_value() ? clampFrameDelta(time - *lastTime_) : 0.0F;
     lastTime_ = time;
 
     blend_.setTarget(snapshot.state, time);
@@ -193,7 +204,16 @@ const AnimationFrame& OverlayAnimator::advance(const OverlaySnapshot& snapshot,
     advanceRotors(dt);
     advanceEffects(snapshot, dt);
     advanceTranscript(snapshot, dt);
+    advanceLevels(snapshot, dt);
     return frame_;
+}
+
+void OverlayAnimator::advanceLevels(const OverlaySnapshot& snapshot, float dt) {
+    if (frame_.levels.size() != snapshot.levels.size()) {
+        frame_.levels = snapshot.levels;  // first frame or a new history size only
+        return;
+    }
+    followLevels(frame_.levels, snapshot.levels, dt, kLevelsAttack, kLevelsRelease);
 }
 
 void OverlayAnimator::advanceTranscript(const OverlaySnapshot& snapshot, float dt) {
@@ -245,7 +265,8 @@ void OverlayAnimator::advanceEffects(const OverlaySnapshot& snapshot, float dt) 
             progress(boot.time, timeline_.beats().assemblyStart, kBootFieldFade);
         share *= std::max(assembled, boot.handoff);
     }
-    frame_.bloom = bloom * scale_.bloom;
+    bloomGain_ = approach(bloomGain_, scale_.bloom, dt, kBloomRamp, kBloomRamp);
+    frame_.bloom = bloom * bloomGain_;
     frame_.glitch = clamp01(glitch);
     frame_.particleShare = share;
     frame_.forces = fieldForces(frame_.weights, frame_.energy, frame_.breathing, scale_.motion);
@@ -258,6 +279,7 @@ Pace OverlayAnimator::pace(const OverlaySnapshot& snapshot) const noexcept {
     const bool busy = frame_.boot.has_value() || blend_.transitioning(frame_.time) ||
                       snapshot.wakeFlash > 0.0F || snapshot.state != AssistantState::Idle ||
                       reactor_.energy().level > kSilentLevel ||
+                      std::abs(bloomGain_ - scale_.bloom) > kBloomSettled ||
                       std::abs(frame_.transcript - (transcriptWanted_ ? 1.0F : 0.0F)) > kSettled;
     return busy ? Pace::Active : Pace::Idle;
 }
@@ -271,6 +293,10 @@ Pace OverlayAnimator::pace(const OverlaySnapshot& snapshot) const noexcept {
 // - The particle field keeps simulating in idle but only part of it is
 //   drawn; switching to Listening then shows a field that was already in
 //   motion rather than one that starts from rest.
+// - Every integrated value (rotors, smoothers, the particle field, the
+//   bloom ramp, the drawn level history) advances by the clamped frame
+//   delta; closed-form values (the boot, the cross-fade, breathing) are
+//   functions of time and need no clamp.
 // - Bloom, glitch and particle share are decided here, not in the
 //   renderer, so their bounds are tested and the renderer stays a
 //   translation layer.

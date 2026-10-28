@@ -184,7 +184,7 @@ class OverlayConfig:
     click_through: bool = True
     opacity: int = 235
     active_fps: int = 60
-    idle_fps: int = 15
+    idle_fps: int = 30
     level_history: int = 64
     max_text_chars: int = 240
     transparent: bool = True

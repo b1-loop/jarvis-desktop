@@ -95,6 +95,9 @@ void ParticleSystem::spawn(SimParticle& particle, bool scatterAge) {
     particle.age = scatterAge ? ageShare * particle.life : 0.0F;
     particle.x = particle.home * std::cos(angle);
     particle.y = particle.home * std::sin(angle);
+    // A respawn starts in place: no streak from where it died.
+    particle.prevX = particle.x;
+    particle.prevY = particle.y;
     const float speed = config_.orbitSpeed * particle.home;
     particle.vx = -std::sin(angle) * speed;
     particle.vy = std::cos(angle) * speed;
@@ -150,6 +153,8 @@ void ParticleSystem::step(const FieldForces& forces, std::span<SimParticle> movi
                keep;
         p.vy = (p.vy + (h * ((radial * uy) + (kOrbitSteer * tangential * ux) + (eddy.y * noise)))) *
                keep;
+        p.prevX = p.x;
+        p.prevY = p.y;
         p.x += p.vx * h;
         p.y += p.vy * h;
         p.age += h;
@@ -157,6 +162,20 @@ void ParticleSystem::step(const FieldForces& forces, std::span<SimParticle> movi
             spawn(p, false);
         }
     }
+}
+
+float ParticleSystem::blend() const noexcept {
+    if (config_.stepSeconds <= 0.0F) {
+        return 1.0F;
+    }
+    const double stepped = static_cast<double>(steps_) * config_.stepSeconds;
+    return clamp01(static_cast<float>((requested_ - stepped) / config_.stepSeconds));
+}
+
+Vec2f ParticleSystem::position(const SimParticle& particle) const noexcept {
+    const float t = blend();
+    return Vec2f{.x = lerp(particle.prevX, particle.x, t),
+                 .y = lerp(particle.prevY, particle.y, t)};
 }
 
 float ParticleSystem::alpha(const SimParticle& particle) const noexcept {
@@ -175,6 +194,11 @@ float ParticleSystem::alpha(const SimParticle& particle) const noexcept {
 //   elapsed time: 120 frames of 1/60 s and 30 frames of 1/15 s run exactly
 //   the same 120 steps, so the field is frame-rate independent by
 //   construction, not by tolerance.
+// - Drawing interpolates between the last two steps (blend()), the
+//   classic fixed-timestep render: the simulation stays deterministic and
+//   frame-rate independent, and the picture moves every frame by exactly
+//   the time that passed, at 30, 60, 72 or 144 fps alike. The cost is
+//   drawing up to one step (16 ms) behind the simulation.
 // - The forces act through targets (orbit radius, orbital speed) and
 //   springs rather than raw accelerations, so whatever the audio does the
 //   field returns to its calm orbit and never explodes.

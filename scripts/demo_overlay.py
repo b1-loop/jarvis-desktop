@@ -50,12 +50,19 @@ Usage::
     uv run python scripts/demo_overlay.py --theme-sheet docs/media/overlay-themes.png
     uv run python scripts/demo_overlay.py --record docs/media/overlay-boot.gif
     uv run python scripts/demo_overlay.py --record-states docs/media/overlay-states.gif
+    uv run python scripts/demo_overlay.py --stats-json before.json
+
+Every phase prints the CPU and GPU time per frame (average and p99), the
+frame interval's p50/p95/p99/max and the hitch count (frames more than
+1.5x their scheduled period apart); the settled idle phases add the whole
+process's CPU share. ``--stats-json`` writes the same numbers to a file.
 """
 
 from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import math
 import sys
 import time
@@ -108,6 +115,9 @@ STATES_BUDGET_BYTES: Final = 1_000_000
 """The pre-commit hook rejects new files over 1 MB, and the states GIF is new."""
 GIF_COLOURS: Final = 64
 SETTLE_S: Final = 0.4
+ACTIVE_AFTER_CHANGE_S: Final = 1.1
+"""The window keeps the active rate for 1 s after any change (window.cpp)."""
+IDLE_COST_S: Final = 4.0
 SAMPLE_READOUT: Final = {
     "MODEL": "qwen2.5:7b",
     "MODE": "CLOUD",
@@ -197,6 +207,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--record-minimize", type=Path, metavar="OUT.gif", help="capture the minimize script"
+    )
+    parser.add_argument(
+        "--stats-json", type=Path, metavar="OUT.json", help="also write every phase's timings"
     )
     return parser.parse_args(argv)
 
@@ -327,15 +340,62 @@ def run_for(seconds: float, step: Callable[[float], None]) -> None:
         time.sleep(LEVEL_INTERVAL_S / 4)
 
 
-def report(label: str, overlay: Overlay) -> None:
-    """Print the UI thread's frame timings and restart the measurement."""
+PHASES: list[dict[str, float | str]] = []
+"""Every reported phase, in order, for ``--stats-json``."""
+
+
+def report(label: str, overlay: Overlay, cpu_percent: float | None = None) -> None:
+    """Print the UI thread's frame timings and restart the measurement.
+
+    The averages say what a phase costs; the percentiles and the hitch
+    count (frames more than 1.5x their scheduled period apart) say whether
+    it is smooth, which an average hides.
+    """
     stats = overlay._native.frame_stats()  # type: ignore[attr-defined]
-    fps = 1000 / max(stats.interval_ms, 1e-6)
+    fps = 1000 / max(stats.interval_p50_ms, 1e-6)
+    process = "" if cpu_percent is None else f" process-cpu={cpu_percent:.1f}%"
     print(
-        f"{label:<9} frames={stats.frames:<4} cpu/frame={stats.render_ms:.2f} ms "
-        f"gpu/frame={stats.gpu_ms:.2f} ms interval={stats.interval_ms:.1f} ms ({fps:.0f} fps)"
+        f"{label:<12} frames={stats.frames:<4} cpu={stats.render_ms:.2f}"
+        f"/p99 {stats.render_p99_ms:.2f} ms gpu={stats.gpu_ms:.2f} ms "
+        f"interval p50/p95/p99/max={stats.interval_p50_ms:.1f}/{stats.interval_p95_ms:.1f}"
+        f"/{stats.interval_p99_ms:.1f}/{stats.interval_max_ms:.1f} ms ({fps:.0f} fps) "
+        f"hitches={stats.hitches} off-cadence={stats.off_cadence_refreshes}"
+        f"/{stats.presented_frames} @ {stats.refresh_hz:.0f} Hz{process}"
+    )
+    PHASES.append(
+        {
+            "phase": label,
+            "frames": stats.frames,
+            "cpu_ms": round(stats.render_ms, 3),
+            "cpu_p99_ms": round(stats.render_p99_ms, 3),
+            "gpu_ms": round(stats.gpu_ms, 3),
+            "interval_p50_ms": round(stats.interval_p50_ms, 2),
+            "interval_p95_ms": round(stats.interval_p95_ms, 2),
+            "interval_p99_ms": round(stats.interval_p99_ms, 2),
+            "interval_max_ms": round(stats.interval_max_ms, 2),
+            "hitches": stats.hitches,
+            "presented_frames": stats.presented_frames,
+            "off_cadence_refreshes": stats.off_cadence_refreshes,
+            "refresh_hz": round(stats.refresh_hz, 1),
+            **({} if cpu_percent is None else {"process_cpu_percent": round(cpu_percent, 2)}),
+        }
     )
     overlay._native.reset_frame_stats()  # type: ignore[attr-defined]
+
+
+def measure_idle(label: str, overlay: Overlay, tick: Callable[[], None]) -> None:
+    """Report a settled idle phase with the whole process's CPU share.
+
+    Waits out the active rate the last change keeps (window.cpp) first. The
+    script itself only sleeps meanwhile (or pumps the recording backdrop), so
+    the process share is essentially the UI thread's idle cost.
+    """
+    run_for(ACTIVE_AFTER_CHANGE_S, lambda _elapsed: tick())
+    overlay._native.reset_frame_stats()  # type: ignore[attr-defined]
+    cpu_start, wall_start = time.process_time(), time.perf_counter()
+    run_for(IDLE_COST_S, lambda _elapsed: tick())
+    share = 100 * (time.process_time() - cpu_start) / (time.perf_counter() - wall_start)
+    report(label, overlay, share)
 
 
 def play_beat(overlay: Overlay, beat: Beat, tick: Callable[[], None]) -> None:
@@ -380,6 +440,7 @@ def demo(
     for beat in SCRIPT:
         play_beat(overlay, beat, tick)
         report(beat.state.value.lower(), overlay)
+    measure_idle("idle settled", overlay, tick)
 
 
 def interactive_box(config: OverlayConfig) -> Box:
@@ -479,8 +540,6 @@ def run_interactive(args: argparse.Namespace, config: OverlayConfig) -> int:
 
 MORPH_S: Final = 0.7
 """The 0.5 s HUD/orb morph plus a little settling."""
-ACTIVE_AFTER_CHANGE_S: Final = 1.1
-"""The window keeps the active rate for 1 s after any change (window.cpp)."""
 ORB_BEATS: Final = (
     Beat(OverlayState.LISTENING, 2.0, speech_envelope, wake=True),
     Beat(OverlayState.THINKING, 1.6),
@@ -496,10 +555,7 @@ def minimize_demo(overlay: Overlay, tick: Callable[[], None]) -> None:
     overlay.minimize()
     run_for(MORPH_S, lambda _elapsed: tick())
     report("shrink", overlay)
-    run_for(ACTIVE_AFTER_CHANGE_S, lambda _elapsed: tick())
-    overlay._native.reset_frame_stats()  # type: ignore[attr-defined]
-    run_for(3.0, lambda _elapsed: tick())
-    report("orb idle", overlay)
+    measure_idle("orb idle", overlay, tick)
     for beat in ORB_BEATS:
         play_beat(overlay, beat, tick)
         report(f"orb {beat.state.value.lower()}", overlay)
@@ -554,10 +610,16 @@ def main(argv: list[str] | None = None) -> int:
         transparent=not args.opaque,
     )
     if args.interactive or args.record_interactive is not None:
-        return run_interactive(args, config)
-    if args.minimize or args.record_minimize is not None:
-        return run_minimize(args, config)
-    return run_states(args, config)
+        code = run_interactive(args, config)
+    elif args.minimize or args.record_minimize is not None:
+        code = run_minimize(args, config)
+    else:
+        code = run_states(args, config)
+    if args.stats_json is not None and code == 0:
+        args.stats_json.parent.mkdir(parents=True, exist_ok=True)
+        args.stats_json.write_text(json.dumps(PHASES, indent=2) + "\n", encoding="utf-8")
+        print(f"wrote {args.stats_json}")
+    return code
 
 
 def run_states(args: argparse.Namespace, config: OverlayConfig) -> int:
